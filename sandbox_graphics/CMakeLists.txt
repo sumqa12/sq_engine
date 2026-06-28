@@ -1,0 +1,2 @@
+add_executable(sandbox_graphics main.cpp)
+target_link_libraries(sandbox_graphics PRIVATE sq_engine_lib)
