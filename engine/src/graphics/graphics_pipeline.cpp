@@ -28,7 +28,7 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass,
     }
 
     // シェーダーステージの作成情報を設定する
-    VkPipelineShaderStageCreateInfo shader_stages[] = {};
+    VkPipelineShaderStageCreateInfo shader_stages[2]{};
     shader_stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     shader_stages[0].pName = "main";
     shader_stages[0].module = vert_shader_module;

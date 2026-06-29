@@ -5,7 +5,7 @@ namespace sq::graphics {
 const char* VulkanInstance::kValidationLayerName = "VK_LAYER_KHRONOS_validation";
 
 VulkanInstance::VulkanInstance(const std::string& app_name,
-                                std::vector<const char*> required_extensions) {
+                                const char** required_extensions) {
     // ビルドがDebugの場合、バリデーションレイヤーのサポートを確認する。
 #if !defined(NDEBUG)
     validation_enabled_ = supports_validation_layer();
@@ -23,16 +23,18 @@ VulkanInstance::VulkanInstance(const std::string& app_name,
     app_info.apiVersion = VK_API_VERSION_1_3;
 
     // validationがenabledの場合、required_extensionsにVK_EXT_debug_utilsを追加する。
+    std::vector extensions(required_extensions, required_extensions + 2);
     if (validation_enabled_) {
-        required_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        required_extensions = extensions.data();
     }
 
     // VkInstanceCreateInfo を設定する。
     VkInstanceCreateInfo create_info{};
     create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     create_info.pApplicationInfo = &app_info;
-    create_info.enabledExtensionCount = static_cast<uint32_t>(required_extensions.size());
-    create_info.ppEnabledExtensionNames = required_extensions.data();
+    create_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+    create_info.ppEnabledExtensionNames = extensions.data();
 
     if (validation_enabled_) {
         create_info.enabledLayerCount = 1;

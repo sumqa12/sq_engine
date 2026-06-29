@@ -11,7 +11,7 @@ namespace sq::graphics {
 // DebugMessenger がそれにアタッチできるようにします。
 class VulkanInstance {
 public:
-    VulkanInstance(const std::string& app_name, std::vector<const char*> required_extensions);
+    VulkanInstance(const std::string& app_name, const char** required_extensions);
     ~VulkanInstance();
 
     VulkanInstance(const VulkanInstance&) = delete;

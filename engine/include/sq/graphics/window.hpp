@@ -26,7 +26,7 @@ public:
     [[nodiscard]] std::uint32_t height() const;
 
     // このプラットフォーム上でGLFWがサーフェスを作成するために必要なVulkanインスタンス拡張機能。
-    [[nodiscard]] static const char** required_instance_extensions();
+    [[nodiscard]] static const char ** required_instance_extensions();
 
 private:
     GLFWwindow* window_ = nullptr;

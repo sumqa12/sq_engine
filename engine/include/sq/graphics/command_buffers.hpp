@@ -23,7 +23,7 @@ public:
     // これにより、vkCmdBeginRenderPass / 描画コール / vkCmdEndRenderPass が呼び出されることが想定されています。
     void record(std::size_t index, const RecordFn& record);
 
-    [[nodiscard]] VkCommandBuffer at(std::size_t index) const;
+    [[nodiscard]] const VkCommandBuffer *at(std::size_t index) const;
 
 private:
     VkDevice device_ = VK_NULL_HANDLE;

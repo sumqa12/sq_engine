@@ -45,8 +45,8 @@ void CommandBuffers::record(std::size_t index, const RecordFn& record) {
     (void)record;
 }
 
-VkCommandBuffer CommandBuffers::at(std::size_t index) const {
-    return buffers_.empty() ? VK_NULL_HANDLE : buffers_[index];
+const VkCommandBuffer *CommandBuffers::at(std::size_t index) const {
+    return buffers_.empty() ? nullptr : &buffers_[index];
 }
 
 }  // namespace sq::graphics
