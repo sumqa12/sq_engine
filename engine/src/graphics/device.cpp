@@ -40,7 +40,7 @@ Device::Device(VkPhysicalDevice physical_device, const QueueFamilyIndices& indic
     device_create_info.enabledExtensionCount = 1;
     device_create_info.pNext = nullptr;
     device_create_info.ppEnabledLayerNames = nullptr;
-    device_create_info.enabledLayerCount = 1;
+    device_create_info.enabledLayerCount = 0;
 
     vkCreateDevice(physical_device_, &device_create_info, nullptr, &device_);
 

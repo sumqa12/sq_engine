@@ -1,2 +1,8 @@
-// TODO: GLSL fragment shader for the first hard-coded triangle.
-// Will be compiled to triangle.frag.spv (via glslc/glslangValidator) in a later phase.
+#version 450
+
+layout(location = 0) in vec3 frag_color;
+layout(location = 0) out vec4 out_color;
+
+void main() {
+    out_color = vec4(frag_color, 1.0);
+}

@@ -8,6 +8,7 @@ CommandBuffers::CommandBuffers(VkDevice device, std::uint32_t graphics_queue_fam
     VkCommandPoolCreateInfo pool_info{};
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_info.queueFamilyIndex = graphics_queue_family;
+    pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 
     vkCreateCommandPool(device_, &pool_info, nullptr, &pool_);
 
@@ -31,7 +32,9 @@ CommandBuffers::~CommandBuffers() {
 
 void CommandBuffers::record(std::size_t index, const RecordFn& record) {
     // コマンドバッファをリセットして、再記録する
-    vkResetCommandBuffer(buffers_[index], VK_COMMAND_BUFFER_RESET_FLAG_BITS_MAX_ENUM);
+    VkCommandBufferResetFlagBits flags{};
+
+    vkResetCommandBuffer(buffers_[index], VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
     vkResetCommandPool(device_, pool_, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
 
     VkCommandBufferBeginInfo begin_info{};

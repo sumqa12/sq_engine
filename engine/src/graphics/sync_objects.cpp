@@ -22,7 +22,6 @@ SyncObjects::SyncObjects(VkDevice device, std::size_t frames_in_flight) : device
         VkFenceCreateInfo fence_info{};
         fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         fence_info.pNext = nullptr;
-        fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
         image_available_semaphores_.push_back(image_available_semaphore);
         render_finished_semaphores_.push_back(render_finished_semaphore);

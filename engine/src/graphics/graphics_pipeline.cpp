@@ -113,8 +113,8 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass,
     pipeline_info.pMultisampleState = &multisample_state_info;
     pipeline_info.pColorBlendState = &color_blend_state_info;
     pipeline_info.layout = layout_;
-    pipeline_info.stageCount = 0;
-    pipeline_info.pStages = nullptr;
+    pipeline_info.stageCount = 2;
+    pipeline_info.pStages = shader_stages;
     pipeline_info.renderPass = render_pass;
     pipeline_info.subpass = 0;
     vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline_);
@@ -147,7 +147,15 @@ VkPipelineLayout GraphicsPipeline::layout() const {
 
 VkShaderModule GraphicsPipeline::load_shader_module(VkDevice device, const std::string& spv_path) {
     // シェーダーファイルを読み込んで、シェーダーモジュールを作成する
-    size_t spv_file_size = std::filesystem::file_size(spv_path);
+    uintmax_t spv_file_size = 0;
+    try {
+        std::filesystem::path p = spv_path;
+        spv_file_size = std::filesystem::file_size(p);
+        printf("File size: %ju bytes\n", spv_file_size);
+    } catch (const std::filesystem::filesystem_error& e) {
+        printf("File size: %s bytes\n", e.what());
+        printf("Path: %ls\n", e.path1().c_str());
+    }
 
     std::ifstream spv_file(spv_path, std::ios::binary);
 

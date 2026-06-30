@@ -18,9 +18,10 @@ target_include_directories(sq_engine_lib PUBLIC include)
 target_compile_features(sq_engine_lib PUBLIC cxx_std_20)
 
 find_package(spdlog CONFIG REQUIRED)
-find_package(Vulkan REQUIRED)
+find_package(Vulkan REQUIRED COMPONENTS glslc)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
+find_program(glslc_executable NAMES glslc HINTS Vulkan::glslc)
 
 target_link_libraries(sq_engine_lib PUBLIC
     spdlog::spdlog

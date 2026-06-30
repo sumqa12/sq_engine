@@ -96,14 +96,15 @@ void Renderer::draw_frame() {
     vkAcquireNextImageKHR(device_->handle(), swapchain_->handle(), UINT64_MAX, image_available, in_flight_fence, &image_index);
 
     // 3. コマンドバッファの記録と送信
-    command_buffers_->record(image_index, [this, image_available, in_flight_fence, image_index](VkCommandBuffer command_buffer, std::size_t index) {
+    command_buffers_->record(image_index, [this](VkCommandBuffer command_buffer, std::size_t index) {
         VkRenderPassBeginInfo render_pass_begin_info{};
         render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         render_pass_begin_info.renderPass = render_pass_->handle();
         render_pass_begin_info.framebuffer = framebuffers_[index];
         render_pass_begin_info.renderArea = { {0, 0}, swapchain_->extent() };
-        render_pass_begin_info.clearValueCount = 0;
-        render_pass_begin_info.pClearValues = nullptr;
+        VkClearValue clear_color = { {0.0f, 0.0f, 0.0f, 1.0f} };
+        render_pass_begin_info.clearValueCount = 1;
+        render_pass_begin_info.pClearValues = &clear_color;
 
         // レンダーパスの開始
         vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
@@ -113,29 +114,32 @@ void Renderer::draw_frame() {
 
         // レンダーパスの終了
         vkCmdEndRenderPass(command_buffer);
-
-        // コマンドバッファの送信
-        VkSemaphore render_finished = sync_objects_->render_finished(current_frame_);
-        VkSubmitInfo submit_info{};
-        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit_info.waitSemaphoreCount = 1;
-        submit_info.pWaitSemaphores = &image_available;
-        submit_info.commandBufferCount = 1;
-        submit_info.pCommandBuffers = &command_buffer;
-        submit_info.signalSemaphoreCount = 1;
-        submit_info.pSignalSemaphores = &render_finished;
-
-        vkQueueSubmit(device_->graphics_queue(), 1, &submit_info, in_flight_fence);
-
-        // 4. 画像の提示
-        VkPresentInfoKHR present_info{};
-        present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        present_info.waitSemaphoreCount = 1;
-        present_info.pWaitSemaphores = &render_finished;
-        present_info.pImageIndices = &image_index;
-
-        vkQueuePresentKHR(device_->graphics_queue(), &present_info);
     });
+
+    // コマンドバッファの送信
+    VkSemaphore render_finished = sync_objects_->render_finished(current_frame_);
+    VkSubmitInfo submit_info{};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.waitSemaphoreCount = 1;
+    submit_info.pWaitSemaphores = &image_available;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = command_buffers_->at(image_index);
+    submit_info.signalSemaphoreCount = 1;
+    submit_info.pSignalSemaphores = &render_finished;
+    submit_info.pWaitDstStageMask = new VkPipelineStageFlags{VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+
+    vkQueueSubmit(device_->graphics_queue(), 1, &submit_info, in_flight_fence);
+
+    // 4. 画像の提示
+    VkPresentInfoKHR present_info{};
+    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    present_info.waitSemaphoreCount = 1;
+    present_info.pWaitSemaphores = &render_finished;
+    present_info.pImageIndices = &image_index;
+
+    vkQueuePresentKHR(device_->graphics_queue(), &present_info);
+
+    vkWaitForFences(device_->handle(), 1, &in_flight_fence, VK_TRUE, UINT64_MAX);
 
     current_frame_ = (current_frame_ + 1) % kFramesInFlight;
 }

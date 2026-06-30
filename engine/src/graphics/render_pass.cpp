@@ -26,7 +26,7 @@ RenderPass::RenderPass(VkDevice device, VkFormat color_format) : device_(device)
     // サブパス間の依存関係を作成する
     VkSubpassDependency dependency{};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependency.dstSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
     dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     dependency.srcAccessMask = 0;

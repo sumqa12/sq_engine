@@ -62,7 +62,8 @@ std::uint32_t Window::height() const {
 
 // GLFWがVulkanインスタンスを作成するために必要な拡張機能のリストを返します。
 const char ** Window::required_instance_extensions() {
-    return glfwGetRequiredInstanceExtensions(nullptr);
+    uint32_t extension_count = 0;
+    return glfwGetRequiredInstanceExtensions(&extension_count);
 }
 
 }  // namespace sq::graphics
