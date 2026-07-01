@@ -10,8 +10,11 @@ namespace sq::graphics {
 // 単一の不変の VkPipeline に組み込みます。Vulkan には、GL とは異なり、グローバルなレンダリング状態はありません。
 class GraphicsPipeline {
 public:
+    // descriptor_set_layout: パイプラインレイアウトに組み込むディスクリプタセット
+    // レイアウト（カメラUBO用、set=0）。呼び出し側が所有・破棄する（ここでは破棄しない）。
     GraphicsPipeline(VkDevice device, VkRenderPass render_pass, VkExtent2D viewport_extent,
-                      const std::string& vert_spv_path, const std::string& frag_spv_path);
+                      const std::string& vert_spv_path, const std::string& frag_spv_path,
+                      VkDescriptorSetLayout descriptor_set_layout);
     ~GraphicsPipeline();
 
     GraphicsPipeline(const GraphicsPipeline&) = delete;

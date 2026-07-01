@@ -16,6 +16,7 @@
 #include "sq/graphics/render_pass.hpp"
 #include "sq/graphics/swapchain.hpp"
 #include "sq/graphics/sync_objects.hpp"
+#include "sq/graphics/uniform_buffer.hpp"
 #include "sq/graphics/vulkan_instance.hpp"
 #include "sq/graphics/window.hpp"
 
@@ -50,6 +51,11 @@ private:
     void destroy_framebuffers();
     void recreate_swapchain();
     void create_triangle_mesh();
+    // カメラUBO用ディスクリプタ一式（パイプライン作成の前にレイアウトが必要）。
+    void create_descriptor_set_layout();  // vkCreateDescriptorSetLayout（set=0, binding=0, UNIFORM_BUFFER, VERTEX）
+    void create_uniform_buffers();        // camera_ubos_をkFramesInFlight個作成
+    void create_descriptor_pool();        // vkCreateDescriptorPool（UNIFORM_BUFFERをkFramesInFlight個）
+    void create_descriptor_sets();        // vkAllocateDescriptorSets + vkUpdateDescriptorSetsで各UBOと結びつける
 
     static constexpr std::size_t kFramesInFlight = 2;
 
@@ -67,6 +73,12 @@ private:
     std::unique_ptr<CommandBuffers> command_buffers_;
     std::unique_ptr<SyncObjects> sync_objects_;
     std::unique_ptr<VertexBuffer> triangle_mesh_;  // デモ用の共有メッシュ（全エンティティがこれを描画する）
+
+    // カメラUBO用ディスクリプタ（すべてkFramesInFlight個。スワップチェーン画像枚数には非依存）。
+    VkDescriptorSetLayout descriptor_set_layout_ = VK_NULL_HANDLE;
+    VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
+    std::vector<std::unique_ptr<UniformBuffer>> camera_ubos_;
+    std::vector<VkDescriptorSet> descriptor_sets_;  // プールから確保（個別破棄は不要、プール破棄でまとめて解放）
 
     std::size_t current_frame_ = 0;
 };

@@ -12,11 +12,16 @@ add_library(sq_engine_lib STATIC
     src/graphics/mesh.cpp
     src/graphics/command_buffers.cpp
     src/graphics/sync_objects.cpp
+    src/graphics/uniform_buffer.cpp
     src/graphics/renderer.cpp
+    src/scene/camera.cpp
 )
 
 target_include_directories(sq_engine_lib PUBLIC include)
 target_compile_features(sq_engine_lib PUBLIC cxx_std_20)
+
+# VulkanのNDC深度は[0,1]。GLMの既定([-1,1])と食い違うため全体で定義する。
+target_compile_definitions(sq_engine_lib PUBLIC GLM_FORCE_DEPTH_ZERO_TO_ONE)
 
 find_package(spdlog CONFIG REQUIRED)
 find_package(Vulkan REQUIRED COMPONENTS glslc)
