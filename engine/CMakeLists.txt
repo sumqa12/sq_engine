@@ -9,6 +9,7 @@ add_library(sq_engine_lib STATIC
     src/graphics/swapchain.cpp
     src/graphics/render_pass.cpp
     src/graphics/graphics_pipeline.cpp
+    src/graphics/mesh.cpp
     src/graphics/command_buffers.cpp
     src/graphics/sync_objects.cpp
     src/graphics/renderer.cpp

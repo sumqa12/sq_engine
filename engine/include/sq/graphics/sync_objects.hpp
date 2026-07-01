@@ -10,7 +10,7 @@ namespace sq::graphics {
 // フレーム単位のセマフォ（GPU間同期）およびフェンス（CPU-GPU同期）が使用される。
 class SyncObjects {
 public:
-    SyncObjects(VkDevice device, std::size_t frames_in_flight);
+    SyncObjects(VkDevice device, std::size_t frames_in_flight, std::size_t swapchain_image_count);
     ~SyncObjects();
 
     SyncObjects(const SyncObjects&) = delete;

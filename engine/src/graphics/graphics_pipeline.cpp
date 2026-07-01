@@ -3,21 +3,14 @@
 #include <filesystem>
 #include <fstream>
 
+#include "sq/graphics/mesh.hpp"
+
 namespace sq::graphics {
 
 GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass,
                                     VkExtent2D viewport_extent, const std::string& vert_spv_path,
                                     const std::string& frag_spv_path)
     : device_(device) {
-    // TODO:
-    //  1. 両方のステージに対して load_shader_module() を実行し、VkPipelineShaderStageCreateInfo にラップする。
-    //  2. VkPipelineVertexInputStateCreateInfo（最初のハードコーディングされた三角形については空）。
-    //  3. VkPipelineInputAssemblyStateCreateInfo（VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST）。
-    //  4. viewport_extent からのビューポート／シザー、ラスタライズ、マルチサンプリング、
-    //     カラーブレンド状態の構造体。
-    //  5. vkCreatePipelineLayout(...) を layout_ に設定（この時点では記述子セットはまだ存在しない）。
-    //  6. vkCreateGraphicsPipelines(...) を pipeline_ に設定し、render_pass を参照させる。
-    //  7. 一時的なシェーダーモジュールを破棄する（これらは作成時にのみ必要である）。
 
     // シェーダーモジュールをロードする
     VkShaderModule vert_shader_module = load_shader_module(device_, vert_spv_path);
@@ -39,12 +32,27 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass,
     shader_stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     // 頂点入力状態の作成情報を設定する
+    VkVertexInputBindingDescription binding_description = {};
+    binding_description.binding = 0;
+    binding_description.stride = sizeof(Vertex);
+    binding_description.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription attribute_descriptions[2] = {};
+    attribute_descriptions[0].binding = 0;
+    attribute_descriptions[0].location = 0;
+    attribute_descriptions[0].format = VK_FORMAT_R32G32_SFLOAT; // vec2 position
+    attribute_descriptions[0].offset = offsetof(Vertex, position);
+    attribute_descriptions[1].binding = 0;
+    attribute_descriptions[1].location = 1;
+    attribute_descriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT; // vec3 color
+    attribute_descriptions[1].offset = offsetof(Vertex, color);
+
     VkPipelineVertexInputStateCreateInfo vertex_input_info = {};
     vertex_input_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertex_input_info.vertexAttributeDescriptionCount = 0;
-    vertex_input_info.pVertexAttributeDescriptions = nullptr;
-    vertex_input_info.vertexBindingDescriptionCount = 0;
-    vertex_input_info.pVertexBindingDescriptions = nullptr;
+    vertex_input_info.vertexBindingDescriptionCount = 1;
+    vertex_input_info.pVertexBindingDescriptions = &binding_description;
+    vertex_input_info.vertexAttributeDescriptionCount = 2;
+    vertex_input_info.pVertexAttributeDescriptions = attribute_descriptions;
 
     // 入力アセンブリ状態の作成情報を設定する
     VkPipelineInputAssemblyStateCreateInfo input_assembly = {};
@@ -97,8 +105,15 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass,
     color_blend_state_info.pAttachments = &color_blend_attachment;
 
     // パイプラインレイアウトを作成する
+    VkPushConstantRange push_constant_range = {};
+    push_constant_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    push_constant_range.offset = 0;
+    push_constant_range.size = sizeof(glm::mat4);
+
     VkPipelineLayoutCreateInfo pipeline_layout_info = {};
     pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipeline_layout_info.pushConstantRangeCount = 1;
+    pipeline_layout_info.pPushConstantRanges = &push_constant_range;
     pipeline_layout_info.setLayoutCount = 0;
     pipeline_layout_info.pSetLayouts = nullptr;
     vkCreatePipelineLayout(device_, &pipeline_layout_info, nullptr, &layout_);

@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <string>
-#include <vector>
 
 struct GLFWwindow;
 
@@ -18,9 +17,12 @@ public:
     Window(const Window&) = delete;
     Window& operator=(const Window&) = delete;
 
-    [[nodiscard]] bool should_close() const;
-    static void poll_events() ;
 
+    static void poll_events() ;
+    void wait_while_minimized() const;
+    static void framebuffer_size_callback(GLFWwindow* window, int width, int height);
+    [[nodiscard]] bool consume_resized_flag();
+    [[nodiscard]] bool should_close() const;
     [[nodiscard]] GLFWwindow* handle() const;
     [[nodiscard]] std::uint32_t width() const;
     [[nodiscard]] std::uint32_t height() const;
@@ -32,6 +34,7 @@ private:
     GLFWwindow* window_ = nullptr;
     std::uint32_t width_ = 0;
     std::uint32_t height_ = 0;
+    bool resized_ = false;
 };
 
 }  // namespace sq::graphics

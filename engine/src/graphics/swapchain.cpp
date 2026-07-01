@@ -7,7 +7,6 @@ namespace sq::graphics {
 Swapchain::Swapchain(VkInstance instance, VkPhysicalDevice physical_device, VkDevice device,
                       VkSurfaceKHR surface, std::uint32_t width, std::uint32_t height)
     : device_(device), physical_device_(physical_device), surface_(surface) {
-    // TODO: VkSurfaceCapabilitiesKHR / フォーマット / 表示モードを照会し、その後 create() を実行します。
 
     (void)instance;
     create(width, height);
@@ -18,7 +17,6 @@ Swapchain::~Swapchain() {
 }
 
 void Swapchain::recreate(std::uint32_t width, std::uint32_t height) {
-    // TODO: vkDeviceWaitIdle before destroying, then destroy() + create(width, height).
     destroy();
     create(width, height);
 }
@@ -40,13 +38,6 @@ const std::vector<VkImageView>& Swapchain::image_views() const {
 }
 
 void Swapchain::create(std::uint32_t width, std::uint32_t height) {
-    // TODO:
-    //  1. サーフェス形式（VK_FORMAT_B8G8R8A8_SRGB を推奨）とプレゼンテーションモードを選択する
-    //     （VK_PRESENT_MODE_MAILBOX_KHR を推奨、フォールバックは VK_PRESENT_MODE_FIFO_KHR）。
-    //  2. (幅、高さ) を VkSurfaceCapabilitiesKHR の最小/最大範囲 -> extent_ にクリップする。
-    //  3. vkCreateSwapchainKHR(...) を実行して swapchain_ を生成し、vkGetSwapchainImagesKHR を実行して images_ を生成する。
-    //  4. 画像ごとに 1 つの VkImageView を生成し、image_views_ に格納する。
-
     // サーフェス形式を選択する
     uint32_t count;
     vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device_, surface_, &count, nullptr);
@@ -98,7 +89,7 @@ void Swapchain::create(std::uint32_t width, std::uint32_t height) {
     }
 
     // 画像数の決定
-    uint32_t image_count = caps.minImageCount + 1;
+    uint32_t image_count = std::max(caps.minImageCount, 2u);
     if (caps.maxImageCount > 0 && image_count > caps.maxImageCount) {
         image_count = caps.maxImageCount;
     }
@@ -165,6 +156,7 @@ void Swapchain::destroy() {
     vkDestroySwapchainKHR(device_, swapchain_, nullptr);
 
     image_views_.clear();
+    images_.clear();
     swapchain_ = VK_NULL_HANDLE;
 }
 

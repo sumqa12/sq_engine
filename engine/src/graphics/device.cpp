@@ -35,7 +35,8 @@ Device::Device(VkPhysicalDevice physical_device, const QueueFamilyIndices& indic
 #if defined(NDEBUG)
     device_create_info.ppEnabledExtensionNames = kValidationLayerName;
 #else
-    device_create_info.ppEnabledExtensionNames = new const char* [1]{ VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    auto requires_extension_names = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    device_create_info.ppEnabledExtensionNames = &requires_extension_names;
 #endif
     device_create_info.enabledExtensionCount = 1;
     device_create_info.pNext = nullptr;

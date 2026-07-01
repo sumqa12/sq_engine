@@ -4,7 +4,7 @@
 
 namespace sq::graphics {
 
-SyncObjects::SyncObjects(VkDevice device, std::size_t frames_in_flight) : device_(device) {
+SyncObjects::SyncObjects(VkDevice device, std::size_t frames_in_flight, std::size_t swapchain_image_count) : device_(device) {
     for (std::size_t i = 0; i < frames_in_flight; ++i) {
         VkSemaphoreCreateInfo semaphore_info{};
         semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -33,6 +33,7 @@ SyncObjects::SyncObjects(VkDevice device, std::size_t frames_in_flight) : device
     }
 
     (void)frames_in_flight;
+    (void)swapchain_image_count;
 }
 
 SyncObjects::~SyncObjects() {

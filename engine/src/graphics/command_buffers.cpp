@@ -32,10 +32,7 @@ CommandBuffers::~CommandBuffers() {
 
 void CommandBuffers::record(std::size_t index, const RecordFn& record) {
     // コマンドバッファをリセットして、再記録する
-    VkCommandBufferResetFlagBits flags{};
-
     vkResetCommandBuffer(buffers_[index], VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
-    vkResetCommandPool(device_, pool_, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
 
     VkCommandBufferBeginInfo begin_info{};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;

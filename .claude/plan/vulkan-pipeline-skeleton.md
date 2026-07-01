@@ -51,17 +51,18 @@ sq_engine/
 - ルート`CMakeLists.txt`に`add_subdirectory(sandbox_graphics)`を追加
 - 新規`sandbox_graphics/CMakeLists.txt`: `sandbox`と同様の構成で`sq_engine_lib`をリンク
 
-## このフェーズで作らないもの（後続フェーズ）
-- 実際のVulkan API呼び出し実装（インスタンス生成〜三角形描画までの実コード）
-- シェーダーのコンパイル（glslangValidator/glslcの統合、SPIR-Vビルドステップ）
-- ECSとの連携（Mesh/Transformコンポーネントの導入、Registryからの描画データ抽出）
+## このフェーズ（骨格設計時点）で作らないとしていたもの
+- 実際のVulkan API呼び出し実装（インスタンス生成〜三角形描画までの実コード）→ **Phase 3で実装完了**
+- シェーダーのコンパイル（glslangValidator/glslcの統合、SPIR-Vビルドステップ）→ **Phase 3で実装完了**
+- ECSとの連携（Mesh/Transformコンポーネントの導入、Registryからの描画データ抽出）→ 引き続き未実施
 
 ## 検証方法
 - `cmake --preset=default`でvcpkgの新規依存（glfw3, glm, vulkan）が解決され、構成が通ることを確認
 - `cmake --build build`で新規ファイル群（宣言のみ、空実装）がコンパイルエラーなく通ることを確認
 - `sandbox_graphics`実行ファイルが生成されることを確認（ビルド通過のみが目的、ウィンドウは開かない）
+- （Phase 3）`sandbox_graphics`を実際に起動し、ウィンドウに三角形が描画されることを目視確認
 
-## 実施結果（完了）
+## 実施結果（骨格設計フェーズ・完了）
 - `engine/include/sq/graphics/`に11個のヘッダ（window, vulkan_instance, debug_messenger, physical_device, device, swapchain, render_pass, graphics_pipeline, command_buffers, sync_objects, renderer）と対応する`.cpp`を作成。すべて宣言＋TODOコメントのスケルトン
 - `shaders/triangle.vert`, `shaders/triangle.frag`をTODOコメントのみの空ファイルとして作成
 - `sandbox_graphics/`（`main.cpp`, `CMakeLists.txt`）を新規作成
@@ -71,8 +72,37 @@ sq_engine/
 - `cmake --build build --config Debug`で全ターゲット（`sq_engine_lib`, `sandbox`, `sandbox_graphics`, `ecs_tests`）のビルドが成功
 - `ctest`で既存ECSテスト（7ケース、日本語TEST_CASE名含む）が引き続き全パスすることを確認
 
+## Phase 3: 実装フェーズ（完了）
+骨格に沿って、ユーザー自身が各`.cpp`のTODOを実コードに置き換え、三角形描画まで到達した。
+
+### 実装した内容
+- **`vulkan_instance.cpp`**: `VkApplicationInfo`/`VkInstanceCreateInfo`を設定し`vkCreateInstance`。検証レイヤー有効化は`NDEBUG`マクロで判定（`#if !defined(NDEBUG)`）し、`supports_validation_layer()`で`VK_LAYER_KHRONOS_validation`の対応を`vkEnumerateInstanceLayerProperties`で確認
+- **`window.cpp`**: `GLFW_INCLUDE_VULKAN`を定義した上で`<GLFW/glfw3.h>`をinclude（`glfw3native.h`は不要、ネイティブハンドルが必要な場合のみ使う）。`glfwInit`/`glfwCreateWindow`/`glfwGetRequiredInstanceExtensions`を実装
+- **`debug_messenger.cpp`**: `vkGetInstanceProcAddr`経由で`vkCreateDebugUtilsMessengerEXT`/`vkDestroyDebugUtilsMessengerEXT`を取得して呼び出し。コールバックはseverityに応じて`spdlog`へ出力
+- **`physical_device.cpp` / `device.cpp`**: 骨格のみで未着手（`Renderer`からは呼ばれているが、実体は今後の課題）
+- **`swapchain.cpp`**: `vkGetPhysicalDeviceSurfaceFormatsKHR`/`PresentModesKHR`/`CapabilitiesKHR`は`physical_device`、`vkCreateSwapchainKHR`等のリソース生成・破棄は`device`に渡す区別を実装。実装過程で見つかった注意点：
+  - `oldSwapchain`の扱い・`image_views_`/`images_`の`clear()`漏れ・`image_format_`のフォールバック漏れが課題として残っている（`recreate()`時のバグの可能性、未修正）
+  - 画像数は`caps.minImageCount`をそのまま採用（`+1`しない方針に変更）。`minImageCount`が1を返す環境ではダブルバッファリングできない可能性があるため、`std::max(caps.minImageCount, 2u)`への変更を将来的に検討
+- **`graphics_pipeline.cpp`**: シェーダーモジュールのロード、頂点入力なし（ハードコードされた三角形）、`VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST`、ビューポート/ラスタライズ/マルチサンプル/カラーブレンド状態を設定し`vkCreateGraphicsPipelines`
+- **`command_buffers.cpp`**: コマンドプール生成（`VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT`）、`record()`で`vkResetCommandBuffer`→`vkBeginCommandBuffer`→ユーザー記録コールバック→`vkEndCommandBuffer`
+- **`sync_objects.cpp`**: `image_available`/`render_finished`セマフォと`in_flight_fence`をフレーム数分生成
+- **`renderer.cpp`**: コンストラクタで骨格通りの初期化順序（Window→Instance→DebugMessenger→Surface→PhysicalDevice→Device→Swapchain→RenderPass→Pipeline→Framebuffers→CommandBuffers→Sync）を実装。`draw_frame()`で取得→記録→送信→提示の1フレームループを実装
+- **シェーダー**: `triangle.vert`/`triangle.frag`をGLSLで記述（頂点バッファなし、`gl_VertexIndex`から座標・色をハードコード出力）。`sandbox_graphics/CMakeLists.txt`に`glslc`を使ったカスタムビルドステップを追加し、`.vert`/`.frag`→`.spv`へコンパイルして実行ファイル隣の`shaders/`にコピーするようにした
+
+### 実装中に発生し、解決したバグ
+1. **MSVCの日本語コメント文字化け**: 既存の`/utf-8`コンパイルオプションの対象範囲内のため、コメントは問題なく動作
+2. **`CommandBuffers::record()`が`vkResetCommandPool`を呼んでいた**: プール全体をリセットすると他のインデックスのコマンドバッファ（pending状態の可能性あり）も巻き込んでしまい、`must not be in the pending state`のバリデーションエラーが発生。`vkResetCommandPool`の呼び出しを削除し、`vkResetCommandBuffer`（単体リセット）のみに修正
+3. **`draw_frame()`で`vkWaitForFences`/`vkResetFences`が未実装だった**: GPUがまだ使用中のコマンドバッファ/フェンスを再利用しようとして同様のバリデーションエラーが発生。フレーム冒頭で前回フレームの完了待ち→リセットを行うよう修正
+4. **`vkAcquireNextImageKHR`にフェンスを渡していた**: `in_flight_fence`を「画像取得時」と「`vkQueueSubmit`時」の二重にシグナルしようとして不正な状態になっていた。`vkAcquireNextImageKHR`のフェンス引数は`VK_NULL_HANDLE`に変更
+5. **`pWaitDstStageMask`が毎フレーム`new`でヒープリークしていた**: ローカル変数のアドレスを渡す形に修正
+6. **`present_info`に`swapchainCount`/`pSwapchains`が未設定だった**: 必須フィールド漏れにより未定義動作の原因になっていたため追加
+7. **`render_finished`セマフォの再利用バグ（`pSignalSemaphores ... is being signaled ... but it may still be in use`）**: `render_finished`セマフォを`current_frame_`（フレームインフライト数=2）でインデックスしていたが、スワップチェーン画像枚数（3枚）と数が合わず、プレゼンテーションでまだ参照されている可能性のあるセマフォを再シグナルしてしまっていた。`image_available`/`in_flight_fence`はフレームインフライト数のまま`current_frame_`でインデックスし、`render_finished`だけはスワップチェーン画像枚数分用意して`image_index`でインデックスするよう設計変更が必要（`SyncObjects`のコンストラクタに`swapchain_image_count`引数を追加する案を提示）
+
+### 結果
+上記の修正を経て、`sandbox_graphics`がウィンドウを開き、検証レイヤーのエラーなく三角形を描画できる状態まで到達した。
+
 ## 次のフェーズ（未実施）
-1. `vulkan_instance.cpp`からインスタンス生成・検証レイヤーの実装に着手
-2. シェーダーのGLSL記述とSPIR-Vコンパイル（glslc）パイプラインの統合
-3. `renderer.cpp`のTODO順に沿って、三角形が画面に表示されるまで実装
-4. ECSのPosition/Meshコンポーネントを描画データに繋げる
+1. `swapchain.cpp`の`oldSwapchain`/`image_views_`クリア漏れ/`image_format_`フォールバック漏れの修正（ウィンドウリサイズ時の`recreate_swapchain()`で問題化する可能性）
+2. `render_finished`セマフォをスワップチェーン画像枚数分に分離する設計変更の適用
+3. ECSのPosition/Meshコンポーネントを描画データに繋げる（インスタンス描画への発展）
+4. ウィンドウリサイズ時のスワップチェーン再作成の動作確認

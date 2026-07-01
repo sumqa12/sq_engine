@@ -22,6 +22,13 @@ Window::Window(std::uint32_t width, std::uint32_t height, const std::string& tit
         throw std::runtime_error("GLFW ウィンドウの作成に失敗しました。");
     }
 
+    constexpr int kMinWidth = 810;
+    constexpr int kMinHeight = 540;
+    glfwSetWindowSizeLimits(window_, kMinWidth, kMinHeight, GLFW_DONT_CARE, GLFW_DONT_CARE);
+
+    glfwSetWindowUserPointer(window_, this);
+    glfwSetFramebufferSizeCallback(window_, &Window::framebuffer_size_callback);
+
     (void)width;
     (void)height;
     (void)title;
@@ -33,6 +40,31 @@ Window::~Window() {
         glfwDestroyWindow(window_);
     }
     glfwTerminate();
+}
+
+// ウィンドウリサイズ時の処理
+void Window::framebuffer_size_callback(GLFWwindow* window, int width, int height) {
+    if (auto win = static_cast<Window*>(glfwGetWindowUserPointer(window))) {
+        win->width_= width;
+        win->height_ = height;
+        win->resized_ = true;
+    }
+}
+
+// ウィンドウのリサイズフラグを消費し、リサイズが発生していたかどうかを返します。
+bool Window::consume_resized_flag() {
+    bool was_resized = resized_;
+    resized_ = false;
+    return was_resized;
+}
+
+
+void Window::wait_while_minimized() const {
+    int width = 0, height = 0;
+    while (width == 0 || height == 0) {
+        glfwGetFramebufferSize(window_, &width, &height);
+        glfwWaitEvents();
+    }
 }
 
 // ウィンドウが閉じるべきかどうかを返します。GLFWのウィンドウクローズフラグをチェックします。

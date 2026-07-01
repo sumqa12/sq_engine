@@ -6,10 +6,12 @@
 
 #include <vulkan/vulkan.h>
 
+#include "sq/ecs/registry.hpp"
 #include "sq/graphics/command_buffers.hpp"
 #include "sq/graphics/debug_messenger.hpp"
 #include "sq/graphics/device.hpp"
 #include "sq/graphics/graphics_pipeline.hpp"
+#include "sq/graphics/mesh.hpp"
 #include "sq/graphics/physical_device.hpp"
 #include "sq/graphics/render_pass.hpp"
 #include "sq/graphics/swapchain.hpp"
@@ -32,20 +34,22 @@ public:
     Renderer(const Renderer&) = delete;
     Renderer& operator=(const Renderer&) = delete;
 
-    // ウィンドウのクローズフラグが設定されるまで実行され、各反復ごとに draw_frame() を呼び出します。
-    void run();
+    // ウィンドウのクローズフラグが設定されるまで実行され、各反復ごとに draw_frame(registry) を呼び出します。
+    // 描画対象のエンティティはregistryから都度問い合わせる（Rendererはエンティティを所有しない）。
+    void run(sq::ecs::Registry& registry);
 
     [[nodiscard]] bool should_close() const;
 
-    // 画像を取得し、フレームのコマンドバッファを記録して送信し、
+    // 画像を取得し、registry内のTransformを持つ各エンティティについてコマンドバッファに描画命令を記録して送信し、
     // 表示を行います。VK_ERROR_OUT_OF_DATE_KHR が発生した場合は、スワップチェーンを再作成することで対処します。
-    void draw_frame();
+    void draw_frame(const sq::ecs::Registry& registry);
 
 private:
     void create_surface();
     void create_framebuffers();
     void destroy_framebuffers();
     void recreate_swapchain();
+    void create_triangle_mesh();
 
     static constexpr std::size_t kFramesInFlight = 2;
 
@@ -62,6 +66,7 @@ private:
     std::vector<VkFramebuffer> framebuffers_;
     std::unique_ptr<CommandBuffers> command_buffers_;
     std::unique_ptr<SyncObjects> sync_objects_;
+    std::unique_ptr<VertexBuffer> triangle_mesh_;  // デモ用の共有メッシュ（全エンティティがこれを描画する）
 
     std::size_t current_frame_ = 0;
 };

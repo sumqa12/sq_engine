@@ -81,7 +81,7 @@ public:
     }
 
     template <typename... Components>
-    [[nodiscard]] View<Components...> view() {
+    [[nodiscard]] View<Components...> view() const {
         std::vector<Archetype*> matches;
         for (auto& archetype : archetypes_ | std::views::values) {
             if ((archetype->has_component(std::type_index(typeid(Components))) && ...)) {
