@@ -16,8 +16,7 @@ struct Camera {
     float far_plane = 10.0f;
 
     // view-projection行列を返す。aspectはウィンドウの (幅 / 高さ)。
-    // 実装はcamera.cpp（TODO）。glm::perspectiveの深度範囲を[0,1]にするため
-    // GLM_FORCE_DEPTH_ZERO_TO_ONE が必要（CMakeでプロジェクト全体に定義するのを推奨）。
+    // glm::perspectiveの深度範囲を[0,1]にするため、GLM_FORCE_DEPTH_ZERO_TO_ONE が必要（CMakeでプロジェクト全体に定義するのを推奨）。
     [[nodiscard]] glm::mat4 view_projection(float aspect) const;
 };
 

@@ -66,23 +66,23 @@ std::uint32_t VertexBuffer::find_memory_type(VkPhysicalDevice physical_device,
     VkPhysicalDeviceMemoryProperties mem_properties;
     vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_properties);
 
-    std::uint32_t memory_type_count = -1;
+    std::uint32_t memory_type_index = -1;
     for (std::uint32_t i = 0; i < mem_properties.memoryTypeCount; ++i) {
         if ((type_filter & (1 << i)) &&
             (mem_properties.memoryTypes[i].propertyFlags & properties) == properties) {
-            memory_type_count = i;
+            memory_type_index = i;
             break;
         }
     }
 
-    if (memory_type_count == -1) {
+    if (memory_type_index == -1) {
         throw std::runtime_error("適切なメモリタイプが見つかりませんでした。");
     }
 
     (void)physical_device;
     (void)type_filter;
     (void)properties;
-    return memory_type_count;
+    return memory_type_index;
 }
 
 }  // namespace sq::graphics

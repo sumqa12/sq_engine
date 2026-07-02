@@ -75,8 +75,8 @@ public:
     }
 
     template <typename T>
-    T& get(const Entity entity) {
-        EntityRecord& record = record_of(entity);
+    T& get(const Entity entity) const {
+        EntityRecord record = record_of(entity);
         return record.archetype->storage<T>().get(record.index);
     }
 

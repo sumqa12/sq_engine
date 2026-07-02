@@ -7,9 +7,9 @@
 
 namespace sq::graphics {
 
-GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass,
-                                    VkExtent2D viewport_extent, const std::string& vert_spv_path,
-                                    const std::string& frag_spv_path)
+GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, VkExtent2D viewport_extent,
+                                    const std::string& vert_spv_path, const std::string& frag_spv_path,
+                                    VkDescriptorSetLayout descriptor_set_layout)
     : device_(device) {
 
     // シェーダーモジュールをロードする
@@ -85,7 +85,7 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass,
     rasterization_state_info.rasterizerDiscardEnable = VK_FALSE;
     rasterization_state_info.polygonMode = VK_POLYGON_MODE_FILL;
     rasterization_state_info.lineWidth = 1.0f;
-    rasterization_state_info.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterization_state_info.cullMode = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterization_state_info.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rasterization_state_info.depthBiasEnable = VK_FALSE;
 
@@ -114,8 +114,8 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass,
     pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipeline_layout_info.pushConstantRangeCount = 1;
     pipeline_layout_info.pPushConstantRanges = &push_constant_range;
-    pipeline_layout_info.setLayoutCount = 0;
-    pipeline_layout_info.pSetLayouts = nullptr;
+    pipeline_layout_info.setLayoutCount = 1;
+    pipeline_layout_info.pSetLayouts = &descriptor_set_layout;
     vkCreatePipelineLayout(device_, &pipeline_layout_info, nullptr, &layout_);
 
     // グラフィックスパイプラインを作成する

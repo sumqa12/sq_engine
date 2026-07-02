@@ -4,6 +4,7 @@
 #include <thread>
 #include <GLFW/glfw3.h>
 
+#include "sq/scene/camera.hpp"
 #include "sq/scene/transform.hpp"
 
 namespace sq::graphics {
@@ -35,21 +36,31 @@ Renderer::Renderer(std::uint32_t width, std::uint32_t height, const std::string&
     // 7. レンダーパスの作成
     render_pass_ = std::make_unique<RenderPass>(device_->handle(), swapchain_->image_format());
 
-    // 8. パイプラインの作成
-    pipeline_ = std::make_unique<GraphicsPipeline>(device_->handle(),
-                                        render_pass_->handle(), swapchain_->extent(),
-                                        "shaders/triangle.vert.spv", "shaders/triangle.frag.spv");
+    // 8. ディスクリプタセットレイアウトの作成（カメラUBO用、set=0）
+    create_descriptor_set_layout();
 
-    // 9. フレームバッファの作成
+    // 9. UBOの作成
+    create_uniform_buffers();
+
+    // 10. ディスクリプタプールの作成
+    create_descriptor_pool();
+    create_descriptor_sets();
+
+    // 11. パイプラインの作成
+    pipeline_ = std::make_unique<GraphicsPipeline>(device_->handle(), render_pass_->handle(), swapchain_->extent(),
+                                        "shaders/triangle.vert.spv", "shaders/triangle.frag.spv",
+                                        descriptor_set_layout_);
+
+    // 12. フレームバッファの作成
     create_framebuffers();
 
-    // 10. コマンドバッファの作成
+    // 13. コマンドバッファの作成
     command_buffers_ = std::make_unique<CommandBuffers>(device_->handle(), *queue_family_indices_.graphics_family, framebuffers_.size());
 
-    // 11. 同期オブジェクトの作成
+    // 14. 同期オブジェクトの作成
     sync_objects_ = std::make_unique<SyncObjects>(device_->handle(), kFramesInFlight, framebuffers_.size());
 
-    // 12. デモ用三角形メッシュの作成（ECS連携）
+    // 15. デモ用三角形メッシュの作成（ECS連携）
     create_triangle_mesh();
 
     (void)width;
@@ -63,6 +74,12 @@ Renderer::~Renderer() {
     triangle_mesh_.reset();
     sync_objects_.reset();
     command_buffers_.reset();
+    vkDestroyDescriptorPool(device_->handle(), descriptor_pool_, nullptr);
+    vkDestroyDescriptorSetLayout(device_->handle(), descriptor_set_layout_, nullptr);
+    camera_ubos_.clear();
+    descriptor_sets_.clear();
+    descriptor_pool_ = VK_NULL_HANDLE;
+    descriptor_set_layout_ = VK_NULL_HANDLE;
     pipeline_.reset();
     render_pass_.reset();
     swapchain_.reset();
@@ -117,8 +134,26 @@ void Renderer::draw_frame(const ecs::Registry& registry) {
 
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->handle());
 
-        // メッシュの場イド
+        // メッシュのバインド
         triangle_mesh_->bind(command_buffer);
+
+        // カメラの取得
+        ecs::Entity camera_entity = registry.view<scene::Camera>().front();
+        const scene::Camera& camera = registry.get<scene::Camera>(camera_entity);
+
+        // アスペクト比の計算
+        float aspect_ratio = static_cast<float>(swapchain_->extent().width) / static_cast<float>(swapchain_->extent().height);
+
+        // カメラUBOの更新
+        scene::CameraUBO camera_ubo{};
+        camera_ubo.view_projection = camera.view_projection(aspect_ratio);
+        camera_ubos_[current_frame_]->update(&camera_ubo, sizeof(camera_ubo));
+
+        // ディスクリプタセットのバインド
+        VkDescriptorSet descriptor_set = descriptor_sets_[current_frame_];
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(), 0, 1, &descriptor_set, 0, nullptr);
+
+        // 描画
         registry.view<scene::Transform>().each([&](ecs::Entity, scene::Transform& t) {
             vkCmdPushConstants(command_buffer, pipeline_->layout(),
                 VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &t.model);
@@ -194,6 +229,74 @@ void Renderer::destroy_framebuffers() {
 
     framebuffers_.clear();
 }
+
+// ディスクリプタセットレイアウトの作成
+void Renderer::create_descriptor_set_layout() {
+    VkDescriptorSetLayoutBinding ubo_layout_binding{};
+    ubo_layout_binding.binding = 0;
+    ubo_layout_binding.descriptorCount = 1;
+    ubo_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    ubo_layout_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+    VkDescriptorSetLayoutCreateInfo descriptor_set_layout_info{};
+    descriptor_set_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    descriptor_set_layout_info.bindingCount = 1;
+    descriptor_set_layout_info.pBindings = &ubo_layout_binding;
+
+    vkCreateDescriptorSetLayout(device_->handle(), &descriptor_set_layout_info, nullptr, &descriptor_set_layout_);
+}
+
+// UBOの作成
+void Renderer::create_uniform_buffers() {
+    for (std::size_t i = 0; i < kFramesInFlight; ++i) {
+        camera_ubos_.push_back(std::make_unique<UniformBuffer>(physical_device_, device_->handle(), sizeof(scene::CameraUBO)));
+    }
+}
+
+// ディスクリプタプールの作成
+void Renderer::create_descriptor_pool() {
+    VkDescriptorPoolSize pool_size{};
+    pool_size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    pool_size.descriptorCount = static_cast<uint32_t>(kFramesInFlight);
+
+    VkDescriptorPoolCreateInfo descriptor_pool_info{};
+    descriptor_pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    descriptor_pool_info.maxSets = kFramesInFlight;
+    descriptor_pool_info.poolSizeCount = 1;
+    descriptor_pool_info.pPoolSizes = &pool_size;
+
+    vkCreateDescriptorPool(device_->handle(), &descriptor_pool_info, nullptr, &descriptor_pool_);
+}
+
+void Renderer::create_descriptor_sets() {
+    descriptor_sets_.resize(kFramesInFlight);
+    for (std::size_t i = 0; i < kFramesInFlight; ++i) {
+        VkDescriptorSetAllocateInfo alloc_info{};
+        alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc_info.descriptorPool = descriptor_pool_;
+        alloc_info.descriptorSetCount = 1;
+        alloc_info.pSetLayouts = &descriptor_set_layout_;
+
+        vkAllocateDescriptorSets(device_->handle(), &alloc_info, &descriptor_sets_[i]);
+
+        VkDescriptorBufferInfo buffer_info{};
+        buffer_info.buffer = camera_ubos_[i]->handle();
+        buffer_info.offset = 0;
+        buffer_info.range = sizeof(scene::CameraUBO);
+
+        VkWriteDescriptorSet descriptor_write{};
+        descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptor_write.dstSet = descriptor_sets_[i];
+        descriptor_write.dstBinding = 0;
+        descriptor_write.dstArrayElement = 0;
+        descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptor_write.descriptorCount = 1;
+        descriptor_write.pBufferInfo = &buffer_info;
+
+        vkUpdateDescriptorSets(device_->handle(), 1, &descriptor_write, 0, nullptr);;
+    }
+}
+
 // vec2 positions[3] = vec2[](
 //     vec2(0.0, -0.5),
 //     vec2(0.5, 0.5),
@@ -207,9 +310,9 @@ void Renderer::destroy_framebuffers() {
 // );
 void Renderer::create_triangle_mesh() {
     std::vector<Vertex> vertices = {
-        {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-        {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
-        {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+        {{0.0f, 0.5f}, {1.0f, 0.0f, 0.0f}},
+        {{-0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+        {{0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}}
     };
     triangle_mesh_ = std::make_unique<VertexBuffer>(physical_device_, device_->handle(), vertices);
 }

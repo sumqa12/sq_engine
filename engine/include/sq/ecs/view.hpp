@@ -27,6 +27,16 @@ public:
         }
     }
 
+    // 最初に一致したエンティティを返す
+    [[nodiscard]] ecs::Entity front() const {
+        for (Archetype* archetype : archetypes_) {
+            if (archetype->size() > 0) {
+                return archetype->entities().front();
+            }
+        }
+        return ecs::Entity{};  // 空のエンティティを返す
+    }
+
 private:
     std::vector<Archetype*> archetypes_;
 };
