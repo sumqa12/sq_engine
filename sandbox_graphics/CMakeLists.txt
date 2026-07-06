@@ -1,4 +1,5 @@
-add_executable(sandbox_graphics main.cpp)
+add_executable(sandbox_graphics main.cpp
+        ../engine/include/sq/scene/velocity.hpp)
 target_link_libraries(sandbox_graphics PRIVATE sq_engine_lib)
 
 # シェーダーをSPIR-Vにコンパイルし、実行ファイルと同じディレクトリの shaders/ に出力する。

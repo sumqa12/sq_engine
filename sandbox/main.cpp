@@ -32,7 +32,8 @@ int main() {
             [](const sq::ecs::Entity, Position& pos, const Velocity& vel) {
                 pos.x += vel.dx;
                 pos.y += vel.dy;
-            });
+            }
+        );
 
         spdlog::info("-- frame {} --", frame);
         registry.view<Position>().each([](const sq::ecs::Entity entity, Position& pos) {

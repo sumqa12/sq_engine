@@ -15,6 +15,8 @@ add_library(sq_engine_lib STATIC
     src/graphics/uniform_buffer.cpp
     src/graphics/renderer.cpp
     src/scene/camera.cpp
+        include/sq/scene/position.hpp
+        include/sq/scene/velocity.hpp
 )
 
 target_include_directories(sq_engine_lib PUBLIC include)

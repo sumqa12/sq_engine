@@ -74,13 +74,15 @@ Renderer::~Renderer() {
     triangle_mesh_.reset();
     sync_objects_.reset();
     command_buffers_.reset();
+    pipeline_.reset();
+
     vkDestroyDescriptorPool(device_->handle(), descriptor_pool_, nullptr);
     vkDestroyDescriptorSetLayout(device_->handle(), descriptor_set_layout_, nullptr);
     camera_ubos_.clear();
     descriptor_sets_.clear();
     descriptor_pool_ = VK_NULL_HANDLE;
     descriptor_set_layout_ = VK_NULL_HANDLE;
-    pipeline_.reset();
+
     render_pass_.reset();
     swapchain_.reset();
     vkDestroySurfaceKHR(instance_->handle(), surface_, nullptr);
