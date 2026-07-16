@@ -9,6 +9,9 @@ namespace sq::graphics {
 // GLFWの初期化と終了を管理し、Vulkan用に設定されたウィンドウを作成します。
 Window::Window(std::uint32_t width, std::uint32_t height, const std::string& title) {
 
+    constexpr int kMinWidth = 810;
+    constexpr int kMinHeight = 540;
+
     // glfwの初期化
     if (!glfwInit()) {
         throw std::runtime_error("GLFW の初期化に失敗しました。");
@@ -16,14 +19,18 @@ Window::Window(std::uint32_t width, std::uint32_t height, const std::string& tit
 
     // glfwWindowの初期化
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    window_ = glfwCreateWindow(static_cast<int>(width), static_cast<int>(height), title.c_str(), nullptr, nullptr);
+
+    if (width >= kMinWidth && height >= kMinHeight) {
+        window_ = glfwCreateWindow(static_cast<int>(width), static_cast<int>(height), title.c_str(), nullptr, nullptr);
+    } else {
+        window_ = glfwCreateWindow(kMinWidth, kMinHeight, title.c_str(), nullptr, nullptr);
+    }
+
     if (!window_) {
         glfwTerminate();
         throw std::runtime_error("GLFW ウィンドウの作成に失敗しました。");
     }
 
-    constexpr int kMinWidth = 810;
-    constexpr int kMinHeight = 540;
     glfwSetWindowSizeLimits(window_, kMinWidth, kMinHeight, GLFW_DONT_CARE, GLFW_DONT_CARE);
 
     glfwSetWindowUserPointer(window_, this);
@@ -61,9 +68,10 @@ bool Window::consume_resized_flag() {
 
 void Window::wait_while_minimized() const {
     int width = 0, height = 0;
+    glfwGetFramebufferSize(window_, &width, &height);
     while (width == 0 || height == 0) {
+        glfwWaitEvents();  // 最小化中のみ: イベントが来るまで待つ
         glfwGetFramebufferSize(window_, &width, &height);
-        glfwWaitEvents();
     }
 }
 

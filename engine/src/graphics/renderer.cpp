@@ -12,6 +12,9 @@
 
 namespace sq::graphics {
 
+using namespace std::chrono;
+static int recreate_swapchain_flag = 0;
+constexpr int max_check_frame_count = 5;
 Renderer::Renderer(std::uint32_t width, std::uint32_t height, const std::string& app_name) {
 
     // 1. ウィンドウの作成
@@ -58,7 +61,7 @@ Renderer::Renderer(std::uint32_t width, std::uint32_t height, const std::string&
     create_framebuffers();
 
     // 13. コマンドバッファの作成
-    command_buffers_ = std::make_unique<CommandBuffers>(device_->handle(), *queue_family_indices_.graphics_family, framebuffers_.size());
+    command_buffers_ = std::make_unique<CommandBuffers>(device_->handle(), *queue_family_indices_.graphics_family, kFramesInFlight);
 
     // 14. 同期オブジェクトの作成
     sync_objects_ = std::make_unique<SyncObjects>(device_->handle(), kFramesInFlight, framebuffers_.size());
@@ -120,13 +123,13 @@ void Renderer::draw_frame(const ecs::Registry& registry) {
     }
 
     // 3. コマンドバッファの記録と送信
-    command_buffers_->record(image_index, [this, &registry](VkCommandBuffer command_buffer, std::size_t index) {
+    command_buffers_->record(current_frame_, [this, &image_index, &registry](VkCommandBuffer command_buffer, std::size_t _) {
         VkRenderPassBeginInfo render_pass_begin_info{};
         render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         render_pass_begin_info.renderPass = render_pass_->handle();
-        render_pass_begin_info.framebuffer = framebuffers_[index];
+        render_pass_begin_info.framebuffer = framebuffers_[image_index];
         render_pass_begin_info.renderArea = { {0, 0}, swapchain_->extent() };
-        VkClearValue clear_color = { {0.0f, 0.0f, 0.0f, 1.0f} };
+        VkClearValue clear_color = { {0.2f, 0.2f, 0.2f, 1.0f} };
         render_pass_begin_info.clearValueCount = 1;
         render_pass_begin_info.pClearValues = &clear_color;
 
@@ -195,12 +198,16 @@ void Renderer::draw_frame(const ecs::Registry& registry) {
     submit_info.waitSemaphoreCount = 1;
     submit_info.pWaitSemaphores = &image_available;
     submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = command_buffers_->at(image_index);
+    submit_info.pCommandBuffers = command_buffers_->at(current_frame_);
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores = &render_finished;
     submit_info.pWaitDstStageMask = &wait_stage;
 
-    vkQueueSubmit(device_->graphics_queue(), 1, &submit_info, in_flight_fence);
+    if (VkResult result =
+        vkQueueSubmit(device_->graphics_queue(), 1, &submit_info, in_flight_fence);
+        result != VK_SUCCESS) {
+        printf("Failed to submit draw command buffer!\n");
+    }
 
     // 4. 画像の提示
     VkSwapchainKHR swapchain_handle = swapchain_->handle();
@@ -212,10 +219,9 @@ void Renderer::draw_frame(const ecs::Registry& registry) {
     present_info.swapchainCount = 1;
     present_info.pSwapchains = &swapchain_handle;
 
-    if (VkResult result =
-        vkQueuePresentKHR(device_->graphics_queue(), &present_info);
-        result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
-        window_->consume_resized_flag()) {
+    const bool resized = window_->consume_resized_flag();  // 短絡評価に関係なく毎フレーム消費
+    if (VkResult result = vkQueuePresentKHR(device_->graphics_queue(), &present_info);
+        result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || resized) {
         recreate_swapchain();
     }
 
@@ -341,6 +347,7 @@ void Renderer::create_triangle_mesh() {
 }
 
 void Renderer::recreate_swapchain() {
+    recreate_swapchain_flag = max_check_frame_count;
     window_->wait_while_minimized();
     vkDeviceWaitIdle(device_->handle());
     destroy_framebuffers();
@@ -350,5 +357,4 @@ void Renderer::recreate_swapchain() {
     // 同期オブジェクトの再作成
     sync_objects_ = std::make_unique<SyncObjects>(device_->handle(), kFramesInFlight, framebuffers_.size());
 }
-
 }  // namespace sq::graphics

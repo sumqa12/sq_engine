@@ -2,6 +2,8 @@
 
 #include <vector>
 
+#include "sq/graphics/vulkan_instance.hpp"
+
 namespace sq::graphics {
 
 Device::Device(VkPhysicalDevice physical_device, const QueueFamilyIndices& indices,
@@ -32,12 +34,10 @@ Device::Device(VkPhysicalDevice physical_device, const QueueFamilyIndices& indic
     device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     device_create_info.queueCreateInfoCount = queue_create_infos.size();
     device_create_info.pQueueCreateInfos = queue_create_infos.data();
-#if defined(NDEBUG)
-    device_create_info.ppEnabledExtensionNames = kValidationLayerName;
-#else
+
     auto requires_extension_names = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     device_create_info.ppEnabledExtensionNames = &requires_extension_names;
-#endif
+
     device_create_info.enabledExtensionCount = 1;
     device_create_info.pNext = nullptr;
     device_create_info.ppEnabledLayerNames = nullptr;

@@ -17,8 +17,18 @@ Swapchain::~Swapchain() {
 }
 
 void Swapchain::recreate(std::uint32_t width, std::uint32_t height) {
-    destroy();
-    create(width, height);
+    vkDeviceWaitIdle(device_);
+
+    // 旧image viewだけ破棄（swapchain本体はまだ破棄しない）
+    for (const auto& view : image_views_) {
+        vkDestroyImageView(device_, view, nullptr);
+    }
+    image_views_.clear();
+    images_.clear();
+
+    VkSwapchainKHR old_swapchain = swapchain_;
+    create(width, height);   // create()内の oldSwapchain = swapchain_ が今度は本物の旧ハンドルを指す
+    vkDestroySwapchainKHR(device_, old_swapchain, nullptr);  // 新規作成後にretired状態の旧を破棄
 }
 
 VkSwapchainKHR Swapchain::handle() const {
@@ -80,6 +90,18 @@ void Swapchain::create(std::uint32_t width, std::uint32_t height) {
             present_mode = presentMode;
             break;
         }
+        if (presentMode == VK_PRESENT_MODE_IMMEDIATE_KHR) {
+            // 第二希望: IMMEDIATE (垂直同期オフ、MAILBOXがない場合の低遅延用)
+            present_mode = presentMode;
+        }
+    }
+
+    if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+        printf("Using VK_PRESENT_MODE_MAILBOX_KHR\n");
+    } else if (present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR) {
+        printf("Using VK_PRESENT_MODE_IMMEDIATE_KHR (Fallback)\n");
+    } else {
+        printf("Using VK_PRESENT_MODE_FIFO_KHR (Mandatory Default)\n");
     }
 
     // (幅、高さ) を VkSurfaceCapabilitiesKHR の最小/最大範囲 -> extent_ にクリップする
@@ -91,7 +113,7 @@ void Swapchain::create(std::uint32_t width, std::uint32_t height) {
     }
 
     // 画像数の決定
-    uint32_t image_count = std::max(caps.minImageCount, 2u);
+    uint32_t image_count = caps.minImageCount + 1;
     if (caps.maxImageCount > 0 && image_count > caps.maxImageCount) {
         image_count = caps.maxImageCount;
     }

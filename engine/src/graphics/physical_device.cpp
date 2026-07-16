@@ -2,6 +2,7 @@
 
 #include <stdexcept>
 #include <vector>
+#include <spdlog/spdlog.h>
 
 namespace sq::graphics {
 
@@ -17,8 +18,12 @@ VkPhysicalDevice PhysicalDeviceSelector::select(VkInstance instance, VkSurfaceKH
     vkEnumeratePhysicalDevices(instance, &device_count, devices.data());
 
     for (const auto& device : devices) {
+        VkPhysicalDeviceProperties device_properties;
+        vkGetPhysicalDeviceProperties(device, &device_properties);
+        printf("Cheking device: %s\n", device_properties.deviceName);
         if (is_suitable(device, surface)) {
-            return device;
+            printf("Selected device: %s\n", device_properties.deviceName);
+            return device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? device : devices[0];
         }
     }
 
@@ -54,9 +59,25 @@ bool PhysicalDeviceSelector::is_suitable(VkPhysicalDevice device, VkSurfaceKHR s
         return false;
     }
 
+    uint32_t extension_count = 0;
+    vkEnumerateDeviceExtensionProperties(device, nullptr, &extension_count, nullptr);
+
+    std::vector<VkExtensionProperties> ex(extension_count);
+    vkEnumerateDeviceExtensionProperties(device, nullptr, &extension_count, ex.data());
+
+    bool swap_chain_flag = false;
+    for (uint32_t i = 0; i < extension_count; i++) {
+        if (strcmp(ex[i].extensionName, "VK_KHR_portability_subset") == 0) {
+            return false;
+        }
+        if (strcmp(ex[i].extensionName, "VK_KHR_swapchain") == 0) {
+            swap_chain_flag = true;
+        }
+    }
+
     (void)device;
     (void)surface;
-    return true;
+    return swap_chain_flag;
 }
 
 }  // namespace sq::graphics
