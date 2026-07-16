@@ -1,6 +1,8 @@
 #pragma once
 
 #include <glm/glm.hpp>
+#include <glm/ext/matrix_clip_space.hpp>
+#include <glm/ext/matrix_transform.hpp>
 
 namespace sq::scene {
 
@@ -18,6 +20,16 @@ struct Camera {
     // view-projection行列を返す。aspectはウィンドウの (幅 / 高さ)。
     // glm::perspectiveの深度範囲を[0,1]にするため、GLM_FORCE_DEPTH_ZERO_TO_ONE が必要（CMakeでプロジェクト全体に定義するのを推奨）。
     [[nodiscard]] glm::mat4 view_projection(float aspect) const;
+
+    static glm::mat4 default_view_projection(float aspect_ratio) {
+        glm::mat4 view = glm::lookAt(
+            glm::vec3(0.0f, 1.5f, 3.0f),  // カメラの位置
+            glm::vec3(0.0f, 0.0f, 0.0f),  // 注視点
+            glm::vec3(0.0f, 1.0f, 0.0f)   // 上方向
+        );
+        glm::mat4 projection = glm::perspective(glm::radians(45.0f), aspect_ratio, 0.1f, 10.0f);
+        return projection * view;
+    }
 };
 
 // Uniform Bufferへ転送するカメラデータのGPU側レイアウト。

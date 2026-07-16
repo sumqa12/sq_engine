@@ -5,27 +5,29 @@
 namespace sq::graphics {
 
 SyncObjects::SyncObjects(VkDevice device, std::size_t frames_in_flight, std::size_t swapchain_image_count) : device_(device) {
-    for (std::size_t i = 0; i < frames_in_flight; ++i) {
-        VkSemaphoreCreateInfo semaphore_info{};
-        semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    // TODO: 現状はrender_finishedもframes_in_flight個しか作られておらず、
+    //  Renderer側がimage_index（スワップチェーン画像枚数=3までの範囲）でアクセスするため
+    //  範囲外アクセス（未定義動作）になる。以下の2ループ構成に分割すること:
+    //   ループ1: frames_in_flight 回 → image_available セマフォ + in_flight フェンスを作成
+    //   ループ2: swapchain_image_count 回 → render_finished セマフォを作成
+    //  （vkCreateSemaphore / vkCreateFence の呼び出し自体は既存コードの再配置でよい。
+    //    フェンスの VK_FENCE_CREATE_SIGNALED_BIT は初回vkWaitForFencesのデッドロック防止に必須）
 
+    VkSemaphoreCreateInfo semaphore_info{};
+    semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    for (std::size_t i = 0; i < frames_in_flight; ++i) {
         VkSemaphore image_available_semaphore;
         if (vkCreateSemaphore(device_, &semaphore_info, nullptr, &image_available_semaphore) != VK_SUCCESS) {
             throw std::runtime_error("「image available」セマフォの作成に失敗しました。");
         }
-
-        VkSemaphore render_finished_semaphore;
-        if (vkCreateSemaphore(device_, &semaphore_info, nullptr, &render_finished_semaphore) != VK_SUCCESS) {
-            throw std::runtime_error("「render finished」セマフォの作成に失敗しました。");
-        }
+        
+        image_available_semaphores_.push_back(image_available_semaphore);
 
         VkFenceCreateInfo fence_info{};
         fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
         fence_info.pNext = nullptr;
-
-        image_available_semaphores_.push_back(image_available_semaphore);
-        render_finished_semaphores_.push_back(render_finished_semaphore);
 
         in_flight_fences_.push_back({});
         if (vkCreateFence(device_, &fence_info, nullptr, &in_flight_fences_.back()) != VK_SUCCESS) {
@@ -33,8 +35,14 @@ SyncObjects::SyncObjects(VkDevice device, std::size_t frames_in_flight, std::siz
         }
     }
 
-    (void)frames_in_flight;
-    (void)swapchain_image_count;
+    for (std::size_t i = 0; i < swapchain_image_count; ++i) {
+        VkSemaphore render_finished_semaphore;
+        if (vkCreateSemaphore(device_, &semaphore_info, nullptr, &render_finished_semaphore) != VK_SUCCESS) {
+            throw std::runtime_error("「render finished」セマフォの作成に失敗しました。");
+        }
+
+        render_finished_semaphores_.push_back(render_finished_semaphore);
+    }
 }
 
 SyncObjects::~SyncObjects() {
@@ -58,9 +66,9 @@ VkSemaphore SyncObjects::image_available(std::size_t frame_index) const {
                                                  : image_available_semaphores_[frame_index];
 }
 
-VkSemaphore SyncObjects::render_finished(std::size_t frame_index) const {
+VkSemaphore SyncObjects::render_finished(std::size_t image_index) const {
     return render_finished_semaphores_.empty() ? VK_NULL_HANDLE
-                                                 : render_finished_semaphores_[frame_index];
+                                                 : render_finished_semaphores_[image_index];
 }
 
 VkFence SyncObjects::in_flight_fence(std::size_t frame_index) const {

@@ -9,14 +9,14 @@ add_library(sq_engine_lib STATIC
     src/graphics/swapchain.cpp
     src/graphics/render_pass.cpp
     src/graphics/graphics_pipeline.cpp
+    src/graphics/buffer.cpp
     src/graphics/mesh.cpp
     src/graphics/command_buffers.cpp
     src/graphics/sync_objects.cpp
     src/graphics/uniform_buffer.cpp
     src/graphics/renderer.cpp
     src/scene/camera.cpp
-        include/sq/scene/position.hpp
-        include/sq/scene/velocity.hpp
+    src/graphics/buffer.cpp
 )
 
 target_include_directories(sq_engine_lib PUBLIC include)

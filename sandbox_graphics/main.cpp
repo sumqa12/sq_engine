@@ -41,27 +41,42 @@ void loop(const sq::ecs::Registry &registry) {
 
         // 更新制限
         if (delta_u >= 1.0) {
+            double delta_u_time = duration_cast<duration<double>>(now - prev_u).count() * 1000;
+
+            const float du = static_cast<float>(delta_t) / 1000.0f;
             // ECSの更新処理をここに追加することができます
 
-            // カメラが注視点(target)を中心に、地面(XZ平面)と平行な円軌道を回る例。
-            // 高さ(Y)は保ったまま、経過時間に応じた角度でXZ平面上の円周に位置を置く。
-            constexpr float kOrbitRadius = 3.0f;   // 旋回半径
-            constexpr float kAngularSpeed = 0.5f;  // 角速度 [rad/秒]
-            const auto elapsed_sec = static_cast<float>(duration_cast<duration<double>>(now - start).count());
-            const float angle = kAngularSpeed * elapsed_sec;
-
+            // オブジェクトがカメラを中心に、地面(XZ平面)と平行な円軌道を回る例。
             const sq::ecs::Entity camera_entity = registry.view<Camera>().front();
-            auto& cam = registry.get<Camera>(camera_entity);
-            const float height = cam.position.y - cam.target.y;  // 地面からの高さを維持
-            cam.position = cam.target + glm::vec3(
-                kOrbitRadius * std::sin(angle),
-                height,
-                kOrbitRadius * std::cos(angle)
-            );
 
-            registry.view<Transform, Position, Velocity>().each(
-                [](const sq::ecs::Entity, Transform& transform, Position& pos, Velocity& vel) {
-                    transform.model = glm::translate(glm::mat4(1.0f), glm::vec3(pos.x, pos.y, 0.0f));
+            glm::vec3 target;
+
+            if (camera_entity.is_null()) {
+                target = glm::vec3(0.0f, 1.5f, 3.0f);
+            } else {
+                const Camera& cam = registry.get<Camera>(camera_entity);
+                target = cam.position;
+            }
+
+            constexpr float radius = 3.0f;
+
+            registry.view<Position, Velocity>().each(
+                [target, du](const sq::ecs::Entity &e, Position& pos, Velocity& vel) {
+                    // カメラの周りを回転するように、位置を更新する
+                    const float dx = pos.x - target.x;
+                    const float dz = pos.z - target.z;
+
+                    // 正規化
+                    const float dist = glm::min(sqrt(dx * dx + dz * dz), radius);
+                    const float nx = dx / dist;
+                    const float nz = dz / dist;
+
+                    // 接線方向 = 半径方向を90度回転
+                    vel.vx = -nz * radius * du;
+                    vel.vz = nx * radius * du;
+
+                    // 位置の更新
+                    pos += vel * 1.2f;
                 }
             );
 
@@ -71,6 +86,7 @@ void loop(const sq::ecs::Registry &registry) {
 
         // フレーム制限
         if (delta_f >= 1.0) {
+            double delta_f_time = duration_cast<duration<double>>(now - prev_f).count() * 1000;
             renderer.draw_frame(registry);
 
             delta_f--;
@@ -84,11 +100,17 @@ void loop(const sq::ecs::Registry &registry) {
 int main() {
     sq::ecs::Registry registry;
 
-    constexpr int kEntityCount = 5;
+    constexpr int kEntityCount = 100;
+    float angle = 0.0f;
     for (int i = 0; i < kEntityCount; ++i) {
+        float radius = 3.0f;
+        angle += 360.0 / kEntityCount;
+        float x = radius * sin(angle);
+        float z = radius * cos(angle);
+
         const sq::ecs::Entity e = registry.create();
-        registry.add<Position>(e, {static_cast<float>(i) * 0.1f, 0.0f});
-        registry.add<Velocity>(e, {0.01f, 0.0f});
+        registry.add<Position>(e, {x, 0.0f, z});
+        registry.add<Velocity>(e, {0.0f, 0.0f, 0.0f});
         registry.add<Transform>(e,
             Transform{
                 glm::translate(glm::mat4(1.0f),
@@ -100,8 +122,9 @@ int main() {
     {
         const sq::ecs::Entity camera_entity = registry.create();
         // 少し高い位置から原点を見下ろすカメラ。高さ(y)は旋回中も維持される。
-        registry.add<sq::scene::Camera>(camera_entity, sq::scene::Camera{
+        registry.add<Camera>(camera_entity, Camera{
             .position = {0.0f, 1.5f, 3.0f},
+            .target = glm::vec3(0.0f, 0.0f, 6.0f),
         });
     }
 

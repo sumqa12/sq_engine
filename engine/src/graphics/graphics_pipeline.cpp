@@ -61,22 +61,16 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
     input_assembly.primitiveRestartEnable = VK_FALSE;
 
     // ビューポート／シザー状態の作成情報を設定する
-    VkViewport viewport = {};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = static_cast<float>(viewport_extent.width);
-    viewport.height = static_cast<float>(viewport_extent.height);
-
-    VkRect2D scissor = {};
-    scissor.offset = {0, 0};
-    scissor.extent = viewport_extent;
+    VkDynamicState dynamic_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynamic_state_info = {};
+    dynamic_state_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic_state_info.dynamicStateCount = 2;
+    dynamic_state_info.pDynamicStates = dynamic_states;
 
     VkPipelineViewportStateCreateInfo viewport_state_info = {};
     viewport_state_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
     viewport_state_info.viewportCount = 1;
-    viewport_state_info.pViewports = &viewport;
     viewport_state_info.scissorCount = 1;
-    viewport_state_info.pScissors = &scissor;
 
     // ラスタライズ、マルチサンプリング、カラーブレンド状態の作成情報を設定する。
     VkPipelineRasterizationStateCreateInfo rasterization_state_info = {};
@@ -85,7 +79,7 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
     rasterization_state_info.rasterizerDiscardEnable = VK_FALSE;
     rasterization_state_info.polygonMode = VK_POLYGON_MODE_FILL;
     rasterization_state_info.lineWidth = 1.0f;
-    rasterization_state_info.cullMode = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterization_state_info.cullMode = VK_CULL_MODE_BACK_BIT;
     rasterization_state_info.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rasterization_state_info.depthBiasEnable = VK_FALSE;
 
@@ -127,6 +121,7 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
     pipeline_info.pRasterizationState = &rasterization_state_info;
     pipeline_info.pMultisampleState = &multisample_state_info;
     pipeline_info.pColorBlendState = &color_blend_state_info;
+    pipeline_info.pDynamicState = &dynamic_state_info;
     pipeline_info.layout = layout_;
     pipeline_info.stageCount = 2;
     pipeline_info.pStages = shader_stages;

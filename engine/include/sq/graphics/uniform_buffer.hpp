@@ -1,41 +1,30 @@
 #pragma once
 
 #include <cstddef>
-#include <cstdint>
 
 #include <vulkan/vulkan.h>
+
+#include "sq/graphics/buffer.hpp"
 
 namespace sq::graphics {
 
 // 毎フレームCPUから書き換えるUniform BufferのRAIIラッパー。
-// VkBuffer + VkDeviceMemoryを保持し、HOST_VISIBLE|HOST_COHERENTメモリを
-// コンストラクタで一度だけvkMapMemoryして永続的にマップしておく（毎フレームの
-// map/unmapを避け、update()でmemcpyするだけにする）。VertexBufferと同じ設計。
-class UniformBuffer {
+// バッファ生成・解放は基底クラスBufferが担い、本クラスは
+// 「コンストラクタで一度だけmap()して永続的にマップしておく」責務のみ持つ
+// （毎フレームのmap/unmapを避け、update()でmemcpyするだけにする）。
+// （コピー禁止・handle()/size()は基底クラスから継承）
+class UniformBuffer : public Buffer {
 public:
     UniformBuffer(VkPhysicalDevice physical_device, VkDevice device, VkDeviceSize size);
+    // 永続マップのunmap()のみ行う。バッファ/メモリの解放はその後に走る基底デストラクタが行う
+    // （C++の破棄順序: 派生デストラクタ → 基底デストラクタ）。
     ~UniformBuffer();
-
-    UniformBuffer(const UniformBuffer&) = delete;
-    UniformBuffer& operator=(const UniformBuffer&) = delete;
 
     // マップ済みメモリへdataをsizeバイトmemcpyする（HOST_COHERENTなのでflush不要）。
     void update(const void* data, std::size_t size);
 
-    [[nodiscard]] VkBuffer handle() const;
-    [[nodiscard]] VkDeviceSize size() const;
-
 private:
-    // VertexBuffer::find_memory_typeと同一ロジック（共通化は将来課題）。
-    [[nodiscard]] static std::uint32_t find_memory_type(VkPhysicalDevice physical_device,
-                                                          std::uint32_t type_filter,
-                                                          VkMemoryPropertyFlags properties);
-
-    VkDevice device_ = VK_NULL_HANDLE;
-    VkBuffer buffer_ = VK_NULL_HANDLE;
-    VkDeviceMemory memory_ = VK_NULL_HANDLE;
-    VkDeviceSize size_ = 0;
-    void* mapped_ = nullptr;  // コンストラクタでvkMapMemoryした永続マップ先
+    void* mapped_ = nullptr;  // コンストラクタでmap()した永続マップ先
 };
 
 }  // namespace sq::graphics

@@ -2,9 +2,12 @@
 
 #include <stdexcept>
 #include <thread>
+#include <fmt/format.h>
 #include <GLFW/glfw3.h>
+#include <glm/ext/matrix_transform.hpp>
 
 #include "sq/scene/camera.hpp"
+#include "sq/scene/position.hpp"
 #include "sq/scene/transform.hpp"
 
 namespace sq::graphics {
@@ -62,10 +65,6 @@ Renderer::Renderer(std::uint32_t width, std::uint32_t height, const std::string&
 
     // 15. デモ用三角形メッシュの作成（ECS連携）
     create_triangle_mesh();
-
-    (void)width;
-    (void)height;
-    (void)app_name;
 }
 
 Renderer::~Renderer() {
@@ -134,21 +133,39 @@ void Renderer::draw_frame(const ecs::Registry& registry) {
         // レンダーパスの開始
         vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
 
+        VkViewport viewport{};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width  = static_cast<float>(swapchain_->extent().width);
+        viewport.height = static_cast<float>(swapchain_->extent().height);
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+        VkRect2D scissor{ {0, 0}, swapchain_->extent() };
+        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->handle());
 
         // メッシュのバインド
         triangle_mesh_->bind(command_buffer);
 
-        // カメラの取得
-        ecs::Entity camera_entity = registry.view<scene::Camera>().front();
-        const scene::Camera& camera = registry.get<scene::Camera>(camera_entity);
-
         // アスペクト比の計算
         float aspect_ratio = static_cast<float>(swapchain_->extent().width) / static_cast<float>(swapchain_->extent().height);
 
+        // カメラの取得
+        ecs::Entity camera_entity = registry.view<scene::Camera>().front();
+
+        // カメラ不在時のフォールバック
+        glm::mat4 view_projection = scene::Camera::default_view_projection(aspect_ratio);
+        if (!camera_entity.is_null()) {
+            const scene::Camera& camera = registry.get<scene::Camera>(camera_entity);
+            view_projection = camera.view_projection(aspect_ratio);
+        }
+
         // カメラUBOの更新
         scene::CameraUBO camera_ubo{};
-        camera_ubo.view_projection = camera.view_projection(aspect_ratio);
+        camera_ubo.view_projection = view_projection;
         camera_ubos_[current_frame_]->update(&camera_ubo, sizeof(camera_ubo));
 
         // ディスクリプタセットのバインド
@@ -156,7 +173,11 @@ void Renderer::draw_frame(const ecs::Registry& registry) {
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(), 0, 1, &descriptor_set, 0, nullptr);
 
         // 描画
-        registry.view<scene::Transform>().each([&](ecs::Entity, scene::Transform& t) {
+        registry.view<scene::Transform, scene::Position>().each([&](ecs::Entity, scene::Transform& t, scene::Position &pos) {
+
+            // モデル行列を更新
+            t.model = glm::translate(glm::mat4(1.0f), glm::vec3(pos.x, pos.y, pos.z));
+
             vkCmdPushConstants(command_buffer, pipeline_->layout(),
                 VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &t.model);
             vkCmdDraw(command_buffer, triangle_mesh_->vertex_count(), 1, 0, 0);
@@ -295,7 +316,7 @@ void Renderer::create_descriptor_sets() {
         descriptor_write.descriptorCount = 1;
         descriptor_write.pBufferInfo = &buffer_info;
 
-        vkUpdateDescriptorSets(device_->handle(), 1, &descriptor_write, 0, nullptr);;
+        vkUpdateDescriptorSets(device_->handle(), 1, &descriptor_write, 0, nullptr);
     }
 }
 

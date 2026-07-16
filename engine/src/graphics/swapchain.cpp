@@ -44,6 +44,10 @@ void Swapchain::create(std::uint32_t width, std::uint32_t height) {
     std::vector<VkSurfaceFormatKHR> formats(count);
     vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device_, surface_, &count, formats.data());
 
+    if (formats.empty()) {
+        throw std::runtime_error("サーフェス形式が見つかりませんでした。");
+    }
+
     VkSurfaceFormatKHR surface_format = formats[0];
     image_format_ = surface_format.format;
     for (const auto &surfaceFormat : formats)
@@ -84,8 +88,6 @@ void Swapchain::create(std::uint32_t width, std::uint32_t height) {
     if (extent_ = caps.currentExtent; extent_.width == UINT32_MAX) {
         extent_.width = width;
         extent_.height = height;
-    } else {
-        extent_ = caps.currentExtent;
     }
 
     // 画像数の決定
@@ -142,6 +144,9 @@ void Swapchain::create(std::uint32_t width, std::uint32_t height) {
         }
         image_views_.push_back(imageView);
     }
+
+    printf("Swapchain created: %u images, format: %d, extent: (%u, %u)\n",
+           static_cast<unsigned int>(images_.size()), image_format_, extent_.width, extent_.height);
 
     (void)width;
     (void)height;

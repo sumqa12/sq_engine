@@ -5,6 +5,8 @@
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
 
+#include "sq/graphics/buffer.hpp"
+
 namespace sq::graphics {
 
 // 1頂点が持つデータ。位置（2D）と色のみを持つ最小構成。
@@ -14,14 +16,13 @@ struct Vertex {
 };
 
 // 頂点データをGPUメモリに保持するRAIIラッパー。
-// コンストラクタでVkBuffer/VkDeviceMemoryを確保し、デストラクタで解放する。
-class VertexBuffer {
+// バッファ生成・解放は基底クラスBufferが担い、本クラスは
+// 「構築時に頂点データを一度書き込む」「描画時にバインドする」責務のみ持つ。
+// （コピー禁止・handle()/size()は基底クラスから継承）
+class VertexBuffer : public Buffer {
 public:
     VertexBuffer(VkPhysicalDevice physical_device, VkDevice device, const std::vector<Vertex>& vertices);
-    ~VertexBuffer();
-
-    VertexBuffer(const VertexBuffer&) = delete;
-    VertexBuffer& operator=(const VertexBuffer&) = delete;
+    // デストラクタは基底クラスに任せる（追加で解放するリソースは無い）
 
     // このバッファをコマンドバッファにバインドする（vkCmdBindVertexBuffers）。
     void bind(VkCommandBuffer command_buffer) const;
@@ -29,14 +30,6 @@ public:
     [[nodiscard]] std::uint32_t vertex_count() const;
 
 private:
-    // `type_filter`に合致し、かつ`properties`を満たすメモリタイプのインデックスを探す。
-    [[nodiscard]] static std::uint32_t find_memory_type(VkPhysicalDevice physical_device,
-                                                          std::uint32_t type_filter,
-                                                          VkMemoryPropertyFlags properties);
-
-    VkDevice device_ = VK_NULL_HANDLE;
-    VkBuffer buffer_ = VK_NULL_HANDLE;
-    VkDeviceMemory memory_ = VK_NULL_HANDLE;
     std::uint32_t vertex_count_ = 0;
 };
 
