@@ -29,6 +29,8 @@ void loop(const sq::ecs::Registry &registry) {
 
     steady_clock::time_point prev_f = steady_clock::now();
     steady_clock::time_point prev_u = steady_clock::now();
+    constexpr float du = 1.0f / TARGET_UPS;
+
     while (!renderer.should_close()) {
         sq::graphics::Window::poll_events();
 
@@ -39,11 +41,17 @@ void loop(const sq::ecs::Registry &registry) {
         delta_u += delta_t / time_u;
         delta_f += delta_t / time_f;
 
+        // モーダルブロック（ウィンドウのドラッグ・最小化等）からの復帰時に
+        // 借金が爆発してバーストするのを防ぐ。長い停止は「なかったこと」にして穏やかに再開する。
+        constexpr double kMaxPendingUpdates = 3.0;
+        constexpr double kMaxPendingFrames  = 1.0;
+        delta_u = std::min(delta_u, kMaxPendingUpdates);
+        delta_f = std::min(delta_f, kMaxPendingFrames);
+
         // 更新制限
         if (delta_u >= 1.0) {
             double delta_u_time = duration_cast<duration<double>>(now - prev_u).count() * 1000;
 
-            const float du = static_cast<float>(delta_t) / 1000.0f;
             // ECSの更新処理をここに追加することができます
 
             // オブジェクトがカメラを中心に、地面(XZ平面)と平行な円軌道を回る例。
@@ -61,7 +69,7 @@ void loop(const sq::ecs::Registry &registry) {
             constexpr float radius = 3.0f;
 
             registry.view<Position, Velocity>().each(
-                [target, du](const sq::ecs::Entity &e, Position& pos, Velocity& vel) {
+                [target](const sq::ecs::Entity &e, Position& pos, Velocity& vel) {
                     // カメラの周りを回転するように、位置を更新する
                     const float dx = pos.x - target.x;
                     const float dz = pos.z - target.z;
@@ -100,7 +108,7 @@ void loop(const sq::ecs::Registry &registry) {
 int main() {
     sq::ecs::Registry registry;
 
-    constexpr int kEntityCount = 100;
+    constexpr int kEntityCount = 10;
     float angle = 0.0f;
     for (int i = 0; i < kEntityCount; ++i) {
         float radius = 3.0f;

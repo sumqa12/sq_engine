@@ -7,7 +7,7 @@ const char* VulkanInstance::kValidationLayerName = "VK_LAYER_KHRONOS_validation"
 VulkanInstance::VulkanInstance(const std::string& app_name,
                                 const char** required_extensions) {
     // ビルドがDebugの場合、バリデーションレイヤーのサポートを確認する。
-#if !defined(NDEBUG)
+#ifdef DEBUG
     validation_enabled_ = supports_validation_layer();
 #else
     validation_enabled_ = false;
@@ -25,8 +25,11 @@ VulkanInstance::VulkanInstance(const std::string& app_name,
     // validationがenabledの場合、required_extensionsにVK_EXT_debug_utilsを追加する。
     std::vector extensions(required_extensions, required_extensions + 2);
     if (validation_enabled_) {
+        printf("Validation layer is enabled: %s\n", kValidationLayerName);
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         required_extensions = extensions.data();
+    } else {
+        printf("Validation layer is disabled.\n");
     }
 
     // VkInstanceCreateInfo を設定する。
