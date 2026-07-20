@@ -166,6 +166,8 @@ namespace sq::graphics {
                 create_info.pNext = &fse_info;
                 created_with_fse_ = true;
             }
+        } else {
+            printf("fullscreen_exclusive_: %d\n", fullscreen_exclusive_);
         }
 #endif
 
@@ -234,6 +236,7 @@ namespace sq::graphics {
 
     VkResult Swapchain::release_full_screen_exclusive() {
         exclusive_acquired_ = false;
+        created_with_fse_ = false;
 
         release_full_screen_exclusive_fn_ =
             reinterpret_cast<PFN_vkReleaseFullScreenExclusiveModeEXT>(

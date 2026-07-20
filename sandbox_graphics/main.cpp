@@ -125,7 +125,7 @@ void loop(const sq::ecs::Registry &registry) {
 int main() {
     sq::ecs::Registry registry;
 
-    constexpr int kEntityCount = 10;
+    constexpr int kEntityCount = 100;
     float angle = 0.0f;
     for (int i = 0; i < kEntityCount; ++i) {
         float radius = 3.0f;

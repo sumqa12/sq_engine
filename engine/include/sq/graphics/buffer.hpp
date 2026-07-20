@@ -24,6 +24,12 @@ public:
     Buffer(const Buffer&) = delete;
     Buffer& operator=(const Buffer&) = delete;
 
+    // `type_filter`に合致し、かつ`properties`を満たすメモリタイプのインデックスを探す。
+    // （旧 VertexBuffer::find_memory_type / UniformBuffer::find_memory_type の統合先）
+    [[nodiscard]] static std::uint32_t find_memory_type(VkPhysicalDevice physical_device,
+                                                          std::uint32_t type_filter,
+                                                          VkMemoryPropertyFlags properties);
+
     [[nodiscard]] VkBuffer handle() const;
     [[nodiscard]] VkDeviceSize size() const;
 
@@ -31,12 +37,6 @@ protected:
     // バッファ全域 [0, size_) を vkMapMemory してポインタを返す（失敗時は例外）。
     [[nodiscard]] void* map();
     void unmap();
-
-    // `type_filter`に合致し、かつ`properties`を満たすメモリタイプのインデックスを探す。
-    // （旧 VertexBuffer::find_memory_type / UniformBuffer::find_memory_type の統合先）
-    [[nodiscard]] static std::uint32_t find_memory_type(VkPhysicalDevice physical_device,
-                                                          std::uint32_t type_filter,
-                                                          VkMemoryPropertyFlags properties);
 
     VkDevice device_ = VK_NULL_HANDLE;
     VkBuffer buffer_ = VK_NULL_HANDLE;

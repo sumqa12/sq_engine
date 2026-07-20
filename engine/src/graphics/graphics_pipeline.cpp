@@ -98,6 +98,15 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
     color_blend_state_info.attachmentCount = 1;
     color_blend_state_info.pAttachments = &color_blend_attachment;
 
+    // 深度ステンシルステート
+    VkPipelineDepthStencilStateCreateInfo depth_stencil_state_info = {};
+    depth_stencil_state_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depth_stencil_state_info.depthTestEnable = VK_TRUE;
+    depth_stencil_state_info.depthWriteEnable = VK_TRUE;
+    depth_stencil_state_info.depthCompareOp = VK_COMPARE_OP_LESS;  // 小さい深度=手前が勝つ
+    depth_stencil_state_info.depthBoundsTestEnable = VK_FALSE;
+    depth_stencil_state_info.stencilTestEnable = VK_FALSE;
+
     // パイプラインレイアウトを作成する
     VkPushConstantRange push_constant_range = {};
     push_constant_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
@@ -121,6 +130,7 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
     pipeline_info.pRasterizationState = &rasterization_state_info;
     pipeline_info.pMultisampleState = &multisample_state_info;
     pipeline_info.pColorBlendState = &color_blend_state_info;
+    pipeline_info.pDepthStencilState = &depth_stencil_state_info;
     pipeline_info.pDynamicState = &dynamic_state_info;
     pipeline_info.layout = layout_;
     pipeline_info.stageCount = 2;

@@ -1,5 +1,6 @@
 #include "sq/graphics/renderer.hpp"
 
+#include <array>
 #include <stdexcept>
 #include <thread>
 #include <fmt/format.h>
@@ -36,8 +37,12 @@ namespace sq::graphics {
                                                 physical_device_, device_->handle(), surface_,
                                                 width, height);
 
+        depth_format_ = PhysicalDeviceSelector::find_depth_format(physical_device_);
+
+        depth_image_ = std::make_unique<DepthImage>(physical_device_, device_->handle(), swapchain_->extent(), depth_format_);
+
         // 7. レンダーパスの作成
-        render_pass_ = std::make_unique<RenderPass>(device_->handle(), swapchain_->image_format());
+        render_pass_ = std::make_unique<RenderPass>(device_->handle(), swapchain_->image_format(), depth_format_);
 
         // 8. ディスクリプタセットレイアウトの作成（カメラUBO用、set=0）
         create_descriptor_set_layout();
@@ -85,6 +90,7 @@ namespace sq::graphics {
         render_pass_.reset();
         swapchain_.reset();
         vkDestroySurfaceKHR(instance_->handle(), surface_, nullptr);
+        depth_image_.reset();
         device_.reset();
         queue_family_indices_ = {};
         physical_device_ = VK_NULL_HANDLE;
@@ -133,14 +139,17 @@ namespace sq::graphics {
 
         // 3. コマンドバッファの記録と送信
         command_buffers_->record(current_frame_, [this, &image_index, &registry](VkCommandBuffer command_buffer, std::size_t _) {
+            std::array<VkClearValue, 2> clear_values{};
+            clear_values[0].color = { {0.2f, 0.2f, 0.2f, 1.0f} };
+            clear_values[1].depthStencil = { 1.0f, 0 };  // far=1.0でクリア（GLM_FORCE_DEPTH_ZERO_TO_ONE前提）
+
             VkRenderPassBeginInfo render_pass_begin_info{};
             render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
             render_pass_begin_info.renderPass = render_pass_->handle();
             render_pass_begin_info.framebuffer = framebuffers_[image_index];
             render_pass_begin_info.renderArea = { {0, 0}, swapchain_->extent() };
-            VkClearValue clear_color = { {0.2f, 0.2f, 0.2f, 1.0f} };
-            render_pass_begin_info.clearValueCount = 1;
-            render_pass_begin_info.pClearValues = &clear_color;
+            render_pass_begin_info.clearValueCount = static_cast<uint32_t>(clear_values.size());
+            render_pass_begin_info.pClearValues = clear_values.data();
 
             // レンダーパスの開始
             vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
@@ -244,12 +253,17 @@ namespace sq::graphics {
     }
 
     void Renderer::create_framebuffers() {
+
         for (const auto& image_view : swapchain_->image_views()) {
+            std::vector<VkImageView> image_views;
+            image_views.push_back(image_view);
+            image_views.push_back(depth_image_->view());
+
             VkFramebufferCreateInfo framebuffer_info{};
             framebuffer_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
             framebuffer_info.renderPass = render_pass_->handle();
-            framebuffer_info.attachmentCount = 1;
-            framebuffer_info.pAttachments = &image_view;
+            framebuffer_info.attachmentCount = 2;
+            framebuffer_info.pAttachments = image_views.data();
             framebuffer_info.width = swapchain_->extent().width;
             framebuffer_info.height = swapchain_->extent().height;
             framebuffer_info.layers = 1;
@@ -365,8 +379,12 @@ namespace sq::graphics {
 
         window_->wait_while_minimized();
         vkDeviceWaitIdle(device_->handle());
+
         destroy_framebuffers();
+
         swapchain_->recreate(window_->width(), window_->height());
+        depth_image_ = std::make_unique<DepthImage>(physical_device_, device_->handle(), swapchain_->extent(), depth_format_);
+
         create_framebuffers();
 
         // 同期オブジェクトの再作成

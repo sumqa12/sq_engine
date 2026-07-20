@@ -26,6 +26,11 @@ public:
     [[nodiscard]] static QueueFamilyIndices find_queue_families(VkPhysicalDevice device,
                                                                   VkSurfaceKHR surface);
 
+    // 候補から、optimal tilingで DEPTH_STENCIL_ATTACHMENT に使える最初のフォーマットを返す。
+    // 候補: VK_FORMAT_D32_SFLOAT → VK_FORMAT_D32_SFLOAT_S8_UINT → VK_FORMAT_D24_UNORM_S8_UINT
+    // vkGetPhysicalDeviceFormatProperties の optimalTilingFeatures に
+    // VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT が立っているかで判定。
+    [[nodiscard]] static VkFormat find_depth_format(VkPhysicalDevice physical_device);
 private:
     [[nodiscard]] static bool is_suitable(VkPhysicalDevice device, VkSurfaceKHR surface);
 };

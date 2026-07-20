@@ -8,7 +8,7 @@ namespace sq::graphics {
 // グラフィックスパイプラインやフレームバッファで使用される読み込み／書き込みの挙動を定義します。
 class RenderPass {
 public:
-    RenderPass(VkDevice device, VkFormat color_format);
+    RenderPass(VkDevice device, VkFormat color_format, VkFormat depth_format);
     ~RenderPass();
 
     RenderPass(const RenderPass&) = delete;

@@ -17,6 +17,7 @@ add_library(sq_engine_lib STATIC
     src/graphics/renderer.cpp
     src/scene/camera.cpp
     src/graphics/buffer.cpp
+    src/graphics/depth_image.cpp
 )
 
 target_include_directories(sq_engine_lib PUBLIC include)

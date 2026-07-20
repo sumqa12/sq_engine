@@ -6,6 +6,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include "depth_image.hpp"
 #include "sq/ecs/registry.hpp"
 #include "sq/graphics/command_buffers.hpp"
 #include "sq/graphics/debug_messenger.hpp"
@@ -80,6 +81,8 @@ private:
     std::unique_ptr<Swapchain> swapchain_;
     std::unique_ptr<RenderPass> render_pass_;
     std::unique_ptr<GraphicsPipeline> pipeline_;
+    std::unique_ptr<DepthImage> depth_image_;
+    VkFormat depth_format_;
     std::vector<VkFramebuffer> framebuffers_;
     std::unique_ptr<CommandBuffers> command_buffers_;
     std::unique_ptr<SyncObjects> sync_objects_;
