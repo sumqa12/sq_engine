@@ -1,4 +1,6 @@
-# C++ ゲームエンジン（学習目的）— フルスクリーン対応（GLFW切替 + VK_EXT_full_screen_exclusive）
+# C++ ゲームエンジン（学習目的）— フルスクリーン対応（GLFW切替 + VK_EXT_full_screen_exclusive）【完了 2026-07-20】
+
+**実装完了**: F11トグル（ボーダーレス方式）、FSE排他モードの取得/解放、MODE_LOST→release+recreateによるAlt+Tab復帰、フォーカス連動の排他再取得まで実機で動作確認済み。
 
 ## Context
 次フェーズ（深度バッファ+3D化）の前に、フルスクリーン表示を実装する。参考: [Zenn: Vulkanで排他的フルスクリーン](https://zenn.dev/techmadot/articles/vk-exclusive-fullscreen)
