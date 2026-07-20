@@ -38,9 +38,10 @@ private:
     int windowed_width_ = 0, windowed_height_ = 0;  // 復元用のサイズ
 ```
 
-実装方針（ユーザー実装）:
-- `set_fullscreen(true)`: `glfwGetWindowPos`/`glfwGetWindowSize` で現状を退避 → ウィンドウ中心が乗っているモニタを特定（単純にはglfwGetPrimaryMonitor()でも可）→ `glfwGetVideoMode` → `glfwSetWindowMonitor(window_, monitor, 0, 0, mode->width, mode->height, mode->refreshRate)`
-- `set_fullscreen(false)`: `glfwSetWindowMonitor(window_, nullptr, 退避した位置とサイズ..., 0)`
+実装方針（ユーザー実装）。**決定事項: ビデオモード切替はせず、ボーダーレス方式にする**（切替が速い・Alt+Tabに強い・FSE拡張と本来セットの構成。記事のWS_POPUP化と同等）:
+- `set_fullscreen(true)`: `glfwGetWindowPos`/`glfwGetWindowSize` で現状を退避 → `glfwSetWindowAttrib(window_, GLFW_DECORATED, GLFW_FALSE)` → モニタの位置・ビデオモードを取得し、**monitor引数はnullptrのまま** `glfwSetWindowMonitor(window_, nullptr, mx, my, mode->width, mode->height, 0)` でモニタ全面に配置
+- `set_fullscreen(false)`: `GLFW_DECORATED` を戻し、`glfwSetWindowMonitor(window_, nullptr, 退避した位置とサイズ..., 0)`
+- ※monitor引数に実モニタを渡すとビデオモード切替（本物の排他的フルスクリーン）になる。この経路は採用しない
 - どちらもフレームバッファサイズ変更→既存コールバックで `resized_` が立つ → 次のpresent後に自然にrecreateされる
 - `win32_window()`: `#define GLFW_EXPOSE_NATIVE_WIN32` + `#include <GLFW/glfw3native.h>`（**window.cppのみ**でinclude）→ `glfwGetWin32Window(window_)`
 - 記事はWin32スタイル（WS_POPUP化+Maximize）を直接操作しているが、GLFWでは `glfwSetWindowMonitor` が同等のことをやってくれるのでこちらを推奨
@@ -61,6 +62,8 @@ private:
     void* hwnd_ = nullptr;                // HMONITOR導出用
     bool exclusive_acquired_ = false;     // 取得済みフラグ（二重acquire/release防止）
 ```
+
+**サーフェス単位の対応チェック（必須・実装中に判明）**: 拡張が列挙されることと「このサーフェス+モニタで使えること」は別。`APPLICATION_CONTROLLED` を使う前に `vkGetPhysicalDeviceSurfaceCapabilities2KHR`（`vkGetInstanceProcAddr` で取得）で問い合わせ、`VkSurfaceCapabilitiesFullScreenExclusiveEXT::fullScreenExclusiveSupported == VK_TRUE` のときだけFSEチェーンを付ける。入力側は `VkPhysicalDeviceSurfaceInfo2KHR` → FSE Info → Win32 Info のチェーン、出力側は `VkSurfaceCapabilities2KHR` → `VkSurfaceCapabilitiesFullScreenExclusiveEXT`。このチェックを飛ばすと、非対応環境（Intel iGPU等）で `vkCreateSwapchainKHR` がドライバ内部（igvk64.dll）でアクセス違反を起こすことを確認済み。
 
 `create()` 内のpNextチェーン（ユーザー実装、`#ifdef _WIN32` ガード推奨）:
 
@@ -85,10 +88,23 @@ void set_fullscreen(bool enabled);
 [[nodiscard]] bool is_fullscreen() const;
 ```
 
-draw_frame のエラーハンドリング追加（**acquireとpresentの両方**）:
-- `VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT` を `VK_ERROR_OUT_OF_DATE_KHR` と同様に扱い、recreate_swapchainする
-  - 排他モードはスタートメニュー表示・Alt+Tab等で勝手に解除される（記事より）。recreate後に再acquireを試み、失敗したら排他なしで続行
-- `recreate_swapchain()`: swapchain再作成後、フルスクリーン中なら `swapchain_->acquire_full_screen_exclusive()` を呼ぶ
+draw_frame のエラーハンドリング（**acquireとpresentの両方**。実機検証済みの最終形）:
+- acquire SUCCESS / SUBOPTIMAL → 続行
+- acquire OUT_OF_DATE → recreate → return
+- acquire **MODE_LOST → release → recreate → return**
+  - 仕様の文面上はrelease後に同じスワップチェーンを使い続けられそうに読めるが、**実ドライバは一度lostしたスワップチェーンのacquireがMODE_LOSTを返し続ける**（実機で確認）。OUT_OF_DATE同様に1回recreateするのが実務上の正解（DXVK等も同じ扱い）
+  - 毎フレーム再作成ループにはならない: recreate後は排他未取得で始まり、排他なしのスワップチェーンはMODE_LOSTを返さないため（MODE_LOSTは「acquire済みの排他を奪われた」ときだけ）
+- present OUT_OF_DATE / SUBOPTIMAL / resizedフラグ → recreate。present MODE_LOST → release → recreate
+- **`vkResetFences` は acquire 成功後（submit確定後）に移動すること**。MODE_LOST等のreturnパスはSyncObjectsを再作成しないため、冒頭でリセットすると次フレームの `vkWaitForFences` がデッドロックする
+- acquireがエラーを返したフレームは画像が無いので、record/submit/presentへ**進んではいけない**（違反すると「wait semaphore has no way to be signaled」「image not acquired」等の検証エラー群になる）
+- 排他の再取得: 「フルスクリーン中 && `created_with_fse_` && 未acquire && フォーカスあり」のとき acquire を試行（`exclusive_acquired_` フラグで二重acquire防止。`created_with_fse_` = 現在のスワップチェーンがFSEチェーン付きで作成されたかのフラグ。acquireはFSE付きスワップチェーンにしか呼べない）
+- `Swapchain::recreate()` 冒頭に `if (exclusive_acquired_) release_full_screen_exclusive();` ガードを置く
+- `recreate_swapchain()`: swapchain再作成後、フルスクリーン中かつフォーカスありなら `acquire_full_screen_exclusive()` を呼ぶ
+
+### フォーカス連動の描画ポーズ
+- Window: `glfwSetWindowFocusCallback` で `focused_` フラグを管理、`is_focused()` を公開（Rendererに委譲メソッド）
+- main.cpp: `is_fullscreen() && !is_focused()` の間は draw_frame をスキップし、`sleep_for(10ms)` 程度でCPUを休ませる（busyループ防止）。フォーカス復帰で描画再開＋排他再取得
+- 最小化（extent 0）は既存の `wait_while_minimized()` が担当。フォーカス喪失ポーズとは別ケース
 
 ## sandbox_graphics/main.cpp
 
@@ -108,6 +124,13 @@ draw_frame のエラーハンドリング追加（**acquireとpresentの両方**
 - 排他モード取得の成否をログで確認（`vkAcquireFullScreenExclusiveModeEXT`の戻り値）
 - 非対応環境（Intel機等）でもレイヤー1のみで動作すること
 - ウィンドウ⇔フルスクリーンの切替を挟んでも三角形の回転・リサイズ処理が正常なこと
+
+## 実装中に得た教訓（2026-07-17〜18）
+
+- sType設定漏れは検証レイヤーに「unexpected VkStructureType **VK_STRUCTURE_TYPE_APPLICATION_INFO**」（enum値0）として現れる
+- pNextチェーンの構造体をifブロック内で宣言すると、vkCreateSwapchainKHR呼び出し時にはダングリングポインタ（Phase 3のpWaitDstStageMaskと同型の罠）
+- `HMONITOR` は不透明ハンドル。デバッガで「メモリが読めない」と出ても正常
+- Intel Iris Xe機の `vkCreateSwapchainKHR` クラッシュ（igvk64.dll内AV）は**古いドライバが原因**だった（FSEチェーン無しでも再現）。Radeon機の2秒acquire停止も同様にドライバ更新で解決。**present/swapchain系の不可解な不具合は、コードを疑う前に (1)vkcubeで再現確認 (2)GPUドライバ更新** が鉄則
 
 ## 注意点・ハマりどころ（記事より）
 

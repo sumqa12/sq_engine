@@ -1,8 +1,10 @@
 #include "sq/graphics/device.hpp"
 
-#include <vector>
-
 #include "sq/graphics/vulkan_instance.hpp"
+
+#include <vulkan/vulkan_extension_inspection.hpp>
+
+#include <vector>
 
 namespace sq::graphics {
 
@@ -35,10 +37,18 @@ Device::Device(VkPhysicalDevice physical_device, const QueueFamilyIndices& indic
     device_create_info.queueCreateInfoCount = queue_create_infos.size();
     device_create_info.pQueueCreateInfos = queue_create_infos.data();
 
-    auto requires_extension_names = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
-    device_create_info.ppEnabledExtensionNames = &requires_extension_names;
-
-    device_create_info.enabledExtensionCount = 1;
+    std::vector<const char*> device_extensions;
+    device_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+    if (is_supported_full_screen_extension()) {
+        printf("フルスクリーン対応\n");
+        device_extensions.push_back(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
+        fullscreen_exclusive_supported_ = true;
+    }
+#endif
+    printf("デバイス拡張機能数: %d\n", device_extensions.size());
+    device_create_info.ppEnabledExtensionNames = device_extensions.data();
+    device_create_info.enabledExtensionCount = device_extensions.size();
     device_create_info.pNext = nullptr;
     device_create_info.ppEnabledLayerNames = nullptr;
     device_create_info.enabledLayerCount = 0;
@@ -77,4 +87,23 @@ VkQueue Device::present_queue() const {
     return present_queue_;
 }
 
+bool Device::is_supported_full_screen_extension() const {
+    uint32_t extension_count = 0;
+    vkEnumerateDeviceExtensionProperties(physical_device_, nullptr, &extension_count, nullptr);
+
+    std::vector<VkExtensionProperties> ex(extension_count);
+    vkEnumerateDeviceExtensionProperties(physical_device_, nullptr, &extension_count, ex.data());
+
+    for (uint32_t i = 0; i < extension_count; i++) {
+        if (strcmp(ex[i].extensionName, "VK_EXT_full_screen_exclusive") == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool Device::is_fullscreen_exclusive_supported() const {
+    return fullscreen_exclusive_supported_;
+}
 }  // namespace sq::graphics
