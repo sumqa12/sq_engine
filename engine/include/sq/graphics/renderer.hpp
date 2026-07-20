@@ -45,6 +45,17 @@ public:
     // 表示を行います。VK_ERROR_OUT_OF_DATE_KHR が発生した場合は、スワップチェーンを再作成することで対処します。
     void draw_frame(const sq::ecs::Registry& registry);
 
+    // キー入力の状態を返す（Windowへの委譲）。keyはGLFW_KEY_*
+    [[nodiscard]] bool is_key_pressed(int key) const;
+
+    // -- windowの委譲メソッド --
+
+    // フルスクリーン切替の公開API。Window切替 + 次フレームのrecreateで排他モードを取得する。
+    void set_fullscreen(bool enabled);
+    [[nodiscard]] bool is_fullscreen() const;
+
+    [[nodiscard]]bool is_focused() const;
+
 private:
     void create_surface();
     void create_framebuffers();

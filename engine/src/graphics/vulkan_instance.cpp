@@ -22,22 +22,31 @@ VulkanInstance::VulkanInstance(const std::string& app_name,
     app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
     app_info.apiVersion = VK_API_VERSION_1_3;
 
-    // validationがenabledの場合、required_extensionsにVK_EXT_debug_utilsを追加する。
+    // 必要な拡張機能を有効化する
     std::vector extensions(required_extensions, required_extensions + 2);
+    extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+    extensions.push_back(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+
+    for (const auto& extension : extensions) {
+        printf("extension: %s\n", extension);
+    }
+
+    // validationがenabledの場合、required_extensionsにVK_EXT_debug_utilsを追加する。
     if (validation_enabled_) {
         printf("Validation layer is enabled: %s\n", kValidationLayerName);
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-        required_extensions = extensions.data();
     } else {
         printf("Validation layer is disabled.\n");
     }
+
+    required_extensions = extensions.data();
 
     // VkInstanceCreateInfo を設定する。
     VkInstanceCreateInfo create_info{};
     create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     create_info.pApplicationInfo = &app_info;
     create_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
-    create_info.ppEnabledExtensionNames = extensions.data();
+    create_info.ppEnabledExtensionNames = required_extensions;
 
     if (validation_enabled_) {
         create_info.enabledLayerCount = 1;

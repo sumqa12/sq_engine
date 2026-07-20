@@ -24,6 +24,17 @@ public:
     [[nodiscard]] VkExtent2D extent() const;
     [[nodiscard]] const std::vector<VkImageView>& image_views() const;
 
+    // recreate前に呼ぶ設定用（メンバに保持）
+    void set_fullscreen_exclusive(bool enabled, void* hwnd);
+
+    // 排他モードの取得/解放（vkGetDeviceProcAddrで関数ポインタを取得して呼ぶ）
+    // recreate 後切り替わってから呼ぶ
+    VkResult acquire_full_screen_exclusive();
+    VkResult release_full_screen_exclusive();
+
+    [[nodiscard]] bool exclusive_acquired() const;
+    [[nodiscard]] bool created_with_fse() const;
+
 private:
     void create(std::uint32_t width, std::uint32_t height);
     void destroy();
@@ -37,6 +48,17 @@ private:
     VkExtent2D extent_{};
     std::vector<VkImage> images_;
     std::vector<VkImageView> image_views_;
+
+    bool fullscreen_exclusive_ = false;   // 次のcreateでpNextチェーンを付けるか
+    void* hwnd_ = nullptr;                // HMONITOR導出用
+    bool exclusive_acquired_ = false;     // 取得済みフラグ（二重acquire/release防止）
+    bool created_with_fse_ = false;  // 現在のスワップチェーンがFSEチェーン付きで作られたか
+
+#ifdef _WIN32
+    PFN_vkAcquireFullScreenExclusiveModeEXT acquire_full_screen_exclusive_fn_ = nullptr;
+    PFN_vkReleaseFullScreenExclusiveModeEXT release_full_screen_exclusive_fn_ = nullptr;
+#endif
+
 };
 
 }  // namespace sq::graphics

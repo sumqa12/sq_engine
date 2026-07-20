@@ -20,12 +20,15 @@ public:
     [[nodiscard]] VkPhysicalDevice physical_device() const;
     [[nodiscard]] VkQueue graphics_queue() const;
     [[nodiscard]] VkQueue present_queue() const;
+    [[nodiscard]] bool is_supported_full_screen_extension() const;
+    [[nodiscard]] bool is_fullscreen_exclusive_supported() const;
 
 private:
     VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue graphics_queue_ = VK_NULL_HANDLE;
     VkQueue present_queue_ = VK_NULL_HANDLE;
+    bool fullscreen_exclusive_supported_ = false;
 };
 
 }  // namespace sq::graphics

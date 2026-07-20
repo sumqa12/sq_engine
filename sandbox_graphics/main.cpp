@@ -1,5 +1,6 @@
 #include <chrono>
 #include <cmath>
+#include <GLFW/glfw3.h>
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <spdlog/details/registry.h>
@@ -31,8 +32,17 @@ void loop(const sq::ecs::Registry &registry) {
     steady_clock::time_point prev_u = steady_clock::now();
     constexpr float du = 1.0f / TARGET_UPS;
 
+    bool f11_prev = false;
+
     while (!renderer.should_close()) {
         sq::graphics::Window::poll_events();
+
+        // フルスクリーン切り替え
+        bool f11_now = renderer.is_key_pressed(GLFW_KEY_F11);
+        if (f11_now && !f11_prev) {
+            renderer.set_fullscreen(!renderer.is_fullscreen());
+        }
+        f11_prev = f11_now;
 
         steady_clock::time_point now = steady_clock::now();
 
@@ -92,13 +102,20 @@ void loop(const sq::ecs::Registry &registry) {
             prev_u = now;
         }
 
+        // フルスクリーン中にフォーカスを失ったら描画をスキップ（更新は好みで継続/停止）
+        const bool render_paused = renderer.is_fullscreen() && !renderer.is_focused();
+
         // フレーム制限
-        if (delta_f >= 1.0) {
+        if (!render_paused && delta_f >= 1.0) {
             double delta_f_time = duration_cast<duration<double>>(now - prev_f).count() * 1000;
             renderer.draw_frame(registry);
 
             delta_f--;
             prev_f = now;
+        }
+
+        if (render_paused) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));  // busyループでCPUを焼かない
         }
 
         init = now;
