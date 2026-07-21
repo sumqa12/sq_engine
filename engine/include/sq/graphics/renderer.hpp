@@ -36,10 +36,6 @@ public:
     Renderer(const Renderer&) = delete;
     Renderer& operator=(const Renderer&) = delete;
 
-    // ウィンドウのクローズフラグが設定されるまで実行され、各反復ごとに draw_frame(registry) を呼び出します。
-    // 描画対象のエンティティはregistryから都度問い合わせる（Rendererはエンティティを所有しない）。
-    void run(sq::ecs::Registry& registry);
-
     [[nodiscard]] bool should_close() const;
 
     // 画像を取得し、registry内のTransformを持つ各エンティティについてコマンドバッファに描画命令を記録して送信し、
@@ -63,6 +59,7 @@ private:
     void destroy_framebuffers();
     void recreate_swapchain();
     void create_triangle_mesh();
+    void create_cube_mesh();
     // カメラUBO用ディスクリプタ一式（パイプライン作成の前にレイアウトが必要）。
     void create_descriptor_set_layout();  // vkCreateDescriptorSetLayout（set=0, binding=0, UNIFORM_BUFFER, VERTEX）
     void create_uniform_buffers();        // camera_ubos_をkFramesInFlight個作成
@@ -87,6 +84,7 @@ private:
     std::unique_ptr<CommandBuffers> command_buffers_;
     std::unique_ptr<SyncObjects> sync_objects_;
     std::unique_ptr<VertexBuffer> triangle_mesh_;  // デモ用の共有メッシュ（全エンティティがこれを描画する）
+    std::unique_ptr<IndexBuffer> cube_indices_;
 
     // カメラUBO用ディスクリプタ（すべてkFramesInFlight個。スワップチェーン画像枚数には非依存）。
     VkDescriptorSetLayout descriptor_set_layout_ = VK_NULL_HANDLE;

@@ -69,13 +69,14 @@ namespace sq::graphics {
         sync_objects_ = std::make_unique<SyncObjects>(device_->handle(), kFramesInFlight, framebuffers_.size());
 
         // 15. デモ用三角形メッシュの作成（ECS連携）
-        create_triangle_mesh();
+        create_cube_mesh();
     }
 
     Renderer::~Renderer() {
         vkDeviceWaitIdle(device_->handle());
         destroy_framebuffers();
         triangle_mesh_.reset();
+        cube_indices_.reset();
         sync_objects_.reset();
         command_buffers_.reset();
         pipeline_.reset();
@@ -98,13 +99,6 @@ namespace sq::graphics {
         debug_messenger_.reset();
         instance_.reset();
         window_.reset();
-    }
-
-    void Renderer::run(sq::ecs::Registry& registry) {
-        while (!should_close()) {
-            Window::poll_events();
-            draw_frame(registry);
-        }
     }
 
     bool Renderer::should_close() const {
@@ -168,9 +162,6 @@ namespace sq::graphics {
 
             vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->handle());
 
-            // メッシュのバインド
-            triangle_mesh_->bind(command_buffer);
-
             // アスペクト比の計算
             float aspect_ratio = static_cast<float>(swapchain_->extent().width) / static_cast<float>(swapchain_->extent().height);
 
@@ -193,6 +184,10 @@ namespace sq::graphics {
             VkDescriptorSet descriptor_set = descriptor_sets_[current_frame_];
             vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(), 0, 1, &descriptor_set, 0, nullptr);
 
+            // メッシュのバインド
+            triangle_mesh_->bind(command_buffer);
+            cube_indices_->bind(command_buffer);
+
             // 描画
             registry.view<scene::Transform, scene::Position>().each([&](ecs::Entity, scene::Transform& t, scene::Position &pos) {
 
@@ -201,7 +196,7 @@ namespace sq::graphics {
 
                 vkCmdPushConstants(command_buffer, pipeline_->layout(),
                     VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &t.model);
-                vkCmdDraw(command_buffer, triangle_mesh_->vertex_count(), 1, 0, 0);
+                vkCmdDrawIndexed(command_buffer, cube_indices_->index_count(), 1, 0, 0, 0);
             });
 
             // レンダーパスの終了
@@ -351,24 +346,39 @@ namespace sq::graphics {
         }
     }
 
-    // vec2 positions[3] = vec2[](
-    //     vec2(0.0, -0.5),
-    //     vec2(0.5, 0.5),
-    //     vec2(-0.5, 0.5)
-    // );
-    //
-    // vec3 colors[3] = vec3[](
-    //     vec3(1.0, 0.0, 0.0),
-    //     vec3(0.0, 1.0, 0.0),
-    //     vec3(0.0, 0.0, 1.0)
-    // );
     void Renderer::create_triangle_mesh() {
         std::vector<Vertex> vertices = {
-            {{0.0f, 0.5f}, {1.0f, 0.0f, 0.0f}},
-            {{-0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-            {{0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}}
+            {{0.0f, 0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}},
+            {{-0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}},
+            {{0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}}
         };
         triangle_mesh_ = std::make_unique<VertexBuffer>(physical_device_, device_->handle(), vertices);
+    }
+
+    void Renderer::create_cube_mesh() {
+        std::vector<Vertex> vertices = {
+            {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+            {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+            {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}},
+            {{-0.5f, 0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+            {{-0.5f, -0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+            {{0.5f, -0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+            {{0.5f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}},
+            {{-0.5f, 0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+
+        };
+
+        std::vector<uint16_t> indices = {
+            0, 1, 2,  0, 2, 3, // 手前
+            4, 6, 5,  4, 7, 6, // 奥
+            1, 5, 6,  1, 6, 2, // 右
+            4, 0, 3,  4, 3, 7, // 左
+            3, 2, 6,  3, 6, 7, // 上
+            4, 5, 1,  4, 1, 0  // 下
+        };
+
+        triangle_mesh_ = std::make_unique<VertexBuffer>(physical_device_, device_->handle(), vertices);
+        cube_indices_ = std::make_unique<IndexBuffer>(physical_device_, device_->handle(), indices);
     }
 
     void Renderer::recreate_swapchain() {

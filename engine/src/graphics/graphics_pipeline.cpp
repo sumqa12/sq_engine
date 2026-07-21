@@ -40,7 +40,7 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
     VkVertexInputAttributeDescription attribute_descriptions[2] = {};
     attribute_descriptions[0].binding = 0;
     attribute_descriptions[0].location = 0;
-    attribute_descriptions[0].format = VK_FORMAT_R32G32_SFLOAT; // vec2 position
+    attribute_descriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT; // vec3 position
     attribute_descriptions[0].offset = offsetof(Vertex, position);
     attribute_descriptions[1].binding = 0;
     attribute_descriptions[1].location = 1;

@@ -1,4 +1,11 @@
-# C++ ゲームエンジン（学習目的）— Phase 7: 深度バッファ + 3D化（vec3頂点・インデックスバッファ・立方体）
+# C++ ゲームエンジン（学習目的）— Phase 7: 深度バッファ + 3D化（vec3頂点・インデックスバッファ・立方体）【完了 2026-07-21】
+
+## 実施結果（完了）
+ユーザー実装により全項目完了。深度バッファ・vec3頂点・`IndexBuffer`（`Buffer`基底の3例目）・立方体のインデックス描画まで正常動作を確認。リサイズ・フルスクリーン切替とも問題なし。
+
+残った検証出力はいずれも**性能アドバイス（Performance Warning）であり不具合ではない**:
+- `small-dedicated-allocation`: 小さなバッファ（UBO 64B×2、立方体の頂点/インデックス）ごとの個別`vkAllocateMemory`への指摘。サブアロケーション/VMA導入（将来課題）まで対応不要
+- フルスクリーン切替時の`VK_SUBOPTIMAL_KHR`警告1回: 「presentの戻り値で切替を検知→recreate」という設計上、原理的に1回出る。消したい場合は`draw_frame`冒頭で`consume_resized_flag()`をチェックして事前recreateする改善案あり（present側のハンドリングはOS側要因の保険として残す）
 
 ## Context
 Phase 5でカメラ（UBO + Descriptor Set）、Phase 6でリファクタリング（`Buffer`基底クラス等）、その後フルスクリーン対応（[fullscreen-exclusive.md](fullscreen-exclusive.md)）まで完了した。現在の描画は「2D頂点（vec2, z=0平面）の三角形を透視カメラで見る」状態。
