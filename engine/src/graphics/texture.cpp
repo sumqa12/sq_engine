@@ -7,6 +7,7 @@
 // STB_IMAGE_IMPLEMENTATION はプロジェクト全体で1箇所だけ定義すること。
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
+#include <spdlog/spdlog.h>
 
 namespace sq::graphics {
 
@@ -20,9 +21,11 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device,
     int width, height, channels;
     stbi_uc* stbi_image = stbi_load(path.c_str(), &width, &height, &channels, 4);
     if (stbi_image == nullptr) {
-        throw std::runtime_error("Texture : stbi_load : 画像の読み込みに失敗しました。");
+        stbi_image = stbi_load("textures/default.png", &width, &height, &channels, 4);
+        spdlog::log(spdlog::level::warn, "Texture : stbi_load : 画像の読み込みに失敗しました。");
     } else if (width <= 0 || height <= 0) {
-        throw std::runtime_error("Texture : stbi_load : 画像のサイズが適切ではありません。");
+        stbi_image = stbi_load("textures/default.png", &width, &height, &channels, 4);
+        spdlog::log(spdlog::level::warn, "Texture : stbi_load : 画像のサイズが適切ではありません。");
     }
 
     //  2. StagingBuffer(physical_device, device, pixels, image_size) を作成 → stbi_image_free(pixels)。
