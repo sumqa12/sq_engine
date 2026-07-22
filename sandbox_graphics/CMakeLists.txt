@@ -36,3 +36,12 @@ add_custom_command(TARGET sandbox_graphics POST_BUILD
         ${SHADER_BUILD_DIR} $<TARGET_FILE_DIR:sandbox_graphics>/shaders
         COMMENT "Copying shaders next to sandbox_graphics.exe"
 )
+
+# テクスチャ画像を実行ファイルの隣の textures/ にコピーする（Renderer は "textures/<name>.png" を
+# 実行時CWD基準で開く）。画像はプロジェクトルートの textures/ に置くこと。
+add_custom_command(TARGET sandbox_graphics POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:sandbox_graphics>/textures
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/textures $<TARGET_FILE_DIR:sandbox_graphics>/textures
+        COMMENT "Copying textures next to sandbox_graphics.exe"
+)

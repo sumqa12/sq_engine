@@ -9,10 +9,11 @@
 
 namespace sq::graphics {
 
-    // 1頂点が持つデータ。位置（2D）と色のみを持つ最小構成。
+    // 1頂点が持つデータ。位置（3D）・色・テクスチャ座標を持つ。
     struct Vertex {
         glm::vec3 position;
         glm::vec3 color;
+        glm::vec2 uv;  // テクスチャ座標（0..1）。graphics_pipelineのattribute location=2 と対応。
     };
 
     // 頂点データをGPUメモリに保持するRAIIラッパー。

@@ -50,25 +50,29 @@ namespace sq::graphics {
         // 9. UBOの作成
         create_uniform_buffers();
 
-        // 10. ディスクリプタプールの作成
+        // 10. テクスチャとサンプラーを生成する
+        create_texture();
+        create_sampler();
+
+        // 11. ディスクリプタプールの作成
         create_descriptor_pool();
         create_descriptor_sets();
 
-        // 11. パイプラインの作成
+        // 12. パイプラインの作成
         pipeline_ = std::make_unique<GraphicsPipeline>(device_->handle(), render_pass_->handle(), swapchain_->extent(),
                                             "shaders/triangle.vert.spv", "shaders/triangle.frag.spv",
                                             descriptor_set_layout_);
 
-        // 12. フレームバッファの作成
+        // 13. フレームバッファの作成
         create_framebuffers();
 
-        // 13. コマンドバッファの作成
+        // 14. コマンドバッファの作成
         command_buffers_ = std::make_unique<CommandBuffers>(device_->handle(), *queue_family_indices_.graphics_family, kFramesInFlight);
 
-        // 14. 同期オブジェクトの作成
+        // 15. 同期オブジェクトの作成
         sync_objects_ = std::make_unique<SyncObjects>(device_->handle(), kFramesInFlight, framebuffers_.size());
 
-        // 15. デモ用三角形メッシュの作成（ECS連携）
+        // 16. デモ用三角形メッシュの作成（ECS連携）
         create_cube_mesh();
     }
 
@@ -83,6 +87,9 @@ namespace sq::graphics {
 
         vkDestroyDescriptorPool(device_->handle(), descriptor_pool_, nullptr);
         vkDestroyDescriptorSetLayout(device_->handle(), descriptor_set_layout_, nullptr);
+
+        texture_.reset();
+        sampler_.reset();
         camera_ubos_.clear();
         descriptor_sets_.clear();
         descriptor_pool_ = VK_NULL_HANDLE;
@@ -287,10 +294,21 @@ namespace sq::graphics {
         ubo_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         ubo_layout_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
+        // combined image sampler 用の binding を追加する (phase8 項目7)
+        VkDescriptorSetLayoutBinding sampler_layout_binding{};
+        sampler_layout_binding.binding = 1;
+        sampler_layout_binding.descriptorCount = 1;
+        sampler_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        sampler_layout_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        std::vector<VkDescriptorSetLayoutBinding> bindings;
+        bindings.push_back(ubo_layout_binding);
+        bindings.push_back(sampler_layout_binding);
+
         VkDescriptorSetLayoutCreateInfo descriptor_set_layout_info{};
         descriptor_set_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        descriptor_set_layout_info.bindingCount = 1;
-        descriptor_set_layout_info.pBindings = &ubo_layout_binding;
+        descriptor_set_layout_info.bindingCount = 2;
+        descriptor_set_layout_info.pBindings = bindings.data();
 
         vkCreateDescriptorSetLayout(device_->handle(), &descriptor_set_layout_info, nullptr, &descriptor_set_layout_);
     }
@@ -304,15 +322,23 @@ namespace sq::graphics {
 
     // ディスクリプタプールの作成
     void Renderer::create_descriptor_pool() {
-        VkDescriptorPoolSize pool_size{};
-        pool_size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        pool_size.descriptorCount = static_cast<uint32_t>(kFramesInFlight);
+        VkDescriptorPoolSize camera_pool_size;
+        camera_pool_size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        camera_pool_size.descriptorCount = static_cast<uint32_t>(kFramesInFlight);
+
+        VkDescriptorPoolSize sampler_pool_size;
+        sampler_pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        sampler_pool_size.descriptorCount = static_cast<uint32_t>(kFramesInFlight);
+
+        std::vector<VkDescriptorPoolSize> descriptor_pools;
+        descriptor_pools.push_back(camera_pool_size);
+        descriptor_pools.push_back(sampler_pool_size);
 
         VkDescriptorPoolCreateInfo descriptor_pool_info{};
         descriptor_pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         descriptor_pool_info.maxSets = kFramesInFlight;
-        descriptor_pool_info.poolSizeCount = 1;
-        descriptor_pool_info.pPoolSizes = &pool_size;
+        descriptor_pool_info.poolSizeCount = 2;
+        descriptor_pool_info.pPoolSizes = descriptor_pools.data();
 
         vkCreateDescriptorPool(device_->handle(), &descriptor_pool_info, nullptr, &descriptor_pool_);
     }
@@ -333,17 +359,51 @@ namespace sq::graphics {
             buffer_info.offset = 0;
             buffer_info.range = sizeof(scene::CameraUBO);
 
-            VkWriteDescriptorSet descriptor_write{};
-            descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            descriptor_write.dstSet = descriptor_sets_[i];
-            descriptor_write.dstBinding = 0;
-            descriptor_write.dstArrayElement = 0;
-            descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            descriptor_write.descriptorCount = 1;
-            descriptor_write.pBufferInfo = &buffer_info;
+            VkWriteDescriptorSet ubo_write{};
+            ubo_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            ubo_write.dstSet = descriptor_sets_[i];
+            ubo_write.dstBinding = 0;
+            ubo_write.dstArrayElement = 0;
+            ubo_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            ubo_write.descriptorCount = 1;
+            ubo_write.pBufferInfo = &buffer_info;
 
-            vkUpdateDescriptorSets(device_->handle(), 1, &descriptor_write, 0, nullptr);
+            // binding=1（combined image sampler）の書き込みを追加する (phase8 項目7)
+            VkDescriptorImageInfo image_info{};
+            image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            image_info.imageView = texture_->view();
+            image_info.sampler = sampler_->handle();
+
+            VkWriteDescriptorSet image_write{};
+            image_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            image_write.dstSet = descriptor_sets_[i];
+            image_write.dstBinding = 1;
+            image_write.dstArrayElement = 0;
+            image_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            image_write.descriptorCount = 1;
+            image_write.pImageInfo = &image_info;
+
+            std::vector<VkWriteDescriptorSet> descriptor_write_sets;
+            descriptor_write_sets.push_back(ubo_write);
+            descriptor_write_sets.push_back(image_write);
+
+            vkUpdateDescriptorSets(device_->handle(), 2, descriptor_write_sets.data(), 0, nullptr);
         }
+    }
+
+    // テクスチャの読み込み（textures/ の画像を Texture として生成する）。
+    void Renderer::create_texture() {
+        // 実行ファイル隣の textures/ にある画像を読み込む（phase8プラン 項目3・11）
+        texture_ = std::make_unique<Texture>(
+            physical_device_, device_->handle(),
+            *queue_family_indices_.graphics_family, device_->graphics_queue(),
+            "textures/hsr_icon_01/Blade 1.png");
+    }
+
+    // 全テクスチャで共有するサンプラーの生成
+    void Renderer::create_sampler() {
+        // サンプラーを生成する (phase8プラン 項目5)
+        sampler_ = std::make_unique<Sampler>(physical_device_, device_->handle());
     }
 
     void Renderer::create_triangle_mesh() {
@@ -356,25 +416,55 @@ namespace sq::graphics {
     }
 
     void Renderer::create_cube_mesh() {
+        // テクスチャを貼るため、面ごとに独立した24頂点構成へ作り直す（phase8プラン 項目9）。
+        // 各面の4頂点に uv = {0,0}/{1,0}/{1,1}/{0,1} を割り当て、インデックスは面ごと6個×6面=36個にする。
+        // （現状は8頂点共有のため面ごとのUVが破綻する。uv 未指定の頂点は {0,0} に値初期化される）
+        // 左- 右+ 上- 下+ 手前- 奥+
         std::vector<Vertex> vertices = {
-            {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-            {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-            {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}},
-            {{-0.5f, 0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-            {{-0.5f, -0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
-            {{0.5f, -0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-            {{0.5f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}},
-            {{-0.5f, 0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+            // 手前
+            {{-0.5f, 0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0}},
+            {{0.5f, 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1, 0}},
+            {{0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1, 1}},
+            {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0, 1}},
 
+            // 奥
+            {{0.5f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0}},
+            {{-0.5f, 0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}, {1, 0}},
+            {{-0.5f, -0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {1, 1}},
+            {{0.5f, -0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, {0, 1}},
+
+            // 左
+            {{-0.5f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0}},
+            {{-0.5f, 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1, 0}},
+            {{-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1, 1}},
+            {{-0.5f, -0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, {0, 1}},
+
+            // 右
+            {{0.5f, 0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0}},
+            {{0.5f, 0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}, {1, 0}},
+            {{0.5f, -0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {1, 1}},
+            {{0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0, 1}},
+
+            // 上
+            {{-0.5f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0}},
+            {{0.5f, 0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}, {1, 0}},
+            {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1, 1}},
+            {{-0.5f, 0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0, 1}},
+
+            // 下
+            {{0.5f, -0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0}},
+            {{-0.5f, -0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}, {1, 0}},
+            {{-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1, 1}},
+            {{0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0, 1}},
         };
 
         std::vector<uint16_t> indices = {
-            0, 1, 2,  0, 2, 3, // 手前
-            4, 6, 5,  4, 7, 6, // 奥
-            1, 5, 6,  1, 6, 2, // 右
-            4, 0, 3,  4, 3, 7, // 左
-            3, 2, 6,  3, 6, 7, // 上
-            4, 5, 1,  4, 1, 0  // 下
+             0,  1,  2,  0,  2,  3, // 手前
+             4,  5,  6,  4,  6,  7, // 奥
+             8,  9, 10,  8, 10, 11, // 右
+            12, 13, 14, 12, 14, 15, // 左
+            16, 17, 18, 16, 18, 19, // 上
+            20, 21, 22, 20, 22, 23  // 下
         };
 
         triangle_mesh_ = std::make_unique<VertexBuffer>(physical_device_, device_->handle(), vertices);

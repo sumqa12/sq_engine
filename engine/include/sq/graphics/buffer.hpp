@@ -44,4 +44,14 @@ protected:
     VkDeviceSize size_ = 0;
 };
 
+// 転送元（TRANSFER_SRC）用のHOST_VISIBLEバッファ。Buffer基底の再利用例（4例目）。
+// 構築時に data を size バイト分書き込む。テクスチャ画像のGPUアップロード元として使う
+// （将来はDEVICE_LOCALな頂点/インデックスバッファのステージングにも流用できる）。
+class StagingBuffer : public Buffer {
+public:
+    StagingBuffer(VkPhysicalDevice physical_device, VkDevice device,
+                  const void* data, VkDeviceSize size);
+    // 追加で解放するリソースは無い（破棄は基底クラスに任せる）
+};
+
 }  // namespace sq::graphics

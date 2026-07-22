@@ -38,6 +38,7 @@ namespace sq::graphics {
 
         std::vector<const char*> device_extensions;
         device_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+
     #ifdef VK_USE_PLATFORM_WIN32_KHR
         if (is_supported_full_screen_extension()) {
             printf("フルスクリーン対応\n");
@@ -45,12 +46,21 @@ namespace sq::graphics {
             fullscreen_exclusive_supported_ = true;
         }
     #endif
+
         printf("デバイス拡張機能数: %llu\n", device_extensions.size());
         device_create_info.ppEnabledExtensionNames = device_extensions.data();
         device_create_info.enabledExtensionCount = device_extensions.size();
         device_create_info.pNext = nullptr;
         device_create_info.ppEnabledLayerNames = nullptr;
         device_create_info.enabledLayerCount = 0;
+
+        // サンプラーの異方性フィルタリングを使うため、デバイス機能を有効化する: (phase8 項目6)
+        VkPhysicalDeviceFeatures features{};
+        VkPhysicalDeviceFeatures supported_features{};
+        vkGetPhysicalDeviceFeatures(physical_device_, &supported_features);
+        printf("Device : %s\n", supported_features.samplerAnisotropy ? "異方性フィルタリング 対応" : "異方性フィルタリング 非対応");
+        features.samplerAnisotropy = supported_features.samplerAnisotropy;
+        device_create_info.pEnabledFeatures = &features;
 
         vkCreateDevice(physical_device_, &device_create_info, nullptr, &device_);
 

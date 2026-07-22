@@ -15,8 +15,10 @@
 #include "sq/graphics/mesh.hpp"
 #include "sq/graphics/physical_device.hpp"
 #include "sq/graphics/render_pass.hpp"
+#include "sq/graphics/sampler.hpp"
 #include "sq/graphics/swapchain.hpp"
 #include "sq/graphics/sync_objects.hpp"
+#include "sq/graphics/texture.hpp"
 #include "sq/graphics/uniform_buffer.hpp"
 #include "sq/graphics/vulkan_instance.hpp"
 #include "sq/graphics/window.hpp"
@@ -63,8 +65,10 @@ private:
     // カメラUBO用ディスクリプタ一式（パイプライン作成の前にレイアウトが必要）。
     void create_descriptor_set_layout();  // vkCreateDescriptorSetLayout（set=0, binding=0, UNIFORM_BUFFER, VERTEX）
     void create_uniform_buffers();        // camera_ubos_をkFramesInFlight個作成
-    void create_descriptor_pool();        // vkCreateDescriptorPool（UNIFORM_BUFFERをkFramesInFlight個）
-    void create_descriptor_sets();        // vkAllocateDescriptorSets + vkUpdateDescriptorSetsで各UBOと結びつける
+    void create_descriptor_pool();        // vkCreateDescriptorPool（UNIFORM_BUFFER + COMBINED_IMAGE_SAMPLER）
+    void create_descriptor_sets();        // vkAllocateDescriptorSets + vkUpdateDescriptorSetsで各UBO/テクスチャと結びつける
+    void create_texture();                // textures/ の画像を読み込み Texture を生成（descriptor_sets の前に呼ぶ）
+    void create_sampler();                // 全テクスチャで共有する VkSampler を生成
 
     static constexpr std::size_t kFramesInFlight = 2;
 
@@ -91,6 +95,10 @@ private:
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
     std::vector<std::unique_ptr<UniformBuffer>> camera_ubos_;
     std::vector<VkDescriptorSet> descriptor_sets_;  // プールから確保（個別破棄は不要、プール破棄でまとめて解放）
+
+    // テクスチャ一式（スワップチェーン非依存。全エンティティ・全フレームで共有）。
+    std::unique_ptr<Texture> texture_;
+    std::unique_ptr<Sampler> sampler_;
 
     std::size_t current_frame_ = 0;
 };

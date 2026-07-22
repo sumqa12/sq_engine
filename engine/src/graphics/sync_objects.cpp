@@ -4,14 +4,8 @@
 
 namespace sq::graphics {
 
-SyncObjects::SyncObjects(VkDevice device, std::size_t frames_in_flight, std::size_t swapchain_image_count) : device_(device) {
-    // TODO: 現状はrender_finishedもframes_in_flight個しか作られておらず、
-    //  Renderer側がimage_index（スワップチェーン画像枚数=3までの範囲）でアクセスするため
-    //  範囲外アクセス（未定義動作）になる。以下の2ループ構成に分割すること:
-    //   ループ1: frames_in_flight 回 → image_available セマフォ + in_flight フェンスを作成
-    //   ループ2: swapchain_image_count 回 → render_finished セマフォを作成
-    //  （vkCreateSemaphore / vkCreateFence の呼び出し自体は既存コードの再配置でよい。
-    //    フェンスの VK_FENCE_CREATE_SIGNALED_BIT は初回vkWaitForFencesのデッドロック防止に必須）
+SyncObjects::SyncObjects(VkDevice device, std::size_t frames_in_flight, std::size_t swapchain_image_count)
+    : device_(device) {
 
     VkSemaphoreCreateInfo semaphore_info{};
     semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;

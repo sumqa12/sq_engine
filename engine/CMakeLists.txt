@@ -16,8 +16,9 @@ add_library(sq_engine_lib STATIC
     src/graphics/uniform_buffer.cpp
     src/graphics/renderer.cpp
     src/scene/camera.cpp
-    src/graphics/buffer.cpp
     src/graphics/depth_image.cpp
+    src/graphics/texture.cpp
+    src/graphics/sampler.cpp
 )
 
 target_include_directories(sq_engine_lib PUBLIC include)
@@ -40,7 +41,11 @@ find_package(spdlog CONFIG REQUIRED)
 find_package(Vulkan REQUIRED COMPONENTS glslc)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
+find_package(Stb REQUIRED)  # stb_image（ヘッダオンリー）。texture.cpp で実体化する。
 find_program(glslc_executable NAMES glslc HINTS Vulkan::glslc)
+
+# stb はヘッダオンリーのためインクルードディレクトリのみ追加する。
+target_include_directories(sq_engine_lib PRIVATE ${Stb_INCLUDE_DIR})
 
 target_link_libraries(sq_engine_lib PUBLIC
     spdlog::spdlog

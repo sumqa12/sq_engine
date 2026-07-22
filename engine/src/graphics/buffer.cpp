@@ -72,6 +72,19 @@ void Buffer::unmap() {
     vkUnmapMemory(device_, memory_);
 }
 
+// ----- StagingBuffer -----
+
+StagingBuffer::StagingBuffer(VkPhysicalDevice physical_device, VkDevice device,
+                             const void* data, VkDeviceSize size)
+    : Buffer(physical_device, device, size,
+             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
+    void* mapped = map();
+    std::memcpy(mapped, data, size);
+    unmap();  // HOST_COHERENT なので flush 不要
+    (void)data;
+}
+
 std::uint32_t Buffer::find_memory_type(VkPhysicalDevice physical_device,
                                         std::uint32_t type_filter,
                                         VkMemoryPropertyFlags properties) {
