@@ -3,6 +3,7 @@
 #include <array>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 #include <fmt/format.h>
 #include <GLFW/glfw3.h>
 #include <glm/ext/matrix_transform.hpp>
@@ -493,6 +494,26 @@ namespace sq::graphics {
 
     bool Renderer::is_key_pressed(int key) const {
         return window_->is_key_pressed(key);
+    }
+
+    void Renderer::set_key_callback(Window::KeyCallback callback) {
+        window_->set_key_callback(std::move(callback));
+    }
+
+    void Renderer::set_cursor_pos_callback(Window::CursorPosCallback callback) {
+        window_->set_cursor_pos_callback(std::move(callback));
+    }
+
+    void Renderer::set_mouse_button_callback(Window::MouseButtonCallback callback) {
+        window_->set_mouse_button_callback(std::move(callback));
+    }
+
+    void Renderer::set_scroll_callback(Window::ScrollCallback callback) {
+        window_->set_scroll_callback(std::move(callback));
+    }
+
+    void Renderer::set_cursor_captured(bool captured) {
+        window_->set_cursor_captured(captured);
     }
 
     void Renderer::set_fullscreen(bool enabled) {

@@ -47,6 +47,14 @@ public:
     // キー入力の状態を返す（Windowへの委譲）。keyはGLFW_KEY_*
     [[nodiscard]] bool is_key_pressed(int key) const;
 
+    // 入力コールバックの配線（Windowへの委譲）。アプリ側のInputManagerへ接続するために使う。
+    void set_key_callback(Window::KeyCallback callback);
+    void set_cursor_pos_callback(Window::CursorPosCallback callback);
+    void set_mouse_button_callback(Window::MouseButtonCallback callback);
+    void set_scroll_callback(Window::ScrollCallback callback);
+    // マウス視線用のカーソルキャプチャ（Windowへの委譲）。
+    void set_cursor_captured(bool captured);
+
     // -- windowの委譲メソッド --
 
     // フルスクリーン切替の公開API。Window切替 + 次フレームのrecreateで排他モードを取得する。

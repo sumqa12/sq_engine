@@ -7,8 +7,11 @@
 
 #include "sq/ecs/registry.hpp"
 #include "sq/graphics/renderer.hpp"
+#include "sq/input/input_manager.hpp"
+#include "sq/input/input_system.hpp"
 #include "sq/scene/transform.hpp"
 #include "sq/scene/camera.hpp"
+#include "sq/scene/controller.hpp"
 #include "sq/scene/position.hpp"
 #include "sq/scene/velocity.hpp"
 
@@ -20,6 +23,13 @@ using namespace std::chrono;
 
 void loop(const sq::ecs::Registry &registry) {
     auto renderer = sq::graphics::Renderer(800, 600, "sq_engine sandbox_graphics");
+
+    // TODO(phase9): InputManager を生成し、Renderer 経由でコールバックを配線する:
+    //   sq::input::InputManager input;
+    //   renderer.set_key_callback(         [&](int k, int a){ input.on_key(k, a != GLFW_RELEASE); });
+    //   renderer.set_mouse_button_callback([&](int b, int a){ input.on_mouse_button(b, a != GLFW_RELEASE); });
+    //   renderer.set_cursor_pos_callback(  [&](double x, double y){ input.on_cursor_pos(x, y); });
+    //   renderer.set_scroll_callback(      [&](double x, double y){ input.on_scroll(x, y); });
 
     steady_clock::time_point init = steady_clock::now();
     const steady_clock::time_point start = init;  // カメラ旋回の経過時間の基準
@@ -35,14 +45,22 @@ void loop(const sq::ecs::Registry &registry) {
     bool f11_prev = false;
 
     while (!renderer.should_close()) {
+        // TODO(phase9): 入力のフレーム更新は poll_events の「前」に呼ぶ:
+        //   input.new_frame();
         sq::graphics::Window::poll_events();
 
         // フルスクリーン切り替え
+        // TODO(phase9): InputManager 導入後は is_pressed(エッジ検出)へ置換し、f11_prev を削除する:
+        //   if (input.is_pressed(GLFW_KEY_F11)) renderer.set_fullscreen(!renderer.is_fullscreen());
         bool f11_now = renderer.is_key_pressed(GLFW_KEY_F11);
         if (f11_now && !f11_prev) {
             renderer.set_fullscreen(!renderer.is_fullscreen());
         }
         f11_prev = f11_now;
+
+        // TODO(phase9): 右ボタンのエッジでカーソルキャプチャを切り替える（マウス視線）:
+        //   if (input.is_mouse_pressed(GLFW_MOUSE_BUTTON_RIGHT))  renderer.set_cursor_captured(true);
+        //   if (input.is_mouse_released(GLFW_MOUSE_BUTTON_RIGHT)) renderer.set_cursor_captured(false);
 
         steady_clock::time_point now = steady_clock::now();
 
@@ -63,6 +81,11 @@ void loop(const sq::ecs::Registry &registry) {
             double delta_u_time = duration_cast<duration<double>>(now - prev_u).count() * 1000;
 
             // ECSの更新処理をここに追加することができます
+
+            // TODO(phase9): FreeFlyカメラ操作を適用する:
+            //   sq::input::update_camera_control(registry, input, du);  // du = 1/TARGET_UPS 秒
+            // 注意: 下の周回ロジックはカメラ位置(target)を中心にしているため、カメラを手動操作すると
+            //   立方体群がカメラに追従して不自然になる。周回の中心を原点固定にするか、周回自体を外す。
 
             // オブジェクトがカメラを中心に、地面(XZ平面)と平行な円軌道を回る例。
             const sq::ecs::Entity camera_entity = registry.view<Camera>().front();
@@ -151,6 +174,10 @@ int main() {
             .position = {0.0f, 1.5f, 3.0f},
             .target = glm::vec3(0.0f, 0.0f, 6.0f),
         });
+        // TODO(phase9): このカメラを操作対象にする（FreeFly）:
+        //   registry.add<ControlTarget>(camera_entity, {});
+        //   registry.add<Controller>(camera_entity, Controller{ .yaw = ..., .pitch = ... });
+        //   yaw/pitch は初期 forward = normalize(target - position) から求めて設定するとよい。
     }
 
     loop(registry);

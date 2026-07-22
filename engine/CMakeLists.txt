@@ -19,6 +19,8 @@ add_library(sq_engine_lib STATIC
     src/graphics/depth_image.cpp
     src/graphics/texture.cpp
     src/graphics/sampler.cpp
+    src/input/input_manager.cpp
+    src/input/input_system.cpp
 )
 
 target_include_directories(sq_engine_lib PUBLIC include)
