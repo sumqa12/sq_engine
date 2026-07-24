@@ -2,4 +2,3 @@ build/
 CMakeUserPresets.json
 .cache/
 .idea/
-/textures/hsr_icon_01/
