@@ -4,7 +4,6 @@
 #include "sq/graphics/window.hpp"
 
 #include <stdexcept>
-#include <vector>
 
 #ifdef GLFW_EXPOSE_NATIVE_WIN32
     #include <windows.h>
@@ -41,19 +40,11 @@ namespace sq::graphics {
         glfwSetWindowUserPointer(window_, this);
         glfwSetFramebufferSizeCallback(window_, &Window::framebuffer_size_callback);
         glfwSetWindowFocusCallback(window_, &Window::focus_callback);
-        // TODO(phase9): 入力コールバックを登録する（user pointer は上で設定済みなので共用できる）:
-        //   glfwSetKeyCallback(window_, &Window::key_callback);
-        //   glfwSetCursorPosCallback(window_, &Window::cursor_pos_callback);
-        //   glfwSetMouseButtonCallback(window_, &Window::mouse_button_callback);
-        //   glfwSetScrollCallback(window_, &Window::scroll_callback);
-
-
-        glfwSetKeyCallback(window_, [](GLFWwindow* window, int key, int scancode, int action, int mods) {
-
-        });
-        (void)width;
-        (void)height;
-        (void)title;
+        // 入力コールバックを登録する（user pointer は上で設定済みなので共用できる）(phase9)
+        glfwSetKeyCallback(window_, &Window::key_callback);
+        glfwSetCursorPosCallback(window_, &Window::cursor_pos_callback);
+        glfwSetMouseButtonCallback(window_, &Window::mouse_button_callback);
+        glfwSetScrollCallback(window_, &Window::scroll_callback);
     }
 
     // GLFWの終了とウィンドウの破棄を行います。
@@ -173,52 +164,55 @@ namespace sq::graphics {
     // -- 入力コールバックの設定（転送先 std::function を保存する） --
 
     void Window::set_key_callback(KeyCallback callback) {
-        // TODO(phase9): key_callback_ = std::move(callback);
-        (void)callback;
+        key_callback_ = std::move(callback);
     }
 
     void Window::set_cursor_pos_callback(CursorPosCallback callback) {
-        // TODO(phase9): cursor_pos_callback_ = std::move(callback);
-        (void)callback;
+        cursor_pos_callback_ = std::move(callback);
     }
 
     void Window::set_mouse_button_callback(MouseButtonCallback callback) {
-        // TODO(phase9): mouse_button_callback_ = std::move(callback);
-        (void)callback;
+        mouse_button_callback_ = std::move(callback);
     }
 
     void Window::set_scroll_callback(ScrollCallback callback) {
-        // TODO(phase9): scroll_callback_ = std::move(callback);
-        (void)callback;
+        scroll_callback_ = std::move(callback);
     }
 
     void Window::set_cursor_captured(bool captured) {
-        // TODO(phase9): glfwSetInputMode(window_, GLFW_CURSOR,
-        //   captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
-        (void)captured;
+        glfwSetInputMode(window_, GLFW_CURSOR,
+            captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
     }
 
     // -- GLFW からの静的コールバック（user pointer 経由で Window* を取り出し転送する。focus_callback と同方式） --
 
     void Window::key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-        // TODO(phase9): Window* を取り出し、key_callback_ が設定済みなら key_callback_(key, action) を呼ぶ。
-        //   auto win = static_cast<Window*>(glfwGetWindowUserPointer(window));
-        //   if (win && win->key_callback_) win->key_callback_(key, action);
-        (void)window; (void)key; (void)scancode; (void)action; (void)mods;
+        if (auto win = static_cast<Window*>(glfwGetWindowUserPointer(window))
+            ; win && win->key_callback_) {
+            win->key_callback_(key, action);
+        }
+        (void)scancode; (void)mods;
     }
 
     void Window::cursor_pos_callback(GLFWwindow* window, double x, double y) {
-        // TODO(phase9): if (win && win->cursor_pos_callback_) win->cursor_pos_callback_(x, y);
-        (void)window; (void)x; (void)y;
+        if (auto win = static_cast<Window*>(glfwGetWindowUserPointer(window))
+            ; win && win->cursor_pos_callback_) {
+            win->cursor_pos_callback_(x, y);
+        }
     }
 
     void Window::mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
-        // TODO(phase9): if (win && win->mouse_button_callback_) win->mouse_button_callback_(button, action);
-        (void)window; (void)button; (void)action; (void)mods;
+        if (auto win = static_cast<Window*>(glfwGetWindowUserPointer(window))
+            ; win && win->mouse_button_callback_) {
+            win->mouse_button_callback_(button, action);
+        }
+        (void)mods;
     }
 
     void Window::scroll_callback(GLFWwindow* window, double x_offset, double y_offset) {
-        // TODO(phase9): if (win && win->scroll_callback_) win->scroll_callback_(x_offset, y_offset);
-        (void)window; (void)x_offset; (void)y_offset;
+        if (auto win = static_cast<Window*>(glfwGetWindowUserPointer(window))
+            ; win && win->scroll_callback_) {
+            win->scroll_callback_(x_offset, y_offset);
+        }
     }
 }  // namespace sq::graphics

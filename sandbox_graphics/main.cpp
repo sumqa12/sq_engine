@@ -24,15 +24,14 @@ using namespace std::chrono;
 void loop(const sq::ecs::Registry &registry) {
     auto renderer = sq::graphics::Renderer(800, 600, "sq_engine sandbox_graphics");
 
-    // TODO(phase9): InputManager を生成し、Renderer 経由でコールバックを配線する:
-    //   sq::input::InputManager input;
-    //   renderer.set_key_callback(         [&](int k, int a){ input.on_key(k, a != GLFW_RELEASE); });
-    //   renderer.set_mouse_button_callback([&](int b, int a){ input.on_mouse_button(b, a != GLFW_RELEASE); });
-    //   renderer.set_cursor_pos_callback(  [&](double x, double y){ input.on_cursor_pos(x, y); });
-    //   renderer.set_scroll_callback(      [&](double x, double y){ input.on_scroll(x, y); });
+    // InputManager を生成し、Renderer 経由でコールバックを配線する (phase9)
+    sq::input::InputManager input;
+    renderer.set_key_callback([&](int k, int a){ input.on_key(k, a != GLFW_RELEASE); });
+    renderer.set_mouse_button_callback([&](int b, int a){ input.on_mouse_button(b, a != GLFW_RELEASE); });
+    renderer.set_cursor_pos_callback([&](double x, double y){ input.on_cursor_pos(x, y); });
+    renderer.set_scroll_callback([&](double x, double y){ input.on_scroll(x, y); });
 
     steady_clock::time_point init = steady_clock::now();
-    const steady_clock::time_point start = init;  // カメラ旋回の経過時間の基準
     constexpr double time_f = 1000 / TARGET_FPS;
     constexpr double time_u = 1000 / TARGET_UPS;
     double delta_f = 0;
@@ -42,25 +41,23 @@ void loop(const sq::ecs::Registry &registry) {
     steady_clock::time_point prev_u = steady_clock::now();
     constexpr float du = 1.0f / TARGET_UPS;
 
-    bool f11_prev = false;
-
     while (!renderer.should_close()) {
-        // TODO(phase9): 入力のフレーム更新は poll_events の「前」に呼ぶ:
-        //   input.new_frame();
         sq::graphics::Window::poll_events();
 
+        // escシャットダウン
+        if (input.is_pressed(GLFW_KEY_ESCAPE)) {
+            glfwTerminate();
+        }
+
         // フルスクリーン切り替え
-        // TODO(phase9): InputManager 導入後は is_pressed(エッジ検出)へ置換し、f11_prev を削除する:
-        //   if (input.is_pressed(GLFW_KEY_F11)) renderer.set_fullscreen(!renderer.is_fullscreen());
-        bool f11_now = renderer.is_key_pressed(GLFW_KEY_F11);
-        if (f11_now && !f11_prev) {
+        if (input.is_pressed(GLFW_KEY_F11)) {
             renderer.set_fullscreen(!renderer.is_fullscreen());
         }
-        f11_prev = f11_now;
 
-        // TODO(phase9): 右ボタンのエッジでカーソルキャプチャを切り替える（マウス視線）:
-        //   if (input.is_mouse_pressed(GLFW_MOUSE_BUTTON_RIGHT))  renderer.set_cursor_captured(true);
-        //   if (input.is_mouse_released(GLFW_MOUSE_BUTTON_RIGHT)) renderer.set_cursor_captured(false);
+        // 右ボタンのエッジでカーソルキャプチャを切り替える（マウス視線）:
+        renderer.set_cursor_captured(
+            !input.is_down(GLFW_KEY_LEFT_ALT)
+        );
 
         steady_clock::time_point now = steady_clock::now();
 
@@ -82,44 +79,10 @@ void loop(const sq::ecs::Registry &registry) {
 
             // ECSの更新処理をここに追加することができます
 
-            // TODO(phase9): FreeFlyカメラ操作を適用する:
-            //   sq::input::update_camera_control(registry, input, du);  // du = 1/TARGET_UPS 秒
-            // 注意: 下の周回ロジックはカメラ位置(target)を中心にしているため、カメラを手動操作すると
-            //   立方体群がカメラに追従して不自然になる。周回の中心を原点固定にするか、周回自体を外す。
+            // FreeFlyカメラ操作を適用する:
+            sq::input::update_camera_control(registry, input, du);  // du = 1/TARGET_UPS 秒
 
-            // オブジェクトがカメラを中心に、地面(XZ平面)と平行な円軌道を回る例。
-            const sq::ecs::Entity camera_entity = registry.view<Camera>().front();
-
-            glm::vec3 target;
-
-            if (camera_entity.is_null()) {
-                target = glm::vec3(0.0f, 1.5f, 3.0f);
-            } else {
-                const Camera& cam = registry.get<Camera>(camera_entity);
-                target = cam.position;
-            }
-
-            constexpr float radius = 3.0f;
-
-            registry.view<Position, Velocity>().each(
-                [target](const sq::ecs::Entity &e, Position& pos, Velocity& vel) {
-                    // カメラの周りを回転するように、位置を更新する
-                    const float dx = pos.x - target.x;
-                    const float dz = pos.z - target.z;
-
-                    // 正規化
-                    const float dist = glm::min(sqrt(dx * dx + dz * dz), radius);
-                    const float nx = dx / dist;
-                    const float nz = dz / dist;
-
-                    // 接線方向 = 半径方向を90度回転
-                    vel.vx = -nz * radius * du;
-                    vel.vz = nx * radius * du;
-
-                    // 位置の更新
-                    pos += vel * 1.2f;
-                }
-            );
+            input.new_frame(); // 入力の消費
 
             delta_u--;
             prev_u = now;
@@ -148,11 +111,10 @@ void loop(const sq::ecs::Registry &registry) {
 int main() {
     sq::ecs::Registry registry;
 
-    constexpr int kEntityCount = 100;
+    constexpr int kEntityCount = 10;
     float angle = 0.0f;
     for (int i = 0; i < kEntityCount; ++i) {
         float radius = 3.0f;
-        angle += 360.0 / kEntityCount;
         float x = radius * sin(angle);
         float z = radius * cos(angle);
 
@@ -165,18 +127,29 @@ int main() {
                     glm::vec3())
             }
         );
+        angle += 360.0 / kEntityCount;
     }
 
     {
         const sq::ecs::Entity camera_entity = registry.create();
         // 少し高い位置から原点を見下ろすカメラ。高さ(y)は旋回中も維持される。
+        auto position = glm::vec3(0.0f, 1.5f, 3.0f);
+        auto target = glm::vec3(0.0f, 0.0f, 0.0f);
+
         registry.add<Camera>(camera_entity, Camera{
-            .position = {0.0f, 1.5f, 3.0f},
-            .target = glm::vec3(0.0f, 0.0f, 6.0f),
+            .position = position,
+            .target = target,
         });
-        // TODO(phase9): このカメラを操作対象にする（FreeFly）:
-        //   registry.add<ControlTarget>(camera_entity, {});
-        //   registry.add<Controller>(camera_entity, Controller{ .yaw = ..., .pitch = ... });
+
+        // このカメラを操作対象にする（FreeFly）:
+        auto forward = glm::normalize(target - position);
+        registry.add<ControlTarget>(camera_entity, {});
+        registry.add<Controller>(camera_entity,
+            Controller {
+                .yaw = atan2(forward.z, forward.x),
+                .pitch = atan2(forward.y, sqrt(forward.x * forward.x + forward.z * forward.z)),
+            }
+        );
         //   yaw/pitch は初期 forward = normalize(target - position) から求めて設定するとよい。
     }
 
