@@ -18,10 +18,10 @@
 using namespace sq::scene;
 using namespace std::chrono;
 
-#define TARGET_FPS 60.0f
+#define TARGET_FPS 240.0f
 #define TARGET_UPS 30.0f
 
-void loop(const sq::ecs::Registry &registry) {
+static void loop(const sq::ecs::Registry &registry) {
     auto renderer = sq::graphics::Renderer(800, 600, "sq_engine sandbox_graphics");
 
     // InputManager を生成し、Renderer 経由でコールバックを配線する (phase9)
@@ -44,21 +44,6 @@ void loop(const sq::ecs::Registry &registry) {
     while (!renderer.should_close()) {
         sq::graphics::Window::poll_events();
 
-        // escシャットダウン
-        if (input.is_pressed(GLFW_KEY_ESCAPE)) {
-            glfwTerminate();
-        }
-
-        // フルスクリーン切り替え
-        if (input.is_pressed(GLFW_KEY_F11)) {
-            renderer.set_fullscreen(!renderer.is_fullscreen());
-        }
-
-        // 右ボタンのエッジでカーソルキャプチャを切り替える（マウス視線）:
-        renderer.set_cursor_captured(
-            !input.is_down(GLFW_KEY_LEFT_ALT)
-        );
-
         steady_clock::time_point now = steady_clock::now();
 
         // ミリ秒
@@ -77,12 +62,31 @@ void loop(const sq::ecs::Registry &registry) {
         if (delta_u >= 1.0) {
             double delta_u_time = duration_cast<duration<double>>(now - prev_u).count() * 1000;
 
-            // ECSの更新処理をここに追加することができます
+            // 入力処理
+            // escシャットダウン
+            if (input.is_pressed(GLFW_KEY_ESCAPE)) {
+                glfwTerminate();
+                break;
+            }
+
+            // フルスクリーン切り替え
+            if (input.is_pressed(GLFW_KEY_F11)) {
+                printf("F11\n");
+                renderer.set_fullscreen(!renderer.is_fullscreen());
+            }
+
+            // 右ボタンのエッジでカーソルキャプチャを切り替える（マウス視線）:
+            renderer.set_cursor_captured(
+                !input.is_down(GLFW_KEY_LEFT_ALT)
+            );
 
             // FreeFlyカメラ操作を適用する:
             sq::input::update_camera_control(registry, input, du);  // du = 1/TARGET_UPS 秒
 
             input.new_frame(); // 入力の消費
+
+            // ECSの更新処理をここに追加することができます
+
 
             delta_u--;
             prev_u = now;
