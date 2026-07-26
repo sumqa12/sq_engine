@@ -1,6 +1,7 @@
 add_library(sq_engine_lib STATIC
     src/ecs/archetype.cpp
     src/ecs/registry.cpp
+    src/ecs/system_scheduler.cpp
     src/graphics/window.cpp
     src/graphics/vulkan_instance.cpp
     src/graphics/debug_messenger.cpp
@@ -19,8 +20,10 @@ add_library(sq_engine_lib STATIC
     src/graphics/depth_image.cpp
     src/graphics/texture.cpp
     src/graphics/sampler.cpp
+    src/graphics/single_time_commands.cpp
     src/input/input_manager.cpp
-    src/input/input_system.cpp
+    src/input/input_map.cpp
+    src/input/camera_control_system.cpp
 )
 
 target_include_directories(sq_engine_lib PUBLIC include)

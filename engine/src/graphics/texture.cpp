@@ -9,6 +9,8 @@
 #include <stb_image.h>
 #include <spdlog/spdlog.h>
 
+#include "sq/graphics/single_time_commands.hpp"
+
 namespace sq::graphics {
 
 Texture::Texture(VkPhysicalDevice physical_device, VkDevice device,
@@ -28,9 +30,16 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device,
         spdlog::log(spdlog::level::warn, "Texture : stbi_load : 画像のサイズが適切ではありません。");
     }
 
+    // もしデフォルトテクスチャも読み込めなかった場合は、例外を投げる
+    if (stbi_image == nullptr) {
+        throw std::runtime_error("Texture : stbi_load : デフォルトテクスチャの読み込みに失敗しました。");
+    }
+
     //  2. StagingBuffer(physical_device, device, pixels, image_size) を作成 → stbi_image_free(pixels)。
+    // コピーした後、コピー元を解放する
     VkDeviceSize image_size = width * height * 4;
     StagingBuffer staging_buffer(physical_device, device, stbi_image, image_size);
+    stbi_image_free(stbi_image);
 
     //  3. VkImageCreateInfo（imageType=2D, extent={w,h,1}, mipLevels=1, arrayLayers=1,
     //     format=VK_FORMAT_R8G8B8A8_SRGB, tiling=OPTIMAL,
@@ -73,42 +82,13 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device,
     }
 
     if (VkResult result = vkBindImageMemory(device_, image_, memory_, 0); result != VK_SUCCESS) {
-        throw std::runtime_error("Texture : vkAllocateMemory : メモリの確保に失敗しました。");
+        throw std::runtime_error("Texture : vkBindImageMemory : メモリの確保に失敗しました。");
     }
 
+    // 5. 「一時プール生成〜プール破棄」までを SingleTimeCommands に置き換える（phase10プラン E-2）
+    SingleTimeCommands cmd(device, graphics_queue_family, graphics_queue);
 
-    //  5. 一時コマンドプール（VK_COMMAND_POOL_CREATE_TRANSIENT_BIT, graphics_queue_family）を作り、
-    //     1本のコマンドバッファに以下をまとめて記録:
-    //       transition_image_layout(cmd, image_, UNDEFINED, TRANSFER_DST_OPTIMAL)
-    //       vkCmdCopyBufferToImage(cmd, staging.handle(), image_, TRANSFER_DST_OPTIMAL, 1, &region)
-    //         region: bufferOffset=0, imageSubresource{aspect=COLOR, mip0, layer0, count1}, imageExtent={w,h,1}
-    //       transition_image_layout(cmd, image_, TRANSFER_DST_OPTIMAL, SHADER_READ_ONLY_OPTIMAL)
-    //     vkQueueSubmit(graphics_queue, ...) → vkQueueWaitIdle → コマンドバッファ解放 → 一時プール破棄。
-    VkCommandPool command_pool;
-    VkCommandPoolCreateInfo command_pool_create_info = {};
-    command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    command_pool_create_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    command_pool_create_info.queueFamilyIndex = graphics_queue_family;
-    vkCreateCommandPool(device, &command_pool_create_info, nullptr, &command_pool);
-
-    // コマンドバッファを1本確保
-    VkCommandBuffer command_buffer;
-    VkCommandBufferAllocateInfo command_buffer_allocate_info = {};
-    command_buffer_allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    command_buffer_allocate_info.commandBufferCount = 1;
-    command_buffer_allocate_info.commandPool = command_pool;
-    command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    if (VkResult result = vkAllocateCommandBuffers(device, &command_buffer_allocate_info, &command_buffer); result != VK_SUCCESS) {
-        throw std::runtime_error("Texture : vkAllocateCommandBuffers : コマンドバッファの確保に失敗しました。");
-    }
-
-    // 記録
-    VkCommandBufferBeginInfo command_buffer_begin_info = {};
-    command_buffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(command_buffer, &command_buffer_begin_info);
-
-    transition_image_layout(command_buffer  , image_, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    transition_image_layout(cmd.handle(), image_, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     VkBufferImageCopy region = {};
     region.bufferOffset = 0;
@@ -119,23 +99,13 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device,
     region.imageExtent.width = width;
     region.imageExtent.height = height;
     region.imageExtent.depth = 1;
-    vkCmdCopyBufferToImage(command_buffer, staging_buffer.handle(), image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,  &region);
+    vkCmdCopyBufferToImage(cmd.handle(), staging_buffer.handle(), image_,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    transition_image_layout(command_buffer, image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    transition_image_layout(cmd.handle(), image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-    vkEndCommandBuffer(command_buffer);
-
-    // 送信 -> 完了待ち
-    VkSubmitInfo submit_info = {};
-    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = &command_buffer;
-    vkQueueSubmit(graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
-    vkQueueWaitIdle(graphics_queue); // 転送完了までブロック
-
-    // 後始末
-    vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
-    vkDestroyCommandPool(device, command_pool, nullptr);
+    cmd.submit_and_wait();
 
     //  6. VkImageViewCreateInfo（format=VK_FORMAT_R8G8B8A8_SRGB, aspect=VK_IMAGE_ASPECT_COLOR_BIT）
     //     → vkCreateImageView(device_, ..., &view_)。
@@ -152,11 +122,6 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device,
     if (VkResult result = vkCreateImageView(device_, &view_create_info, nullptr, &view_); result != VK_SUCCESS) {
         throw std::runtime_error("Texture : vkCreateImageView : イメージビューの作成に失敗しました。");
     }
-
-    (void)physical_device;
-    (void)graphics_queue_family;
-    (void)graphics_queue;
-    (void)path;
 }
 
 Texture::~Texture() {

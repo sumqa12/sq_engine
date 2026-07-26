@@ -174,10 +174,14 @@ namespace sq::graphics {
             float aspect_ratio = static_cast<float>(swapchain_->extent().width) / static_cast<float>(swapchain_->extent().height);
 
             // カメラの取得
-            ecs::Entity camera_entity = registry.view<scene::Camera>().front();
-
-            // カメラ不在時のフォールバック
+            // アクティブカメラの選択を3段フォールバックにする（phase10プラン D-2）
             glm::mat4 view_projection = scene::Camera::default_view_projection(aspect_ratio);
+            ecs::Entity camera_entity = registry.view<scene::Camera, scene::ActiveCamera>().front();
+
+            if (camera_entity.is_null()) {
+                camera_entity = registry.view<scene::Camera>().front();
+            }
+
             if (!camera_entity.is_null()) {
                 const scene::Camera& camera = registry.get<scene::Camera>(camera_entity);
                 view_projection = camera.view_projection(aspect_ratio);
