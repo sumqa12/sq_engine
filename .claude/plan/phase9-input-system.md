@@ -58,7 +58,8 @@ CLAUDE.mdのルール（コード生成は宣言まで）に従い以下を作�
 5. 速度/感度/pitchクランプ/ズーム微調整、周回ロジック整理、必要なら `Camera::far_plane` 拡大
 
 ## 検証方法
-- ビルド（CLion同梱cmake）: `& "C:\Users\user\AppData\Local\Programs\CLion\bin\cmake\win\x64\bin\cmake.exe" --build build/debug --config Debug`
+- ビルドはCLion同梱cmakeを使う（buildツリーがそれで構成されているため）。
+  複数デバイスで開発しているため、cmakeの絶対パスとbuildツリー名はここに固定で書かない（`CMakeCache.txt` の `CMAKE_COMMAND` を参照）。
 - 実行: 右ボタンドラッグで視線、WASD＋Q/Eで移動。（任意でホイールズーム）
 - リサイズ・フルスクリーン切替(F11)後も入力継続。フォーカス喪失ポーズ（`is_focused()`）と両立し暴発しない。キャプチャ解除で通常カーソルに戻る。
 - F11トグルが `InputManager` 経由で従来通り動く。

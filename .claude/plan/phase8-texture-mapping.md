@@ -294,8 +294,8 @@ CLAUDE.mdのルール（コード生成は宣言まで）に従い以下を作�
 7. **アセット配置**（項目11）: PNG用意 + CMakeコピーステップ
 
 ## 検証方法
-- ビルドはCLion同梱cmakeを使う（buildツリーがCMake 4.2構成のため。[メモ参照](../../.claude/projects/.../memory)）:
-  `& "C:\Users\user\AppData\Local\Programs\CLion\bin\cmake\win\x64\bin\cmake.exe" --build build --config Debug`
+- ビルドはCLion同梱cmakeを使う（buildツリーがそれで構成されているため）。
+  複数デバイスで開発しているため、cmakeの絶対パスとbuildツリー名はここに固定で書かない（`CMakeCache.txt` の `CMAKE_COMMAND` を参照）。
 - 手順4完了時: テクスチャ生成で検証レイヤーのエラー（レイアウト遷移・アクセスマスク不整合のVUID）が出ないこと
 - 手順6完了時: 立方体の各面にテクスチャが正しく貼られ、回転しても歪まない・遮蔽関係（深度）も維持されること
 - リサイズ・最小化復帰・フルスクリーン切替（F11）・Alt+Tab復帰で、テクスチャ描画が継続し検証エラーが出ないこと

@@ -174,6 +174,11 @@ namespace sq::graphics {
             float aspect_ratio = static_cast<float>(swapchain_->extent().width) / static_cast<float>(swapchain_->extent().height);
 
             // カメラの取得
+            // TODO: アクティブカメラの選択を3段フォールバックにする（phase10プラン D-2）
+            //   1. registry.view<scene::Camera, scene::ActiveCamera>().front()  … ActiveCamera タグ付き
+            //   2. null なら registry.view<scene::Camera>().front()             … 後方互換（従来の挙動）
+            //   3. それも null なら default_view_projection（下の既定値のまま）
+            //   フォールバックした事実を毎フレームログに出さないこと。
             ecs::Entity camera_entity = registry.view<scene::Camera>().front();
 
             // カメラ不在時のフォールバック

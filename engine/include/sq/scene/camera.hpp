@@ -4,6 +4,8 @@
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/ext/matrix_transform.hpp>
 
+#include "sq/ecs/registry.hpp"
+
 namespace sq::scene {
 
 // 透視投影カメラのECSコンポーネント。位置・注視点・画角などのパラメータを保持し、
@@ -31,6 +33,19 @@ struct Camera {
         return projection * view;
     }
 };
+
+// 描画に使うカメラを示すタグ（データメンバなし。phase10プラン D-1）。
+// カメラエンティティが複数あっても、このタグが付いたものを Renderer が選ぶ。
+// タグ付きが複数ある場合はアーキタイプ走査順の最初の1つが選ばれる（決定的ではないため、
+// set_active_camera() を使って常に1つだけになるよう管理すること）。
+struct ActiveCamera {};
+
+// entity を唯一のアクティブカメラにする。他のエンティティからは ActiveCamera を外す。
+//
+// 注意（ECSの罠）: View::each() のラムダ内で add/remove するとアーキタイプ間移動が起きて
+// 反復中のストレージが壊れる。「先に対象Entityをvectorへ収集 → ループを抜けてから付け替え」
+// の2段構えで実装すること。
+void set_active_camera(sq::ecs::Registry& registry, sq::ecs::Entity entity);
 
 // Uniform Bufferへ転送するカメラデータのGPU側レイアウト。
 // シェーダーの layout(set=0, binding=0) uniform CameraUBO と一致させる。

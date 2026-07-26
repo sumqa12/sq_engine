@@ -6,8 +6,11 @@
 #include <spdlog/details/registry.h>
 
 #include "sq/ecs/registry.hpp"
+#include "sq/ecs/system_scheduler.hpp"
 #include "sq/graphics/renderer.hpp"
+#include "sq/input/camera_control_system.hpp"
 #include "sq/input/input_manager.hpp"
+#include "sq/input/input_map.hpp"
 #include "sq/input/input_system.hpp"
 #include "sq/scene/transform.hpp"
 #include "sq/scene/camera.hpp"
@@ -30,6 +33,12 @@ static void loop(const sq::ecs::Registry &registry) {
     renderer.set_mouse_button_callback([&](int b, int a){ input.on_mouse_button(b, a != GLFW_RELEASE); });
     renderer.set_cursor_pos_callback([&](double x, double y){ input.on_cursor_pos(x, y); });
     renderer.set_scroll_callback([&](double x, double y){ input.on_scroll(x, y); });
+
+    // キーコンフィグとシステムスケジューラを用意する（phase10プラン F）
+    sq::input::InputMap input_map = sq::input::InputMap::default_map();
+    sq::ecs::SystemScheduler scheduler;
+    scheduler.emplace_control_system<sq::input::CameraControlSystem>();
+    //   （将来）scheduler.emplace_system<...>();  // 入力に依存しない更新処理
 
     steady_clock::time_point init = steady_clock::now();
     constexpr double time_f = 1000 / TARGET_FPS;
@@ -63,30 +72,17 @@ static void loop(const sq::ecs::Registry &registry) {
             double delta_u_time = duration_cast<duration<double>>(now - prev_u).count() * 1000;
 
             // 入力処理
-            // escシャットダウン
-            if (input.is_pressed(GLFW_KEY_ESCAPE)) {
-                glfwTerminate();
-                break;
-            }
+            // 生キー問い合わせを Action ベースへ置き換える（phase10プラン F）
+            if (input_map.is_pressed(input, sq::input::Action::Quit)) { break; }
 
-            // フルスクリーン切り替え
-            if (input.is_pressed(GLFW_KEY_F11)) {
-                printf("F11\n");
+            if (input_map.is_pressed(input, sq::input::Action::ToggleFullscreen)) {
                 renderer.set_fullscreen(!renderer.is_fullscreen());
             }
 
-            // 右ボタンのエッジでカーソルキャプチャを切り替える（マウス視線）:
-            renderer.set_cursor_captured(
-                !input.is_down(GLFW_KEY_LEFT_ALT)
-            );
-
-            // FreeFlyカメラ操作を適用する:
-            sq::input::update_camera_control(registry, input, du);  // du = 1/TARGET_UPS 秒
+            renderer.set_cursor_captured(!input_map.is_down(input, sq::input::Action::CursorEnable));
+            scheduler.update(registry, input, input_map, du);  // du = 1/TARGET_UPS 秒
 
             input.new_frame(); // 入力の消費
-
-            // ECSの更新処理をここに追加することができます
-
 
             delta_u--;
             prev_u = now;
@@ -155,6 +151,12 @@ int main() {
             }
         );
         //   yaw/pitch は初期 forward = normalize(target - position) から求めて設定するとよい。
+
+        // TODO: このカメラを描画対象にする（phase10プラン D-3）
+        //   registry.add<ActiveCamera>(camera_entity, {});   // または set_active_camera(registry, camera_entity)
+        //
+        // TODO: 動作確認用に2台目のカメラ（別位置・scheme = ControlScheme::Orbit）を作り、
+        //       キーで set_active_camera() を呼び分けて視点が切り替わることを確認する。
     }
 
     loop(registry);
