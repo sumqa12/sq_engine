@@ -29,7 +29,7 @@ SingleTimeCommands::SingleTimeCommands(VkDevice device, std::uint32_t queue_fami
         throw std::runtime_error("SingleTimeCommands : vkAllocateCommandBuffers : コマンドバッファの確保に失敗しました。");
     }
 
-    // TODO: 記録を開始する
+    // 記録を開始する
     VkCommandBufferBeginInfo buffer_begin_info = {};
     buffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;

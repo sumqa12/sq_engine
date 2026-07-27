@@ -18,6 +18,7 @@ enum class Action {
     CursorEnable,        // 押下中のみカーソル表示（既定: 左ALT）
     ToggleFullscreen,
     Quit,
+    SwitchCamera,
     Count,
 };
 

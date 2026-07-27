@@ -1,5 +1,6 @@
 #include <chrono>
 #include <cmath>
+#include <random>
 #include <GLFW/glfw3.h>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -11,7 +12,6 @@
 #include "sq/input/camera_control_system.hpp"
 #include "sq/input/input_manager.hpp"
 #include "sq/input/input_map.hpp"
-#include "sq/input/input_system.hpp"
 #include "sq/scene/transform.hpp"
 #include "sq/scene/camera.hpp"
 #include "sq/scene/controller.hpp"
@@ -24,7 +24,7 @@ using namespace std::chrono;
 #define TARGET_FPS 240.0f
 #define TARGET_UPS 30.0f
 
-static void loop(const sq::ecs::Registry &registry) {
+static void loop(sq::ecs::Registry &registry) {
     auto renderer = sq::graphics::Renderer(800, 600, "sq_engine sandbox_graphics");
 
     // InputManager を生成し、Renderer 経由でコールバックを配線する (phase9)
@@ -49,6 +49,11 @@ static void loop(const sq::ecs::Registry &registry) {
     steady_clock::time_point prev_f = steady_clock::now();
     steady_clock::time_point prev_u = steady_clock::now();
     constexpr float du = 1.0f / TARGET_UPS;
+
+    std::vector<sq::ecs::Entity> cameras;
+    registry.view<Camera>().each([&](sq::ecs::Entity e, Camera) {
+        cameras.push_back(e);
+    });
 
     while (!renderer.should_close()) {
         sq::graphics::Window::poll_events();
@@ -80,6 +85,33 @@ static void loop(const sq::ecs::Registry &registry) {
             }
 
             renderer.set_cursor_captured(!input_map.is_down(input, sq::input::Action::CursorEnable));
+
+            // カメラ切り替え
+            if (input_map.is_pressed(input, sq::input::Action::SwitchCamera)) {
+
+                int active = 0;
+                if (sq::ecs::Entity active_controllable = get_active_controllable_camera(registry)
+                        ; active_controllable.is_null()) {
+                    set_active_controllable_camera(registry, cameras[0]);
+                    active = 0;
+                } else {
+                    for (int i = 0; i < cameras.size(); i++) {
+                        if (cameras[i] == active_controllable) {
+                            active = i;
+                            break;
+                        }
+                    }
+                }
+
+                int next = active + 1;
+                if (next >= cameras.size()) {
+                    next = 0;
+                }
+
+                printf("アクティブカメラ : %d\n", next);
+                set_active_controllable_camera(registry, cameras[next]);
+            }
+
             scheduler.update(registry, input, input_map, du);  // du = 1/TARGET_UPS 秒
 
             input.new_frame(); // 入力の消費
@@ -108,6 +140,36 @@ static void loop(const sq::ecs::Registry &registry) {
     }
 }
 
+sq::ecs::Entity create_camera(sq::ecs::Registry& registry,
+        ControlScheme scheme,
+        float x, float y, float z,
+        float tx, float ty, float tz) {
+    const sq::ecs::Entity camera_entity = registry.create();
+
+    // 少し高い位置から原点を見下ろすカメラ。高さ(y)は旋回中も維持される。
+    auto position = glm::vec3(x, y, z);
+    auto target = glm::vec3(tx, ty, tz);
+
+    registry.add<Camera>(camera_entity,
+        Camera {
+            .position = position,
+            .target = target,
+        }
+    );
+
+    // このカメラを操作対象にする（FreeFly）:
+    auto forward = glm::normalize(target - position);
+    registry.add<Controller>(camera_entity,
+        Controller {
+            .scheme = scheme,
+            .yaw = atan2(forward.z, forward.x),
+            .pitch = atan2(forward.y, sqrt(forward.x * forward.x + forward.z * forward.z))
+        }
+    );
+
+    return camera_entity;
+}
+
 int main() {
     sq::ecs::Registry registry;
 
@@ -131,32 +193,45 @@ int main() {
     }
 
     {
-        const sq::ecs::Entity camera_entity = registry.create();
-        // 少し高い位置から原点を見下ろすカメラ。高さ(y)は旋回中も維持される。
-        auto position = glm::vec3(0.0f, 1.5f, 3.0f);
-        auto target = glm::vec3(0.0f, 0.0f, 0.0f);
+        sq::ecs::Entity camera_1 = create_camera(
+            registry, ControlScheme::FreeFly,
+            0.0f, 1.5f, 3.0f, 0.0f,0.0f,0.0f);
 
-        registry.add<Camera>(camera_entity, Camera{
-            .position = position,
-            .target = target,
-        });
+        // このカメラを描画対象にする（phase10プラン D-3）
+        // または、set_active_camera
+        registry.add<ActiveCamera>(camera_1, {});
 
-        // このカメラを操作対象にする（FreeFly）:
-        auto forward = glm::normalize(target - position);
-        registry.add<ControlTarget>(camera_entity, {});
-        registry.add<Controller>(camera_entity,
-            Controller {
-                .yaw = atan2(forward.z, forward.x),
-                .pitch = atan2(forward.y, sqrt(forward.x * forward.x + forward.z * forward.z)),
+        // このカメラを操作対象にする
+        // または、set_controllable_camera
+        registry.add<ControlTarget>(camera_1, {});
+
+        // 1. 非決定的な乱数シードを取得
+        std::random_device rd;
+
+        // 2. メルセンヌ・ツイスタの乱数エンジンを初期化
+        std::mt19937 gen(rd());
+
+        // 3. 0.0 から 1.0 の範囲で一様に分布させる実数分布を設定
+        std::uniform_real_distribution dis(-10.0f, 10.0f);
+
+        // 後9個のカメラ
+        for (int i = 0; i < 9; ++i) {
+            int r_scheme = rand() % 2;
+            auto scheme = ControlScheme::FreeFly;
+            switch (r_scheme) {
+                case 0: scheme = ControlScheme::FreeFly; break;
+                case 1: scheme = ControlScheme::Orbit; break;
+                default: ;
             }
-        );
-        //   yaw/pitch は初期 forward = normalize(target - position) から求めて設定するとよい。
 
-        // TODO: このカメラを描画対象にする（phase10プラン D-3）
-        //   registry.add<ActiveCamera>(camera_entity, {});   // または set_active_camera(registry, camera_entity)
-        //
-        // TODO: 動作確認用に2台目のカメラ（別位置・scheme = ControlScheme::Orbit）を作り、
-        //       キーで set_active_camera() を呼び分けて視点が切り替わることを確認する。
+            float x = dis(gen);
+            float y = dis(gen);
+            float z = dis(gen);
+
+            create_camera(
+                registry, scheme,
+                x, y, z, 0.0f, 0.0f, 0.0f);
+        }
     }
 
     loop(registry);

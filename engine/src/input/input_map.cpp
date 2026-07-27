@@ -19,6 +19,7 @@ InputMap InputMap::default_map() {
     map.set(Action::CursorEnable,       InputDevice::Keyboard,    GLFW_KEY_LEFT_ALT);
     map.set(Action::ToggleFullscreen, InputDevice::Keyboard, GLFW_KEY_F11);
     map.set(Action::Quit,             InputDevice::Keyboard, GLFW_KEY_ESCAPE);
+    map.set(Action::SwitchCamera,     InputDevice::Keyboard, GLFW_KEY_C);
     return map;
 }
 
