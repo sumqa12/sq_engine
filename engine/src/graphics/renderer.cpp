@@ -1,14 +1,17 @@
 #include "sq/graphics/renderer.hpp"
 
+#include <algorithm>
 #include <array>
 #include <stdexcept>
 #include <thread>
 #include <utility>
+#include <vector>
 #include <fmt/format.h>
 #include <GLFW/glfw3.h>
 #include <glm/ext/matrix_transform.hpp>
 
 #include "sq/scene/camera.hpp"
+#include "sq/scene/material.hpp"
 #include "sq/scene/position.hpp"
 #include "sq/scene/transform.hpp"
 
@@ -59,10 +62,16 @@ namespace sq::graphics {
         create_descriptor_pool();
         create_descriptor_sets();
 
-        // 12. パイプラインの作成
-        pipeline_ = std::make_unique<GraphicsPipeline>(device_->handle(), render_pass_->handle(), swapchain_->extent(),
+        // 12. パイプラインの作成（phase11 ①: 不透明用・半透明用の 2 本。SPV とレイアウトは共通）
+        pipeline_opaque_ = std::make_unique<GraphicsPipeline>(device_->handle(), render_pass_->handle(), swapchain_->extent(),
                                             "shaders/triangle.vert.spv", "shaders/triangle.frag.spv",
-                                            descriptor_set_layout_);
+                                            descriptor_set_layout_,
+                                            PipelineConfig{ .depth_write_enable = true,  .blend_enable = false });
+
+        pipeline_transparent_ = std::make_unique<GraphicsPipeline>(device_->handle(), render_pass_->handle(), swapchain_->extent(),
+                                            "shaders/triangle.vert.spv", "shaders/triangle.frag.spv",
+                                            descriptor_set_layout_,
+                                            PipelineConfig{ .depth_write_enable = false, .blend_enable = true });
 
         // 13. フレームバッファの作成
         create_framebuffers();
@@ -84,7 +93,8 @@ namespace sq::graphics {
         cube_indices_.reset();
         sync_objects_.reset();
         command_buffers_.reset();
-        pipeline_.reset();
+        pipeline_transparent_.reset();
+        pipeline_opaque_.reset();
 
         vkDestroyDescriptorPool(device_->handle(), descriptor_pool_, nullptr);
         vkDestroyDescriptorSetLayout(device_->handle(), descriptor_set_layout_, nullptr);
@@ -168,14 +178,13 @@ namespace sq::graphics {
             VkRect2D scissor{ {0, 0}, swapchain_->extent() };
             vkCmdSetScissor(command_buffer, 0, 1, &scissor);
 
-            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->handle());
-
             // アスペクト比の計算
             float aspect_ratio = static_cast<float>(swapchain_->extent().width) / static_cast<float>(swapchain_->extent().height);
 
             // カメラの取得
             // アクティブカメラの選択を3段フォールバックにする（phase10プラン D-2）
             glm::mat4 view_projection = scene::Camera::default_view_projection(aspect_ratio);
+            glm::vec3 cam_pos{0.0f, 1.5f, 3.0f};  // 既定ビューの位置（half-transparent ソートの距離基準。phase11 ①）
             ecs::Entity camera_entity = registry.view<scene::Camera, scene::ActiveCamera>().front();
 
             if (camera_entity.is_null()) {
@@ -185,6 +194,7 @@ namespace sq::graphics {
             if (!camera_entity.is_null()) {
                 const scene::Camera& camera = registry.get<scene::Camera>(camera_entity);
                 view_projection = camera.view_projection(aspect_ratio);
+                cam_pos = camera.position;  // ソートの距離基準（phase10 で確定した ActiveCamera の位置）
             }
 
             // カメラUBOの更新
@@ -192,24 +202,59 @@ namespace sq::graphics {
             camera_ubo.view_projection = view_projection;
             camera_ubos_[current_frame_]->update(&camera_ubo, sizeof(camera_ubo));
 
-            // ディスクリプタセットのバインド
+            // ディスクリプタセットのバインド（レイアウトは 2 本のパイプラインで共通なので使い回せる）
             VkDescriptorSet descriptor_set = descriptor_sets_[current_frame_];
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_->layout(), 0, 1, &descriptor_set, 0, nullptr);
+            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_opaque_->layout(), 0, 1, &descriptor_set, 0, nullptr);
 
-            // メッシュのバインド
+            // メッシュのバインド（全エンティティ共有）
             triangle_mesh_->bind(command_buffer);
             cube_indices_->bind(command_buffer);
 
-            // 描画
-            registry.view<scene::Transform, scene::Position>().each([&](ecs::Entity, scene::Transform& t, scene::Position &pos) {
+            // ---- phase11 ①: 不透明パス → 半透明ソート → 半透明パス ----
 
-                // モデル行列を更新
-                t.model = glm::translate(glm::mat4(1.0f), glm::vec3(pos.x, pos.y, pos.z));
+            // 半透明の描画情報。model 行列とカメラからの2乗距離を持つ。
+            struct DrawItem {
+                glm::mat4 model;
+                float distance_sq;
+            };
+            std::vector<DrawItem> transparent_items;
 
-                vkCmdPushConstants(command_buffer, pipeline_->layout(),
-                    VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &t.model);
+            // 1. 不透明パス（順不同。深度テストが前後関係を解決する）
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_opaque_->handle());
+            registry.view<scene::Transform, scene::Position>().each(
+                [&](ecs::Entity e, scene::Transform& t, scene::Position& pos) {
+                    // モデル行列を更新
+                    t.model = glm::translate(glm::mat4(1.0f), glm::vec3(pos.x, pos.y, pos.z));
+
+                    // Material を持ち transparent なら、その場では描かず transparent_items へ回す。
+                    const bool is_transparent = registry.has<scene::Material>(e)
+                                                && registry.get<scene::Material>(e).transparent;
+                    if (is_transparent) {
+                        glm::vec3 d = glm::vec3(pos.x, pos.y, pos.z) - cam_pos;
+                        transparent_items.push_back({ t.model, glm::dot(d, d) });  // 2乗距離（sqrt 不要）
+                        return;
+                    }
+
+                    // 不透明はその場で描画
+                    vkCmdPushConstants(command_buffer, pipeline_opaque_->layout(),
+                        VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &t.model);
+                    vkCmdDrawIndexed(command_buffer, cube_indices_->index_count(), 1, 0, 0, 0);
+                });
+
+            // 2. 半透明ソート（遠い順 = distance_sq 降順）
+            std::ranges::sort(transparent_items,
+                [](const DrawItem& a, const DrawItem& b) {
+                    return a.distance_sq > b.distance_sq;
+                }
+            );
+
+            // 3. 半透明パス（back-to-front。depthWrite=FALSE のパイプライン）
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_transparent_->handle());
+            for (const auto&[model, distance_sq] : transparent_items) {
+                vkCmdPushConstants(command_buffer, pipeline_transparent_->layout(),
+                    VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &model);
                 vkCmdDrawIndexed(command_buffer, cube_indices_->index_count(), 1, 0, 0, 0);
-            });
+            }
 
             // レンダーパスの終了
             vkCmdEndRenderPass(command_buffer);
@@ -321,7 +366,7 @@ namespace sq::graphics {
     // UBOの作成
     void Renderer::create_uniform_buffers() {
         for (std::size_t i = 0; i < kFramesInFlight; ++i) {
-            camera_ubos_.push_back(std::make_unique<UniformBuffer>(physical_device_, device_->handle(), sizeof(scene::CameraUBO)));
+            camera_ubos_.push_back(std::make_unique<UniformBuffer>(device_->allocator(), device_->handle(), sizeof(scene::CameraUBO)));
         }
     }
 
@@ -400,7 +445,7 @@ namespace sq::graphics {
     void Renderer::create_texture() {
         // 実行ファイル隣の textures/ にある画像を読み込む（phase8プラン 項目3・11）
         texture_ = std::make_unique<Texture>(
-            physical_device_, device_->handle(),
+            physical_device_, device_->handle(), device_->allocator(),
             *queue_family_indices_.graphics_family, device_->graphics_queue(),
             "textures/hsr_icon_01/Blade 1.png");
     }
@@ -417,14 +462,15 @@ namespace sq::graphics {
             {{-0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}},
             {{0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}}
         };
-        triangle_mesh_ = std::make_unique<VertexBuffer>(physical_device_, device_->handle(), vertices);
+        triangle_mesh_ = std::make_unique<VertexBuffer>(
+            device_->allocator(), device_->handle(),
+            *queue_family_indices_.graphics_family, device_->graphics_queue(), vertices);
     }
 
     void Renderer::create_cube_mesh() {
         // テクスチャを貼るため、面ごとに独立した24頂点構成へ作り直す（phase8プラン 項目9）。
         // 各面の4頂点に uv = {0,0}/{1,0}/{1,1}/{0,1} を割り当て、インデックスは面ごと6個×6面=36個にする。
         // （現状は8頂点共有のため面ごとのUVが破綻する。uv 未指定の頂点は {0,0} に値初期化される）
-        // 左- 右+ 上- 下+ 手前- 奥+
         std::vector<Vertex> vertices = {
             // 手前
             {{-0.5f, 0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0}},
@@ -472,8 +518,13 @@ namespace sq::graphics {
             20, 21, 22, 20, 22, 23  // 下
         };
 
-        triangle_mesh_ = std::make_unique<VertexBuffer>(physical_device_, device_->handle(), vertices);
-        cube_indices_ = std::make_unique<IndexBuffer>(physical_device_, device_->handle(), indices);
+        // phase11 ②③: DEVICE_LOCAL 化に伴い queue_family/queue を、サブアロケータ化に伴い allocator を渡す。
+        triangle_mesh_ = std::make_unique<VertexBuffer>(
+            device_->allocator(), device_->handle(),
+            *queue_family_indices_.graphics_family, device_->graphics_queue(), vertices);
+        cube_indices_ = std::make_unique<IndexBuffer>(
+            device_->allocator(), device_->handle(),
+            *queue_family_indices_.graphics_family, device_->graphics_queue(), indices);
     }
 
     void Renderer::recreate_swapchain() {

@@ -7,6 +7,8 @@
 
 namespace sq::graphics {
 
+class GpuAllocator;  // ステージングバッファの確保に使う（前方宣言）
+
 // 画像ファイルをGPU上のサンプル可能なテクスチャ（VkImage）として保持するRAIIクラス。
 // stb_imageで読み込んだピクセルを、ステージングバッファ経由でDEVICE_LOCALなVkImageへ転送し、
 // シェーダから読める VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL まで遷移させる。
@@ -18,7 +20,10 @@ class Texture {
 public:
     // path の画像を読み込みGPUへ転送する。転送には使い捨てコマンドバッファを用い、
     // graphics_queue へ1回サブミットして完了を待つ（起動時に一度だけ実行される想定）。
-    Texture(VkPhysicalDevice physical_device, VkDevice device,
+    // allocator: ステージングバッファ（HOST_VISIBLE, TRANSFER_SRC）の確保に使う（phase11 ③）。
+    //   なおテクスチャ本体のイメージメモリは今フェーズではアロケータ非対応（従来通り
+    //   vkAllocateMemory で確保する。イメージのアロケータ対応は将来課題）。
+    Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator& allocator,
             std::uint32_t graphics_queue_family, VkQueue graphics_queue,
             const std::string& path);
     ~Texture();  // view -> image -> memory の順で破棄する

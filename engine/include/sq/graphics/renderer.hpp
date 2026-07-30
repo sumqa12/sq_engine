@@ -89,7 +89,10 @@ private:
     std::unique_ptr<Device> device_;
     std::unique_ptr<Swapchain> swapchain_;
     std::unique_ptr<RenderPass> render_pass_;
-    std::unique_ptr<GraphicsPipeline> pipeline_;
+    // phase11 ①: 不透明/半透明で depthWrite・blend が異なるためパイプラインを 2 本持つ
+    // （depthWriteEnable はコア Vulkan では動的化できないため）。レイアウトは共通。
+    std::unique_ptr<GraphicsPipeline> pipeline_opaque_;       // depthWrite=TRUE,  blend=OFF
+    std::unique_ptr<GraphicsPipeline> pipeline_transparent_;  // depthWrite=FALSE, blend=ON
     std::unique_ptr<DepthImage> depth_image_;
     VkFormat depth_format_;
     std::vector<VkFramebuffer> framebuffers_;

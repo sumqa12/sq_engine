@@ -22,7 +22,11 @@ namespace sq::graphics {
     // （コピー禁止・handle()/size()は基底クラスから継承）
     class VertexBuffer : public Buffer {
     public:
-        VertexBuffer(VkPhysicalDevice physical_device, VkDevice device, const std::vector<Vertex>& vertices);
+        // phase11 ②③: DEVICE_LOCAL 化に伴い staging 転送用の queue_family/queue を、
+        // サブアロケータ化に伴い GpuAllocator& を受ける。
+        VertexBuffer(GpuAllocator& allocator, VkDevice device,
+                     std::uint32_t queue_family, VkQueue queue,
+                     const std::vector<Vertex>& vertices);
         // デストラクタは基底クラスに任せる（追加で解放するリソースは無い）
 
         // このバッファをコマンドバッファにバインドする（vkCmdBindVertexBuffers）。
@@ -37,8 +41,9 @@ namespace sq::graphics {
     // インデックスデータをGPUメモリに保持するRAIIラッパー。Buffer基底の3例目。
     class IndexBuffer : public Buffer {
     public:
-        IndexBuffer(VkPhysicalDevice physical_device, VkDevice device,
-                    const std::vector<std::uint16_t>& indices);  // usage=INDEX_BUFFER_BIT
+        IndexBuffer(GpuAllocator& allocator, VkDevice device,
+                    std::uint32_t queue_family, VkQueue queue,
+                    const std::vector<std::uint16_t>& indices);  // usage=INDEX_BUFFER_BIT|TRANSFER_DST, DEVICE_LOCAL
 
         void bind(VkCommandBuffer command_buffer) const;  // vkCmdBindIndexBuffer(..., VK_INDEX_TYPE_UINT16)
         [[nodiscard]] std::uint32_t index_count() const;

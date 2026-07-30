@@ -1,19 +1,18 @@
 #include "sq/graphics/mesh.hpp"
 
 namespace sq::graphics {
-    VertexBuffer::VertexBuffer(VkPhysicalDevice physical_device, VkDevice device,
+    VertexBuffer::VertexBuffer(GpuAllocator& allocator, VkDevice device,
+                                std::uint32_t queue_family, VkQueue queue,
                                 const std::vector<Vertex>& vertices)
-        : Buffer(physical_device, device,
+        : Buffer(allocator, device,
                  sizeof(Vertex) * vertices.size(),
-                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+                 // phase11 ②: TRANSFER_DST を追加し、properties を DEVICE_LOCAL に変更する。
+                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
             vertex_count_(static_cast<std::uint32_t>(vertices.size())) {
-        // 基底クラスが確保したメモリへ頂点データを書き込む:
-        //  1. map() でマップし、std::memcpy(<マップ先>, vertices.data(), size()) で書き込む（<cstring>が必要）
-        //  2. 書き込みは構築時の一度きりなので unmap() する（HOST_COHERENTなのでflush不要）
-        void* mapped = map();
-        std::memcpy(mapped, vertices.data(), size());
-        unmap();
+        // DEVICE_LOCAL は map() できないので直書き（旧 map/memcpy/unmap）は不可。
+        // staging 経由で転送する
+        upload_with_staging(allocator, queue_family, queue, vertices.data(), size());
     }
 
     void VertexBuffer::bind(VkCommandBuffer command_buffer) const {
@@ -28,17 +27,17 @@ namespace sq::graphics {
 
     // ----- IndexBuffer -----
 
-    IndexBuffer::IndexBuffer(VkPhysicalDevice physical_device, VkDevice device,
+    IndexBuffer::IndexBuffer(GpuAllocator& allocator, VkDevice device,
+                            std::uint32_t queue_family, VkQueue queue,
                             const std::vector<std::uint16_t> &indices)
-        : Buffer(physical_device, device,
+        : Buffer(allocator, device,
             sizeof(std::uint16_t) * indices.size(),
-            VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+            // phase11 ②: TRANSFER_DST を追加し、properties を DEVICE_LOCAL に変更する。
+            VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
             index_count_(static_cast<std::uint32_t>(indices.size())) {
 
-        void* mapped = map();
-        std::memcpy(mapped, indices.data(), size());
-        unmap();
+        upload_with_staging(allocator, queue_family, queue, indices.data(), size());
     }
 
     void IndexBuffer::bind(VkCommandBuffer command_buffer) const {

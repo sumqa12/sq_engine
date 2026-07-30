@@ -9,7 +9,8 @@ namespace sq::graphics {
 
 GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, VkExtent2D viewport_extent,
                                     const std::string& vert_spv_path, const std::string& frag_spv_path,
-                                    VkDescriptorSetLayout descriptor_set_layout)
+                                    VkDescriptorSetLayout descriptor_set_layout,
+                                    const PipelineConfig& config)
     : device_(device) {
 
     // シェーダーモジュールをロードする
@@ -95,8 +96,9 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
 
     VkPipelineColorBlendAttachmentState color_blend_attachment = {};
     color_blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    // アルファブレンディングを有効化する（標準的なオーバー合成）(phase8)
-    color_blend_attachment.blendEnable = VK_TRUE;
+    // phase11 ①: blend の有無を config で切り替える（不透明=OFF / 半透明=ON）。
+    // 有効時は標準的なオーバー合成（アルファブレンド）(phase8)。
+    color_blend_attachment.blendEnable = config.blend_enable ? VK_TRUE : VK_FALSE;
     color_blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
     color_blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     color_blend_attachment.colorBlendOp        = VK_BLEND_OP_ADD;
@@ -114,7 +116,8 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
     VkPipelineDepthStencilStateCreateInfo depth_stencil_state_info = {};
     depth_stencil_state_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depth_stencil_state_info.depthTestEnable = VK_TRUE;
-    depth_stencil_state_info.depthWriteEnable = VK_TRUE;
+    // phase11 ①: 深度書き込みを config で切り替える（不透明=TRUE / 半透明=FALSE）。
+    depth_stencil_state_info.depthWriteEnable = config.depth_write_enable ? VK_TRUE : VK_FALSE;
     depth_stencil_state_info.depthCompareOp = VK_COMPARE_OP_LESS;  // 小さい深度=手前が勝つ
     depth_stencil_state_info.depthBoundsTestEnable = VK_FALSE;
     depth_stencil_state_info.stencilTestEnable = VK_FALSE;

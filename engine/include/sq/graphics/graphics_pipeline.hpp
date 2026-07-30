@@ -6,15 +6,26 @@
 
 namespace sq::graphics {
 
+// パイプラインの可変設定（phase11 ①）。同じシェーダ・レイアウトから
+// 不透明用・半透明用の 2 本を作り分けるために使う。
+//   不透明:   depth_write_enable = true,  blend_enable = false
+//   半透明:   depth_write_enable = false, blend_enable = true  （back-to-front 描画前提）
+struct PipelineConfig {
+    bool depth_write_enable = true;
+    bool blend_enable = false;
+};
+
 // シェーダーステージ、頂点入力レイアウト、ラスタライズ、ブレンディングなどを、
 // 単一の不変の VkPipeline に組み込みます。Vulkan には、GL とは異なり、グローバルなレンダリング状態はありません。
 class GraphicsPipeline {
 public:
     // descriptor_set_layout: パイプラインレイアウトに組み込むディスクリプタセット
     // レイアウト（カメラUBO用、set=0）。呼び出し側が所有・破棄する（ここでは破棄しない）。
+    // config: depth write / blend の有無（phase11 ①。既定は不透明相当）。
     GraphicsPipeline(VkDevice device, VkRenderPass render_pass, VkExtent2D viewport_extent,
                       const std::string& vert_spv_path, const std::string& frag_spv_path,
-                      VkDescriptorSetLayout descriptor_set_layout);
+                      VkDescriptorSetLayout descriptor_set_layout,
+                      const PipelineConfig& config);
     ~GraphicsPipeline();
 
     GraphicsPipeline(const GraphicsPipeline&) = delete;

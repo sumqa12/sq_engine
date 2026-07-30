@@ -68,16 +68,26 @@ namespace sq::graphics {
         vkGetDeviceQueue(device_, indices.graphics_family.value(), 0, &graphics_queue_);
         vkGetDeviceQueue(device_, indices.present_family.value(), 0, &present_queue_);
 
+        // GPUメモリのサブアロケータを生成する（phase11 ③）。デバイス生成後に作る。
+        allocator_ = std::make_unique<GpuAllocator>(physical_device_, device_);
+
         (void)indices;
         (void)enable_validation;
     }
 
     Device::~Device() {
+        // 破棄順序: allocator_（全ブロックの vkFreeMemory）→ vkDestroyDevice。
+        // 前提: ここに来る時点で全 Buffer は破棄済み（Renderer が buffer 群を device_ より先に reset する）。
+        allocator_.reset();
         if (device_ != VK_NULL_HANDLE) vkDestroyDevice(device_, nullptr);
         device_ = VK_NULL_HANDLE;
         physical_device_ = VK_NULL_HANDLE;
         present_queue_ = VK_NULL_HANDLE;
         graphics_queue_ = VK_NULL_HANDLE;
+    }
+
+    GpuAllocator& Device::allocator() {
+        return *allocator_;
     }
 
     VkDevice Device::handle() const {

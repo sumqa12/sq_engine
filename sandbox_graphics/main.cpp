@@ -15,6 +15,7 @@
 #include "sq/scene/transform.hpp"
 #include "sq/scene/camera.hpp"
 #include "sq/scene/controller.hpp"
+#include "sq/scene/material.hpp"
 #include "sq/scene/position.hpp"
 #include "sq/scene/velocity.hpp"
 
@@ -173,7 +174,7 @@ sq::ecs::Entity create_camera(sq::ecs::Registry& registry,
 int main() {
     sq::ecs::Registry registry;
 
-    constexpr int kEntityCount = 10;
+    constexpr int kEntityCount = 12;
     float angle = 0.0f;
     for (int i = 0; i < kEntityCount; ++i) {
         float radius = 3.0f;
@@ -189,6 +190,11 @@ int main() {
                     glm::vec3())
             }
         );
+        // phase11 ① 確認用: 一部エンティティを半透明にする（Material 未付与は不透明のまま）。
+        // 半透明キューブ越しに背後が正しく透けること・視点角度で破綻しないことを確認する。
+        if (i % 2 == 0) {
+            registry.add<Material>(e, Material{ .transparent = true });
+        }
         angle += 360.0 / kEntityCount;
     }
 

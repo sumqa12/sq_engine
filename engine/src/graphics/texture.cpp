@@ -13,7 +13,7 @@
 
 namespace sq::graphics {
 
-Texture::Texture(VkPhysicalDevice physical_device, VkDevice device,
+Texture::Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator& allocator,
                  std::uint32_t graphics_queue_family, VkQueue graphics_queue,
                  const std::string& path)
     : device_(device) {
@@ -38,7 +38,7 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device,
     //  2. StagingBuffer(physical_device, device, pixels, image_size) を作成 → stbi_image_free(pixels)。
     // コピーした後、コピー元を解放する
     VkDeviceSize image_size = width * height * 4;
-    StagingBuffer staging_buffer(physical_device, device, stbi_image, image_size);
+    StagingBuffer staging_buffer(allocator, device, stbi_image, image_size);  // phase11 ③: アロケータ経由
     stbi_image_free(stbi_image);
 
     //  3. VkImageCreateInfo（imageType=2D, extent={w,h,1}, mipLevels=1, arrayLayers=1,
@@ -172,11 +172,6 @@ void Texture::transition_image_layout(VkCommandBuffer command_buffer, VkImage im
         0, nullptr,
         0, nullptr,
         1, &barrier);
-
-    (void)command_buffer;
-    (void)image;
-    (void)old_layout;
-    (void)new_layout;
 }
 
 }  // namespace sq::graphics

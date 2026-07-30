@@ -15,7 +15,7 @@ namespace sq::graphics {
 // （コピー禁止・handle()/size()は基底クラスから継承）
 class UniformBuffer : public Buffer {
 public:
-    UniformBuffer(VkPhysicalDevice physical_device, VkDevice device, VkDeviceSize size);
+    UniformBuffer(GpuAllocator& allocator, VkDevice device, VkDeviceSize size);
     // 永続マップのunmap()のみ行う。バッファ/メモリの解放はその後に走る基底デストラクタが行う
     // （C++の破棄順序: 派生デストラクタ → 基底デストラクタ）。
     ~UniformBuffer();

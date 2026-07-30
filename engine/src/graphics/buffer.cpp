@@ -1,12 +1,15 @@
 #include "sq/graphics/buffer.hpp"
 
+#include <cstring>
 #include <stdexcept>
+
+#include "sq/graphics/single_time_commands.hpp"
 
 namespace sq::graphics {
 
-Buffer::Buffer(VkPhysicalDevice physical_device, VkDevice device,
+Buffer::Buffer(GpuAllocator& allocator, VkDevice device,
                VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties)
-    : device_(device), size_(size) {
+    : allocator_(&allocator), device_(device), size_(size) {
 
     // 1. バッファの作成
     VkBufferCreateInfo buffer_create_info = {};
@@ -22,34 +25,28 @@ Buffer::Buffer(VkPhysicalDevice physical_device, VkDevice device,
     VkMemoryRequirements memory_requirements;
     vkGetBufferMemoryRequirements(device_, buffer_, &memory_requirements);
 
-    // 3. メモリタイプの取得
-    std::uint32_t memory_type_index = find_memory_type(physical_device, memory_requirements.memoryTypeBits, properties);
+    // 3. メモリの確保（phase11 ③: 個別 vkAllocateMemory → GpuAllocator のサブアロケート）
+    allocation_ = allocator_->allocate(memory_requirements, properties);
 
-    // 4. メモリの割り当て
-    VkMemoryAllocateInfo memory_allocate_info = {};
-    memory_allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    memory_allocate_info.allocationSize = memory_requirements.size;
-    memory_allocate_info.memoryTypeIndex = memory_type_index;
-    if (int result = vkAllocateMemory(device_, &memory_allocate_info, nullptr, &memory_); result != VK_SUCCESS) {
-        throw std::runtime_error("メモリの割り当てに失敗しました。");
-    }
-
-    // 5. メモリのバインド
-    if (int result = vkBindBufferMemory(device_, buffer_, memory_, 0); result != VK_SUCCESS) {
+    // 4. メモリのバインド（ブロック内 offset を渡す点に注意）
+    if (int result = vkBindBufferMemory(device_, buffer_, allocation_.memory, allocation_.offset);
+        result != VK_SUCCESS) {
         throw std::runtime_error("バッファのメモリバインドに失敗しました。");
     }
 
-    (void)physical_device;
     (void)usage;
     (void)properties;
 }
 
 Buffer::~Buffer() {
     vkDestroyBuffer(device_, buffer_, nullptr);
-    vkFreeMemory(device_, memory_, nullptr);
+    if (allocator_ != nullptr) {
+        allocator_->free(allocation_);  // phase11 ③: 個別 vkFreeMemory → ブロックへ返却
+    }
     device_ = VK_NULL_HANDLE;
-    memory_ = VK_NULL_HANDLE;
     buffer_ = VK_NULL_HANDLE;
+    allocation_ = {};
+    allocator_ = nullptr;
 }
 
 VkBuffer Buffer::handle() const {
@@ -61,27 +58,36 @@ VkDeviceSize Buffer::size() const {
 }
 
 void* Buffer::map() {
-    void* mapped = nullptr;
-    if (int result = vkMapMemory(device_, memory_, 0, size_, 0, &mapped); result != VK_SUCCESS) {
-        throw std::runtime_error("バッファのマッピングに失敗しました。");
-    }
-    return mapped;
+    // GpuAllocator がブロックを persistent map 済み。allocation_.mapped をそのまま返す。
+    // DEVICE_LOCAL では nullptr（HOST_VISIBLE でないバッファに対して呼ばないこと）。
+    return allocation_.mapped;
 }
 
 void Buffer::unmap() {
-    vkUnmapMemory(device_, memory_);
+    // persistent mapping のため何もしない（ブロックの unmap は GpuAllocator デストラクタが行う）。
+}
+
+void Buffer::upload_with_staging(GpuAllocator& allocator,
+                                 std::uint32_t queue_family, VkQueue queue,
+                                 const void* data, VkDeviceSize size) {
+    // (phase11 ②）
+    StagingBuffer staging(allocator, device_, data, size);  // TRANSFER_SRC/HOST_VISIBLE、ctorで書き込み済み
+    SingleTimeCommands cmd(device_, queue_family, queue);
+    VkBufferCopy region{ .srcOffset = 0, .dstOffset = 0, .size = size };
+    vkCmdCopyBuffer(cmd.handle(), staging.handle(), buffer_, 1, &region);
+    cmd.submit_and_wait();  // staging はスコープ末尾で破棄される
 }
 
 // ----- StagingBuffer -----
 
-StagingBuffer::StagingBuffer(VkPhysicalDevice physical_device, VkDevice device,
+StagingBuffer::StagingBuffer(GpuAllocator& allocator, VkDevice device,
                              const void* data, VkDeviceSize size)
-    : Buffer(physical_device, device, size,
+    : Buffer(allocator, device, size,
              VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
     void* mapped = map();
     std::memcpy(mapped, data, size);
-    unmap();  // HOST_COHERENT なので flush 不要
+    unmap();  // no-op（persistent mapping）。HOST_COHERENT なので flush も不要
     (void)data;
 }
 

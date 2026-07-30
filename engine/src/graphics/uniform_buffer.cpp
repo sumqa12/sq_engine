@@ -4,11 +4,11 @@
 
 namespace sq::graphics {
 
-UniformBuffer::UniformBuffer(VkPhysicalDevice physical_device, VkDevice device, VkDeviceSize size)
-    : Buffer(physical_device, device, size,
+UniformBuffer::UniformBuffer(GpuAllocator& allocator, VkDevice device, VkDeviceSize size)
+    : Buffer(allocator, device, size,
              VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
-    // 永続マップする
+    // 永続マップ先を取得する（phase11 ③: GpuAllocator がブロックを persistent map 済みなので map() はそのポインタを返すだけ）
     mapped_ = map();
 }
 
