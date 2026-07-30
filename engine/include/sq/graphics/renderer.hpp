@@ -13,6 +13,7 @@
 #include "sq/graphics/device.hpp"
 #include "sq/graphics/graphics_pipeline.hpp"
 #include "sq/graphics/mesh.hpp"
+#include "sq/graphics/mesh_registry.hpp"
 #include "sq/graphics/physical_device.hpp"
 #include "sq/graphics/render_pass.hpp"
 #include "sq/graphics/sampler.hpp"
@@ -63,13 +64,16 @@ public:
 
     [[nodiscard]]bool is_focused() const;
 
+    // メッシュの登録・参照（phase12 手順2）。アプリ側が起動時に
+    // graphics::add_cube_mesh(renderer.meshes()) 等で登録し、得た MeshId を
+    // scene::MeshHandle コンポーネントに入れる。
+    [[nodiscard]] MeshRegistry& meshes();
+
 private:
     void create_surface();
     void create_framebuffers();
     void destroy_framebuffers();
     void recreate_swapchain();
-    void create_triangle_mesh();
-    void create_cube_mesh();
     // カメラUBO用ディスクリプタ一式（パイプライン作成の前にレイアウトが必要）。
     void create_descriptor_set_layout();  // vkCreateDescriptorSetLayout（set=0, binding=0, UNIFORM_BUFFER, VERTEX）
     void create_uniform_buffers();        // camera_ubos_をkFramesInFlight個作成
@@ -98,8 +102,9 @@ private:
     std::vector<VkFramebuffer> framebuffers_;
     std::unique_ptr<CommandBuffers> command_buffers_;
     std::unique_ptr<SyncObjects> sync_objects_;
-    std::unique_ptr<VertexBuffer> triangle_mesh_;  // デモ用の共有メッシュ（全エンティティがこれを描画する）
-    std::unique_ptr<IndexBuffer> cube_indices_;
+    // phase12 手順2: 共有の単一メッシュをやめ、MeshId で引くレジストリに置き換えた。
+    // 描画対象は scene::MeshHandle を持つエンティティのみ。
+    std::unique_ptr<MeshRegistry> meshes_;
 
     // カメラUBO用ディスクリプタ（すべてkFramesInFlight個。スワップチェーン画像枚数には非依存）。
     VkDescriptorSetLayout descriptor_set_layout_ = VK_NULL_HANDLE;

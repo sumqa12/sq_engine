@@ -12,7 +12,7 @@
 
 #include "sq/scene/camera.hpp"
 #include "sq/scene/material.hpp"
-#include "sq/scene/position.hpp"
+#include "sq/scene/mesh_handle.hpp"
 #include "sq/scene/transform.hpp"
 
 namespace sq::graphics {
@@ -82,15 +82,19 @@ namespace sq::graphics {
         // 15. 同期オブジェクトの作成
         sync_objects_ = std::make_unique<SyncObjects>(device_->handle(), kFramesInFlight, framebuffers_.size());
 
-        // 16. デモ用三角形メッシュの作成（ECS連携）
-        create_cube_mesh();
+        // 16. メッシュレジストリの生成（phase12 手順2）
+        // 実際のメッシュ登録はアプリ側が renderer.meshes() 経由で行う
+        // （例: graphics::add_cube_mesh(renderer.meshes())）。
+        meshes_ = std::make_unique<MeshRegistry>(
+            device_->allocator(), device_->handle(),
+            *queue_family_indices_.graphics_family, device_->graphics_queue());
     }
 
     Renderer::~Renderer() {
         vkDeviceWaitIdle(device_->handle());
         destroy_framebuffers();
-        triangle_mesh_.reset();
-        cube_indices_.reset();
+        // メッシュ（GPUバッファ）は GpuAllocator（= Device）より前に破棄する（phase11 ③ の不変条件）。
+        meshes_.reset();
         sync_objects_.reset();
         command_buffers_.reset();
         pipeline_transparent_.reset();
@@ -206,42 +210,59 @@ namespace sq::graphics {
             VkDescriptorSet descriptor_set = descriptor_sets_[current_frame_];
             vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_opaque_->layout(), 0, 1, &descriptor_set, 0, nullptr);
 
-            // メッシュのバインド（全エンティティ共有）
-            triangle_mesh_->bind(command_buffer);
-            cube_indices_->bind(command_buffer);
-
             // ---- phase11 ①: 不透明パス → 半透明ソート → 半透明パス ----
+            // phase12 手順2: メッシュは共有ではなく MeshHandle ごとに引いてバインドする。
 
-            // 半透明の描画情報。model 行列とカメラからの2乗距離を持つ。
+            // 描画情報。model 行列・どのメッシュか・カメラからの2乗距離を持つ。
             struct DrawItem {
                 glm::mat4 model;
+                scene::MeshId mesh;
                 float distance_sq;
             };
             std::vector<DrawItem> transparent_items;
 
+            // 1つのメッシュをバインドして描画する（不透明パス・半透明パスで共用）。
+            // 直前にバインドしたメッシュを覚えて、変化した時だけ再バインドする。
+            scene::MeshId bound_mesh = scene::kInvalidMeshId;
+            auto draw_mesh = [&](const GraphicsPipeline& pipeline, const glm::mat4& model, scene::MeshId mesh) {
+                const auto&[vertices, indices] = meshes_->get(mesh);
+                if (mesh != bound_mesh) {
+                    vertices->bind(command_buffer);
+                    indices->bind(command_buffer);
+                    bound_mesh = mesh;
+                }
+                vkCmdPushConstants(command_buffer, pipeline.layout(),
+                    VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &model);
+                // インデックス数はメッシュごとに引く（共有 cube 固定をやめた点が本手順の要）
+                vkCmdDrawIndexed(command_buffer, indices->index_count(), 1, 0, 0, 0);
+            };
+
             // 1. 不透明パス（順不同。深度テストが前後関係を解決する）
+            // MeshHandle を持つエンティティのみが描画対象（カメラ等の非描画エンティティは除外される）。
             vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_opaque_->handle());
-            registry.view<scene::Transform, scene::Position>().each(
-                [&](ecs::Entity e, scene::Transform& t, scene::Position& pos) {
-                    // モデル行列を更新
-                    t.model = glm::translate(glm::mat4(1.0f), glm::vec3(pos.x, pos.y, pos.z));
+            registry.view<scene::Transform, scene::MeshHandle>().each(
+                [&](ecs::Entity e, scene::Transform& t, scene::MeshHandle& mh) {
+                    // 未登録のメッシュを指すハンドルはスキップする
+                    if (!meshes_->contains(mh.id)) { return; }
+
+                    // モデル行列を合成する（T * R * S）
+                    const glm::mat4 model = t.model();
 
                     // Material を持ち transparent なら、その場では描かず transparent_items へ回す。
                     const bool is_transparent = registry.has<scene::Material>(e)
                                                 && registry.get<scene::Material>(e).transparent;
                     if (is_transparent) {
-                        glm::vec3 d = glm::vec3(pos.x, pos.y, pos.z) - cam_pos;
-                        transparent_items.push_back({ t.model, glm::dot(d, d) });  // 2乗距離（sqrt 不要）
+                        glm::vec3 d = t.position - cam_pos;
+                        transparent_items.push_back({ model, mh.id, glm::dot(d, d) });  // 2乗距離（sqrt 不要）
                         return;
                     }
 
                     // 不透明はその場で描画
-                    vkCmdPushConstants(command_buffer, pipeline_opaque_->layout(),
-                        VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &t.model);
-                    vkCmdDrawIndexed(command_buffer, cube_indices_->index_count(), 1, 0, 0, 0);
+                    draw_mesh(*pipeline_opaque_, model, mh.id);
                 });
 
             // 2. 半透明ソート（遠い順 = distance_sq 降順）
+            // ★ 正しさが順序に依存するため、メッシュでまとめてはいけない（ソート順が絶対）。
             std::ranges::sort(transparent_items,
                 [](const DrawItem& a, const DrawItem& b) {
                     return a.distance_sq > b.distance_sq;
@@ -250,10 +271,8 @@ namespace sq::graphics {
 
             // 3. 半透明パス（back-to-front。depthWrite=FALSE のパイプライン）
             vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_transparent_->handle());
-            for (const auto&[model, distance_sq] : transparent_items) {
-                vkCmdPushConstants(command_buffer, pipeline_transparent_->layout(),
-                    VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &model);
-                vkCmdDrawIndexed(command_buffer, cube_indices_->index_count(), 1, 0, 0, 0);
+            for (const auto&[model, mesh, distance_sq] : transparent_items) {
+                draw_mesh(*pipeline_transparent_, model, mesh);
             }
 
             // レンダーパスの終了
@@ -456,75 +475,9 @@ namespace sq::graphics {
         sampler_ = std::make_unique<Sampler>(physical_device_, device_->handle());
     }
 
-    void Renderer::create_triangle_mesh() {
-        std::vector<Vertex> vertices = {
-            {{0.0f, 0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}},
-            {{-0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}},
-            {{0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}}
-        };
-        triangle_mesh_ = std::make_unique<VertexBuffer>(
-            device_->allocator(), device_->handle(),
-            *queue_family_indices_.graphics_family, device_->graphics_queue(), vertices);
-    }
-
-    void Renderer::create_cube_mesh() {
-        // テクスチャを貼るため、面ごとに独立した24頂点構成へ作り直す（phase8プラン 項目9）。
-        // 各面の4頂点に uv = {0,0}/{1,0}/{1,1}/{0,1} を割り当て、インデックスは面ごと6個×6面=36個にする。
-        // （現状は8頂点共有のため面ごとのUVが破綻する。uv 未指定の頂点は {0,0} に値初期化される）
-        std::vector<Vertex> vertices = {
-            // 手前
-            {{-0.5f, 0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0}},
-            {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0, 1}},
-            {{0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1, 1}},
-            {{0.5f, 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1, 0}},
-
-            // 奥
-            {{0.5f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0}},
-            {{0.5f, -0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, {0, 1}},
-            {{-0.5f, -0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {1, 1}},
-            {{-0.5f, 0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}, {1, 0}},
-
-            // 左
-            {{-0.5f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0}},
-            {{-0.5f, -0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, {0, 1}},
-            {{-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1, 1}},
-            {{-0.5f, 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1, 0}},
-
-            // 右
-            {{0.5f, 0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0}},
-            {{0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0, 1}},
-            {{0.5f, -0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {1, 1}},
-            {{0.5f, 0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}, {1, 0}},
-
-            // 上
-            {{-0.5f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0}},
-            {{-0.5f, 0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0, 1}},
-            {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1, 1}},
-            {{0.5f, 0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}, {1, 0}},
-
-            // 下
-            {{0.5f, -0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0}},
-            {{0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0, 1}},
-            {{-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1, 1}},
-            {{-0.5f, -0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}, {1, 0}},
-        };
-
-        std::vector<uint16_t> indices = {
-             0,  1,  2,  0,  2,  3, // 手前
-             4,  5,  6,  4,  6,  7, // 奥
-             8,  9, 10,  8, 10, 11, // 右
-            12, 13, 14, 12, 14, 15, // 左
-            16, 17, 18, 16, 18, 19, // 上
-            20, 21, 22, 20, 22, 23  // 下
-        };
-
-        // phase11 ②③: DEVICE_LOCAL 化に伴い queue_family/queue を、サブアロケータ化に伴い allocator を渡す。
-        triangle_mesh_ = std::make_unique<VertexBuffer>(
-            device_->allocator(), device_->handle(),
-            *queue_family_indices_.graphics_family, device_->graphics_queue(), vertices);
-        cube_indices_ = std::make_unique<IndexBuffer>(
-            device_->allocator(), device_->handle(),
-            *queue_family_indices_.graphics_family, device_->graphics_queue(), indices);
+    // メッシュの登録・参照（phase12 手順2）
+    MeshRegistry& Renderer::meshes() {
+        return *meshes_;
     }
 
     void Renderer::recreate_swapchain() {

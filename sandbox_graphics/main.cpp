@@ -16,8 +16,7 @@
 #include "sq/scene/camera.hpp"
 #include "sq/scene/controller.hpp"
 #include "sq/scene/material.hpp"
-#include "sq/scene/position.hpp"
-#include "sq/scene/velocity.hpp"
+#include "sq/scene/mesh_handle.hpp"
 
 using namespace sq::scene;
 using namespace std::chrono;
@@ -25,9 +24,9 @@ using namespace std::chrono;
 #define TARGET_FPS 240.0f
 #define TARGET_UPS 30.0f
 
-static void loop(sq::ecs::Registry &registry) {
-    auto renderer = sq::graphics::Renderer(800, 600, "sq_engine sandbox_graphics");
-
+// phase12 手順2: メッシュ登録に MeshId が必要になったため、Renderer の生成を main へ移し、
+// エンティティ生成より前にアセットを登録できるようにした（renderer は main が所有する）。
+static void loop(sq::ecs::Registry &registry, sq::graphics::Renderer &renderer) {
     // InputManager を生成し、Renderer 経由でコールバックを配線する (phase9)
     sq::input::InputManager input;
     renderer.set_key_callback([&](int k, int a){ input.on_key(k, a != GLFW_RELEASE); });
@@ -174,6 +173,14 @@ sq::ecs::Entity create_camera(sq::ecs::Registry& registry,
 int main() {
     sq::ecs::Registry registry;
 
+    // Renderer を先に作る（メッシュ登録で得た MeshId をコンポーネントに入れるため）。
+    auto renderer = sq::graphics::Renderer(800, 600, "sq_engine sandbox_graphics");
+
+    // phase12 手順2: 使うメッシュを登録し、MeshId を受け取る。
+    // 同じ MeshId を何体が参照してもGPUバッファは1組しか作られない（レジストリのキャッシュ）。
+    const MeshId cube_mesh = sq::graphics::add_cube_mesh(renderer.meshes());
+    const MeshId plane_mesh = sq::graphics::add_plane_mesh(renderer.meshes());
+
     constexpr int kEntityCount = 12;
     float angle = 0.0f;
     for (int i = 0; i < kEntityCount; ++i) {
@@ -182,20 +189,24 @@ int main() {
         float z = radius * cos(angle);
 
         const sq::ecs::Entity e = registry.create();
-        registry.add<Position>(e, {x, 0.0f, z});
-        registry.add<Velocity>(e, {0.0f, 0.0f, 0.0f});
+        // phase12 手順1: Position/Velocity ではなく Transform の TRS に直接設定する。
+        // 回転・スケールも個体差をつけて、TRS 合成が効いていることを確認する。
         registry.add<Transform>(e,
             Transform{
-                glm::translate(glm::mat4(1.0f),
-                    glm::vec3())
+                .position = {x, 0.0f, z},
+                .rotation = glm::angleAxis(glm::radians(angle), glm::vec3(0.0f, 1.0f, 0.0f)),
+                .scale = glm::vec3(0.5f + 0.1f * static_cast<float>(i)),
             }
         );
+        // phase12 手順2 確認用: エンティティごとに形を変える（3体に1体を板にする）。
+        // MeshHandle を持たないエンティティは描画されない。
+        registry.add<MeshHandle>(e, MeshHandle{ .id = (i % 3 == 0) ? plane_mesh : cube_mesh });
         // phase11 ① 確認用: 一部エンティティを半透明にする（Material 未付与は不透明のまま）。
         // 半透明キューブ越しに背後が正しく透けること・視点角度で破綻しないことを確認する。
         if (i % 2 == 0) {
             registry.add<Material>(e, Material{ .transparent = true });
         }
-        angle += 360.0 / kEntityCount;
+        angle += glm::radians(360.0f / kEntityCount);
     }
 
     {
@@ -222,7 +233,8 @@ int main() {
 
         // 後9個のカメラ
         for (int i = 0; i < 9; ++i) {
-            int r_scheme = rand() % 2;
+            int r_scheme = (static_cast<int>(dis(gen)) + 10) % 2;
+            fmt::println("r_scheme: {}", std::to_string(r_scheme));
             auto scheme = ControlScheme::FreeFly;
             switch (r_scheme) {
                 case 0: scheme = ControlScheme::FreeFly; break;
@@ -240,6 +252,6 @@ int main() {
         }
     }
 
-    loop(registry);
+    loop(registry, renderer);
     return 0;
 }
