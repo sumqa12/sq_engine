@@ -23,7 +23,7 @@ GpuAllocator::~GpuAllocator() {
     // 破棄順序（全バッファ → GpuAllocator → VkDevice）を Device / Renderer 側で担保すること。
 }
 
-Allocation GpuAllocator::allocate(const VkMemoryRequirements& reqs, VkMemoryPropertyFlags properties) {
+Allocation GpuAllocator::allocate(const VkMemoryRequirements& reqs, VkMemoryPropertyFlags properties, bool linear) {
     // plan11 (③-1)
     const std::uint32_t type = Buffer::find_memory_type(physical_device_, reqs.memoryTypeBits, properties);
     //  2. blocks_ を走査し、block.memory_type_index == type のブロックの free_ranges から、
@@ -38,7 +38,7 @@ Allocation GpuAllocator::allocate(const VkMemoryRequirements& reqs, VkMemoryProp
 
     for (std::uint32_t bi = 0; bi < blocks_.size(); ++bi) {
         Block& block = blocks_[bi]; // ★ 参照。コピーしない
-        if (block.memory_type_index != type) continue;
+        if (block.linear != linear || block.memory_type_index != type) continue;
         for (std::size_t ri = 0; ri < block.free_ranges.size(); ++ri) {
             auto [offset, size] = block.free_ranges[ri];
             if (VkDeviceSize aligned = align_up(offset, reqs.alignment)
@@ -64,7 +64,7 @@ Allocation GpuAllocator::allocate(const VkMemoryRequirements& reqs, VkMemoryProp
     }
 
     // 4. 見つからない場合、作る
-    uint32_t index = create_block(type, max(kDefaultBlockSize, reqs.size), properties);
+    uint32_t index = create_block(type, max(kDefaultBlockSize, reqs.size), properties, linear);
     Block& block = blocks_[index];
     block.free_ranges.erase(block.free_ranges.begin());
 
@@ -77,11 +77,12 @@ Allocation GpuAllocator::allocate(const VkMemoryRequirements& reqs, VkMemoryProp
 void GpuAllocator::free(const Allocation& allocation) {
     Block& block = blocks_[allocation.block_index];
     block.free_ranges.push_back({ allocation.offset, allocation.size });
-    //   （隣接空きのマージは将来課題。まずは戻すだけ）
+    // phase13 隣接空きのマージ
+
 }
 
-std::uint32_t GpuAllocator::create_block(std::uint32_t memory_type_index,
-                                         VkDeviceSize size, VkMemoryPropertyFlags properties) {
+std::uint32_t GpuAllocator::create_block(std::uint32_t memory_type_index, VkDeviceSize size,
+                                         VkMemoryPropertyFlags properties, bool linear) {
     // plan11 (③-1)
     // 1. メモリの割当て
     VkMemoryAllocateInfo alloc_info {
@@ -98,7 +99,8 @@ std::uint32_t GpuAllocator::create_block(std::uint32_t memory_type_index,
     Block block {
         .memory=memory,
         .size=size,
-        .memory_type_index=memory_type_index
+        .memory_type_index=memory_type_index,
+        .linear = linear
     };
 
     // 3. HOST_VISIBLE を含むなら vkMapMemory(device_, block.memory, 0, VK_WHOLE_SIZE, 0, &block.mapped)。

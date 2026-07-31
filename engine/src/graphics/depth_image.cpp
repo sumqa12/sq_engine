@@ -4,9 +4,9 @@
 #include <stdexcept>
 
 namespace sq::graphics {
-    DepthImage::DepthImage(VkPhysicalDevice physical_device, VkDevice device,
+    DepthImage::DepthImage(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator& allocator,
                VkExtent2D extent, VkFormat depth_format)
-        : device_(device), format_(depth_format) {
+        : allocator_(&allocator), device_(device), format_(depth_format) {
 
         VkImageCreateInfo image_create_info = {};
         image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -28,17 +28,14 @@ namespace sq::graphics {
         VkMemoryRequirements memory_requirements;
         vkGetImageMemoryRequirements(device_, image_, &memory_requirements);
 
-        uint32_t memory_type_index = Buffer::find_memory_type(physical_device, memory_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        VkMemoryAllocateInfo memory_allocate_info = {};
-        memory_allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        memory_allocate_info.allocationSize = memory_requirements.size;
-        memory_allocate_info.memoryTypeIndex = memory_type_index;
-        if (int result = vkAllocateMemory(device_, &memory_allocate_info, nullptr, &memory_); result != VK_SUCCESS) {
-            throw std::runtime_error("深度バッファ用メモリの割り当てに失敗しました。");
+        // plan13
+        allocation_ = allocator.allocate(memory_requirements,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            /*linear=*/false);   // ★ optimal tiling なので false)
+        if (VkResult result = vkBindImageMemory(device_, image_, allocation_.memory, allocation_.offset)
+            ; result != VK_SUCCESS) {
+            throw std::runtime_error("DepthImage::DepthImage : メモリの割り当てに失敗しました。");
         }
-
-        vkBindImageMemory(device_, image_, memory_, 0);
 
         VkImageViewCreateInfo image_view_create_info = {};
         image_view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -58,12 +55,12 @@ namespace sq::graphics {
 
         vkDestroyImageView(device_, view_, nullptr);
         vkDestroyImage(device_, image_, nullptr);
-        vkFreeMemory(device_, memory_, nullptr);
+        allocator_->free(allocation_);
 
+        allocator_ = nullptr;
         device_ = VK_NULL_HANDLE;
         view_ = VK_NULL_HANDLE;
         image_ = VK_NULL_HANDLE;
-        memory_ = VK_NULL_HANDLE;
     }
 
     VkImageView DepthImage::view() const {

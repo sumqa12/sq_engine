@@ -1,9 +1,10 @@
 #pragma once
 
-#include <cstdint>
 #include <string>
 
 #include <vulkan/vulkan.h>
+
+#include "gpu_allocator.hpp"
 
 namespace sq::graphics {
 
@@ -42,9 +43,10 @@ private:
     static void transition_image_layout(VkCommandBuffer command_buffer, VkImage image,
                                         VkImageLayout old_layout, VkImageLayout new_layout);
 
+    GpuAllocator* allocator_ = nullptr; // 破棄時に free するため保持 (所有しない)
+    Allocation allocation_{};
     VkDevice device_ = VK_NULL_HANDLE;
     VkImage image_ = VK_NULL_HANDLE;
-    VkDeviceMemory memory_ = VK_NULL_HANDLE;
     VkImageView view_ = VK_NULL_HANDLE;
 };
 

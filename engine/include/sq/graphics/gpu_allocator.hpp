@@ -34,23 +34,20 @@ public:
     GpuAllocator& operator=(const GpuAllocator&) = delete;
 
     // reqs（vkGet*MemoryRequirements の結果）と properties を満たす区間を確保する。
-    // 手順:
-    //   1. Buffer::find_memory_type(physical_device_, reqs.memoryTypeBits, properties) でメモリタイプ index を決める
-    //   2. そのメモリタイプの既存ブロックを走査し、reqs.alignment で切り上げた offset に
-    //      reqs.size が収まる空き区間を探す（最初に見つかったものを使う = first-fit）
-    //   3. 無ければ新しいブロックを確保する（kDefaultBlockSize と reqs.size の大きい方）。
-    //      HOST_VISIBLE を含む properties なら、生成直後に vkMapMemory でブロック全体を map して保持する
-    //   4. 見つけた空き区間を offset で切り出し、残りを空きリストへ戻して Allocation を返す
-    //      （mapped は HOST_VISIBLE なら block.mapped + offset、そうでなければ nullptr）
-    [[nodiscard]] Allocation allocate(const VkMemoryRequirements& reqs, VkMemoryPropertyFlags properties);
+    //   linear: このリソースが linear tiling か（バッファ = true / optimal tiling のイメージ = false）。
+    //   bufferImageGranularity の制約により、linear と non-linear を同じブロックに混ぜてはいけない（phase13 D-1）。
+    //   既定 true は既存のバッファ呼び出しをそのまま通すため。
+    [[nodiscard]] Allocation allocate(const VkMemoryRequirements& reqs,
+                                      VkMemoryPropertyFlags properties,
+                                      bool linear = true);
 
     // allocation の区間を空きリストへ戻す。
-    // 手順: block_index からブロックを引き、{offset, size} を空きリストへ push する。
+    //   block_index からブロックを引き、{offset, size} を空きリストへ push する。
     //   （隣接する空き区間のマージ=defrag は将来課題。まずは push するだけでよい）
     void free(const Allocation& allocation);
 
 private:
-    // ブロック内の空き区間 [offset, offset+size)。
+    // ブロック内の空き区間 [offset, offset+size]。
     struct FreeRange {
         VkDeviceSize offset = 0;
         VkDeviceSize size = 0;
@@ -63,12 +60,12 @@ private:
         std::uint32_t memory_type_index = 0;
         void* mapped = nullptr;              // HOST_VISIBLE なら map 先。それ以外は nullptr
         std::vector<FreeRange> free_ranges;  // 初期状態は [{0, size}] の 1 区間
+        bool linear = true;                  // このブロックが linear 用か(混合させない)
     };
 
     // 新しいブロックを確保して blocks_ に追加し、その index を返す。
-    // 手順: vkAllocateMemory → HOST_VISIBLE を含むなら vkMapMemory → 空きリストを [{0, size}] で初期化。
-    [[nodiscard]] std::uint32_t create_block(std::uint32_t memory_type_index,
-                                             VkDeviceSize size, VkMemoryPropertyFlags properties);
+    [[nodiscard]] std::uint32_t create_block(std::uint32_t memory_type_index, VkDeviceSize size,
+                                             VkMemoryPropertyFlags properties, bool linear);
 
     static constexpr VkDeviceSize kDefaultBlockSize = 64ull * 1024 * 1024;  // 64 MiB（要調整）
 

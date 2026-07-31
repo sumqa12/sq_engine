@@ -44,7 +44,7 @@ namespace sq::graphics {
 
         depth_format_ = PhysicalDeviceSelector::find_depth_format(physical_device_);
 
-        depth_image_ = std::make_unique<DepthImage>(physical_device_, device_->handle(), swapchain_->extent(), depth_format_);
+        depth_image_ = std::make_unique<DepthImage>(physical_device_, device_->handle(), device_->allocator(), swapchain_->extent(), depth_format_);
 
         // 7. レンダーパスの作成
         render_pass_ = std::make_unique<RenderPass>(device_->handle(), swapchain_->image_format(), depth_format_);
@@ -537,7 +537,7 @@ namespace sq::graphics {
         destroy_framebuffers();
 
         swapchain_->recreate(window_->width(), window_->height());
-        depth_image_ = std::make_unique<DepthImage>(physical_device_, device_->handle(), swapchain_->extent(), depth_format_);
+        depth_image_ = std::make_unique<DepthImage>(physical_device_, device_->handle(), device_->allocator(), swapchain_->extent(), depth_format_);
 
         create_framebuffers();
 

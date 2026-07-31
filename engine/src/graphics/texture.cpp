@@ -16,7 +16,7 @@ namespace sq::graphics {
 Texture::Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator& allocator,
                  std::uint32_t graphics_queue_family, VkQueue graphics_queue,
                  const std::string& path)
-    : device_(device) {
+    : allocator_(&allocator), device_(device) {
     // テクスチャ生成の手順（phase8プラン 項目3）
     //  1. stbi_load(path.c_str(), &w, &h, &channels, STBI_rgb_alpha) で RGBA として読み込む。
     //     失敗（nullptr）なら throw。image_size = w * h * 4。
@@ -70,19 +70,14 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator
     //     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) → vkAllocateMemory（戻り値チェック）→ vkBindImageMemory。
     VkMemoryRequirements memory_requirements;
     vkGetImageMemoryRequirements(device_, image_, &memory_requirements);
-    uint32_t memory_type_index = Buffer::find_memory_type(physical_device, memory_requirements.memoryTypeBits,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    // plan13
+    allocation_ = allocator.allocate(memory_requirements,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        /*linear=*/false);   // ★ optimal tiling なので false)
 
-    VkMemoryAllocateInfo memory_allocate_info = {};
-    memory_allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    memory_allocate_info.allocationSize = memory_requirements.size;
-    memory_allocate_info.memoryTypeIndex = memory_type_index;
-    if (VkResult result = vkAllocateMemory(device_, &memory_allocate_info, nullptr, &memory_); result != VK_SUCCESS) {
-        throw std::runtime_error("Texture : vkAllocateMemory : メモリの確保に失敗しました。");
-    }
-
-    if (VkResult result = vkBindImageMemory(device_, image_, memory_, 0); result != VK_SUCCESS) {
-        throw std::runtime_error("Texture : vkBindImageMemory : メモリの確保に失敗しました。");
+    if (VkResult result = vkBindImageMemory(device_, image_, allocation_.memory, allocation_.offset)
+        ; result != VK_SUCCESS) {
+        throw std::runtime_error("Texture : vkBindImageMemory : メモリの割り当てに失敗しました。");
     }
 
     // 5. 「一時プール生成〜プール破棄」までを SingleTimeCommands に置き換える（phase10プラン E-2）
@@ -127,10 +122,10 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator
 Texture::~Texture() {
     vkDestroyImageView(device_, view_, nullptr);
     vkDestroyImage(device_, image_, nullptr);
-    vkFreeMemory(device_, memory_, nullptr);
+    allocator_->free(allocation_);
+    allocator_ = nullptr;
     view_ = VK_NULL_HANDLE;
     image_ = VK_NULL_HANDLE;
-    memory_ = VK_NULL_HANDLE;
     device_ = VK_NULL_HANDLE;
 }
 

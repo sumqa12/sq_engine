@@ -164,8 +164,6 @@ namespace sq::graphics {
                 create_info.pNext = &fse_info;
                 created_with_fse_ = true;
             }
-        } else {
-            printf("fullscreen_exclusive_: %d\n", fullscreen_exclusive_);
         }
 #endif
 
