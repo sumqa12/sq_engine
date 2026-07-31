@@ -1,5 +1,7 @@
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <iostream>
 #include <random>
 #include <GLFW/glfw3.h>
 
@@ -145,8 +147,6 @@ sq::ecs::Entity create_camera(sq::ecs::Registry& registry,
         float x, float y, float z,
         float tx, float ty, float tz) {
     const sq::ecs::Entity camera_entity = registry.create();
-
-    // 少し高い位置から原点を見下ろすカメラ。高さ(y)は旋回中も維持される。
     auto position = glm::vec3(x, y, z);
     auto target = glm::vec3(tx, ty, tz);
 
@@ -157,7 +157,6 @@ sq::ecs::Entity create_camera(sq::ecs::Registry& registry,
         }
     );
 
-    // このカメラを操作対象にする（FreeFly）:
     auto forward = glm::normalize(target - position);
     registry.add<Controller>(camera_entity,
         Controller {
@@ -181,12 +180,34 @@ int main() {
     const MeshId cube_mesh = sq::graphics::add_cube_mesh(renderer.meshes());
     const MeshId plane_mesh = sq::graphics::add_plane_mesh(renderer.meshes());
 
-    constexpr int kEntityCount = 12;
+    // phase12 手順4: 使うテクスチャを登録し、TextureId を受け取る。
+    // 同じパスを2回 load しても実際のロードは1回だけ（レジストリのキャッシュ）。
+    std::string dir_path = "./textures/hsr_icon_01"; // 対象のディレクトリ
+    std::vector<TextureId> textures;
+
+    for (const auto& entry : std::filesystem::directory_iterator(dir_path)) {
+        const TextureId texture = renderer.textures().load(entry.path().string());
+        textures.push_back(std::move(texture));
+    }
+    const TextureId default_texture = renderer.textures().default_texture();
+
+    // 1. 非決定的な乱数シードを取得
+    std::random_device rd;
+    // 2. メルセンヌ・ツイスタの乱数エンジンを初期化
+    std::mt19937 gen(rd());
+    // 3. 0.0 から 1.0 の範囲で一様に分布させる実数分布を設定
+    std::uniform_real_distribution dis(-10.0f, 10.0f);
+
+    constexpr int kEntityCount = 24;
     float angle = 0.0f;
     for (int i = 0; i < kEntityCount; ++i) {
-        float radius = 3.0f;
+        float radius = 5.0f;
         float x = radius * sin(angle);
         float z = radius * cos(angle);
+        int r_axis = (static_cast<int>(dis(gen)) + 10) % 3;
+        float a_x = r_axis == 0 ? 1.0f : 0;
+        float a_y = r_axis == 1 ? 1.0f : 0;
+        float a_z = r_axis == 2 ? 1.0f : 0;
 
         const sq::ecs::Entity e = registry.create();
         // phase12 手順1: Position/Velocity ではなく Transform の TRS に直接設定する。
@@ -194,18 +215,31 @@ int main() {
         registry.add<Transform>(e,
             Transform{
                 .position = {x, 0.0f, z},
-                .rotation = glm::angleAxis(glm::radians(angle), glm::vec3(0.0f, 1.0f, 0.0f)),
-                .scale = glm::vec3(0.5f + 0.1f * static_cast<float>(i)),
+                .rotation = glm::angleAxis(angle, glm::vec3(a_x, a_y, a_z)),
+                .scale = glm::vec3(0.5f + 0.05f * static_cast<float>(i)),
             }
         );
         // phase12 手順2 確認用: エンティティごとに形を変える（3体に1体を板にする）。
         // MeshHandle を持たないエンティティは描画されない。
         registry.add<MeshHandle>(e, MeshHandle{ .id = (i % 3 == 0) ? plane_mesh : cube_mesh });
-        // phase11 ① 確認用: 一部エンティティを半透明にする（Material 未付与は不透明のまま）。
-        // 半透明キューブ越しに背後が正しく透けること・視点角度で破綻しないことを確認する。
-        if (i % 2 == 0) {
-            registry.add<Material>(e, Material{ .transparent = true });
-        }
+        // phase12 手順4 確認用: エンティティごとにテクスチャを変える。
+        // 半透明（phase11 ①）の確認も兼ねて、偶数番だけ transparent にする。
+        // Material を付けないエンティティは既定マテリアル（既定テクスチャ・白 tint・不透明）になる。
+        //
+        // phase12 手順5 確認用: base_color で色 tint をかける。
+        // 半透明側は a=0.5 にして、アルファ付きPNGでなくても透けることを確認する。
+        const bool is_transparent = (i % 2 == 0);
+        const bool is_base_red = static_cast<int>(dis(gen) + 10) % 2 == 0;
+        const TextureId texture = textures[i % textures.size()];
+        registry.add<Material>(e,
+            Material{
+                .albedo = is_transparent ? texture : default_texture,
+                .base_color = is_base_red
+                    ? glm::vec4(1.0f, 0.6f, 0.6f, 0.5f)   // 赤みがかった半透明
+                    : glm::vec4(0.6f, 0.8f, 1.0f, 1.0f),  // 青みがかった不透明
+                .transparent = is_transparent,
+            }
+        );
         angle += glm::radians(360.0f / kEntityCount);
     }
 
@@ -221,15 +255,6 @@ int main() {
         // このカメラを操作対象にする
         // または、set_controllable_camera
         registry.add<ControlTarget>(camera_1, {});
-
-        // 1. 非決定的な乱数シードを取得
-        std::random_device rd;
-
-        // 2. メルセンヌ・ツイスタの乱数エンジンを初期化
-        std::mt19937 gen(rd());
-
-        // 3. 0.0 から 1.0 の範囲で一様に分布させる実数分布を設定
-        std::uniform_real_distribution dis(-10.0f, 10.0f);
 
         // 後9個のカメラ
         for (int i = 0; i < 9; ++i) {

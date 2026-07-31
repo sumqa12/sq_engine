@@ -13,8 +13,9 @@ namespace sq::graphics {
                           VkSurfaceKHR surface, std::uint32_t width, std::uint32_t height)
         : device_(device), physical_device_(physical_device), surface_(surface) {
 
-        (void)instance;
         create(width, height);
+
+        (void)instance;
     }
 
     Swapchain::~Swapchain() {
@@ -69,14 +70,11 @@ namespace sq::graphics {
 
         VkSurfaceFormatKHR surface_format = formats[0];
         image_format_ = surface_format.format;
-        for (const auto &surfaceFormat : formats)
-        {
-            if (surfaceFormat.colorSpace != VK_COLORSPACE_SRGB_NONLINEAR_KHR)
-            {
+        for (const auto &surfaceFormat : formats) {
+            if (surfaceFormat.colorSpace != VK_COLORSPACE_SRGB_NONLINEAR_KHR) {
                 continue;
             }
-            if (surfaceFormat.format == VK_FORMAT_B8G8R8A8_UNORM || surfaceFormat.format == VK_FORMAT_R8G8B8A8_UNORM)
-            {
+            if (surfaceFormat.format == VK_FORMAT_B8G8R8A8_UNORM || surfaceFormat.format == VK_FORMAT_R8G8B8A8_UNORM) {
                 surface_format = surfaceFormat;
                 image_format_ = surfaceFormat.format;
                 break;

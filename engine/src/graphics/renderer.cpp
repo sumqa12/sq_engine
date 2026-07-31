@@ -4,6 +4,7 @@
 #include <array>
 #include <stdexcept>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 #include <fmt/format.h>
@@ -54,8 +55,7 @@ namespace sq::graphics {
         // 9. UBOの作成
         create_uniform_buffers();
 
-        // 10. テクスチャとサンプラーを生成する
-        create_texture();
+        // 10. サンプラーを生成する（TextureRegistry へ渡すのでプールより前に必要）
         create_sampler();
 
         // 11. ディスクリプタプールの作成
@@ -63,14 +63,17 @@ namespace sq::graphics {
         create_descriptor_sets();
 
         // 12. パイプラインの作成（phase11 ①: 不透明用・半透明用の 2 本。SPV とレイアウトは共通）
+        // phase12 手順3: index が set 番号に対応する（[0]=カメラ, [1]=マテリアル）。
+        const std::vector<VkDescriptorSetLayout> set_layouts = { camera_set_layout_, material_set_layout_ };
+
         pipeline_opaque_ = std::make_unique<GraphicsPipeline>(device_->handle(), render_pass_->handle(), swapchain_->extent(),
                                             "shaders/triangle.vert.spv", "shaders/triangle.frag.spv",
-                                            descriptor_set_layout_,
+                                            set_layouts,
                                             PipelineConfig{ .depth_write_enable = true,  .blend_enable = false });
 
         pipeline_transparent_ = std::make_unique<GraphicsPipeline>(device_->handle(), render_pass_->handle(), swapchain_->extent(),
                                             "shaders/triangle.vert.spv", "shaders/triangle.frag.spv",
-                                            descriptor_set_layout_,
+                                            set_layouts,
                                             PipelineConfig{ .depth_write_enable = false, .blend_enable = true });
 
         // 13. フレームバッファの作成
@@ -82,33 +85,46 @@ namespace sq::graphics {
         // 15. 同期オブジェクトの作成
         sync_objects_ = std::make_unique<SyncObjects>(device_->handle(), kFramesInFlight, framebuffers_.size());
 
-        // 16. メッシュレジストリの生成（phase12 手順2）
-        // 実際のメッシュ登録はアプリ側が renderer.meshes() 経由で行う
+        // 16. アセットレジストリの生成（phase12 手順2・4）
+        // 実際の登録はアプリ側が renderer.meshes() / renderer.textures() 経由で行う
         // （例: graphics::add_cube_mesh(renderer.meshes())）。
         meshes_ = std::make_unique<MeshRegistry>(
             device_->allocator(), device_->handle(),
             *queue_family_indices_.graphics_family, device_->graphics_queue());
+
+        textures_ = std::make_unique<TextureRegistry>(
+            physical_device_, device_->handle(), device_->allocator(),
+            *queue_family_indices_.graphics_family, device_->graphics_queue(),
+            descriptor_pool_, material_set_layout_, sampler_->handle());
+
+        // 既定テクスチャを最初に登録する（Material::albedo が無効なエンティティが使う）。
+        // 最初に load したものが TextureRegistry::default_texture() になる。
+        textures_->load("textures/default.png");
     }
 
     Renderer::~Renderer() {
         vkDeviceWaitIdle(device_->handle());
         destroy_framebuffers();
-        // メッシュ（GPUバッファ）は GpuAllocator（= Device）より前に破棄する（phase11 ③ の不変条件）。
+        // メッシュ・テクスチャ（GPUリソース）は GpuAllocator（= Device）より前に破棄する
+        // （phase11 ③ の不変条件）。ディスクリプタセットはこの後のプール破棄でまとめて解放される。
         meshes_.reset();
+        textures_.reset();
         sync_objects_.reset();
         command_buffers_.reset();
         pipeline_transparent_.reset();
         pipeline_opaque_.reset();
 
         vkDestroyDescriptorPool(device_->handle(), descriptor_pool_, nullptr);
-        vkDestroyDescriptorSetLayout(device_->handle(), descriptor_set_layout_, nullptr);
+        // phase12 手順3: レイアウトは2つになった（セットはプール破棄でまとめて解放される）。
+        vkDestroyDescriptorSetLayout(device_->handle(), camera_set_layout_, nullptr);
+        vkDestroyDescriptorSetLayout(device_->handle(), material_set_layout_, nullptr);
 
-        texture_.reset();
         sampler_.reset();
         camera_ubos_.clear();
         descriptor_sets_.clear();
         descriptor_pool_ = VK_NULL_HANDLE;
-        descriptor_set_layout_ = VK_NULL_HANDLE;
+        camera_set_layout_ = VK_NULL_HANDLE;
+        material_set_layout_ = VK_NULL_HANDLE;
 
         render_pass_.reset();
         swapchain_.reset();
@@ -207,73 +223,73 @@ namespace sq::graphics {
             camera_ubos_[current_frame_]->update(&camera_ubo, sizeof(camera_ubo));
 
             // ディスクリプタセットのバインド（レイアウトは 2 本のパイプラインで共通なので使い回せる）
+            // phase12 手順3: set=0（カメラUBO）はフレーム先頭で1回だけバインドする。
             VkDescriptorSet descriptor_set = descriptor_sets_[current_frame_];
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_opaque_->layout(), 0, 1, &descriptor_set, 0, nullptr);
+            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                pipeline_opaque_->layout(), 0, 1, &descriptor_set, 0, nullptr);
 
-            // ---- phase11 ①: 不透明パス → 半透明ソート → 半透明パス ----
-            // phase12 手順2: メッシュは共有ではなく MeshHandle ごとに引いてバインドする。
+            // set=1（マテリアル）はテクスチャごとに異なるため、描画ループ内でバインドする（phase12 手順4）。
 
-            // 描画情報。model 行列・どのメッシュか・カメラからの2乗距離を持つ。
-            struct DrawItem {
-                glm::mat4 model;
-                scene::MeshId mesh;
-                float distance_sq;
-            };
-            std::vector<DrawItem> transparent_items;
+            // ---- phase12 手順6: 収集 → ソート → バッチ記録 ----
+            // 描画順を「その場で決める」のをやめ、いったん全件を集めてから並べ替えて記録する。
+            // これにより不透明のバインド切り替えを最小化でき、フラスタムカリング等の置き場もできる。
 
-            // 1つのメッシュをバインドして描画する（不透明パス・半透明パスで共用）。
-            // 直前にバインドしたメッシュを覚えて、変化した時だけ再バインドする。
-            scene::MeshId bound_mesh = scene::kInvalidMeshId;
-            auto draw_mesh = [&](const GraphicsPipeline& pipeline, const glm::mat4& model, scene::MeshId mesh) {
-                const auto&[vertices, indices] = meshes_->get(mesh);
-                if (mesh != bound_mesh) {
-                    vertices->bind(command_buffer);
-                    indices->bind(command_buffer);
-                    bound_mesh = mesh;
-                }
-                vkCmdPushConstants(command_buffer, pipeline.layout(),
-                    VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &model);
-                // インデックス数はメッシュごとに引く（共有 cube 固定をやめた点が本手順の要）
-                vkCmdDrawIndexed(command_buffer, indices->index_count(), 1, 0, 0, 0);
-            };
-
-            // 1. 不透明パス（順不同。深度テストが前後関係を解決する）
+            // 1. 収集（不透明・半透明に振り分ける）
             // MeshHandle を持つエンティティのみが描画対象（カメラ等の非描画エンティティは除外される）。
-            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_opaque_->handle());
+            opaque_items_.clear();
+            transparent_items_.clear();
             registry.view<scene::Transform, scene::MeshHandle>().each(
                 [&](ecs::Entity e, scene::Transform& t, scene::MeshHandle& mh) {
                     // 未登録のメッシュを指すハンドルはスキップする
                     if (!meshes_->contains(mh.id)) { return; }
 
-                    // モデル行列を合成する（T * R * S）
-                    const glm::mat4 model = t.model();
-
-                    // Material を持ち transparent なら、その場では描かず transparent_items へ回す。
-                    const bool is_transparent = registry.has<scene::Material>(e)
-                                                && registry.get<scene::Material>(e).transparent;
-                    if (is_transparent) {
-                        glm::vec3 d = t.position - cam_pos;
-                        transparent_items.push_back({ model, mh.id, glm::dot(d, d) });  // 2乗距離（sqrt 不要）
-                        return;
+                    // Material を1回だけ引く。持たないエンティティは既定マテリアル
+                    // （既定テクスチャ・白 tint・不透明）として扱う（後方互換）。
+                    scene::Material material{};
+                    if (registry.has<scene::Material>(e)) {
+                        material = registry.get<scene::Material>(e);
                     }
 
-                    // 不透明はその場で描画
-                    draw_mesh(*pipeline_opaque_, model, mh.id);
+                    // albedo が無効／未登録なら既定テクスチャへフォールバックする
+                    const scene::TextureId texture = textures_->contains(material.albedo)
+                        ? material.albedo
+                        : textures_->default_texture();
+
+                    // model 行列を合成し（T * R * S）、push constant の中身を作る
+                    const glm::vec3 d = t.position - cam_pos;
+                    const DrawItem item{
+                        PushConstants{ t.model(), material.base_color },
+                        mh.id, texture,
+                        glm::dot(d, d),  // 2乗距離（順序比較にしか使わないので sqrt 不要）
+                    };
+
+                    (material.transparent ? transparent_items_ : opaque_items_).push_back(item);
                 });
 
-            // 2. 半透明ソート（遠い順 = distance_sq 降順）
-            // ★ 正しさが順序に依存するため、メッシュでまとめてはいけない（ソート順が絶対）。
-            std::ranges::sort(transparent_items,
+            // 2. ソート
+            // 不透明: 順序は自由（深度テストが前後関係を解決する）ので、
+            //         同じテクスチャ・メッシュが連続するように並べて再バインドを減らす。
+            std::ranges::sort(opaque_items_,
+                [](const DrawItem& a, const DrawItem& b) {
+                    return std::tie(a.texture, a.mesh) < std::tie(b.texture, b.mesh);
+                }
+            );
+
+            // 半透明: 遠い順（back-to-front）。
+            // ★ 正しさが順序に依存するため、テクスチャ・メッシュでまとめてはいけない（ソート順が絶対）。
+            std::ranges::sort(transparent_items_,
                 [](const DrawItem& a, const DrawItem& b) {
                     return a.distance_sq > b.distance_sq;
                 }
             );
 
-            // 3. 半透明パス（back-to-front。depthWrite=FALSE のパイプライン）
+            // 3. 記録（不透明パス → 半透明パス）
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_opaque_->handle());
+            record_draw_items(command_buffer, *pipeline_opaque_, opaque_items_);
+
+            // 半透明は depthWrite=FALSE のパイプライン（phase11 ①）
             vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_transparent_->handle());
-            for (const auto&[model, mesh, distance_sq] : transparent_items) {
-                draw_mesh(*pipeline_transparent_, model, mesh);
-            }
+            record_draw_items(command_buffer, *pipeline_transparent_, transparent_items_);
 
             // レンダーパスの終了
             vkCmdEndRenderPass(command_buffer);
@@ -319,6 +335,43 @@ namespace sq::graphics {
         current_frame_ = (current_frame_ + 1) % kFramesInFlight;
     }
 
+    // 収集・ソート済みの描画アイテムを順に記録する（phase12 手順6）。
+    void Renderer::record_draw_items(VkCommandBuffer command_buffer,
+                                     const GraphicsPipeline& pipeline,
+                                     const std::vector<DrawItem>& items) {
+        // 直前にバインドしたものを覚えて、変化したときだけ再バインドする。
+        // パスをまたぐと状態は引き継がないが（呼び出しごとにリセットされる）、
+        // 余分なバインドが1回起きるだけで正しさには影響しない。
+        scene::MeshId bound_mesh = scene::kInvalidMeshId;
+        scene::TextureId bound_texture = scene::kInvalidTextureId;
+
+        for (const DrawItem& item : items) {
+            // set=1（マテリアル）: テクスチャが変わったときだけバインドし直す（phase12 手順4）
+            if (item.texture != bound_texture) {
+                VkDescriptorSet material_set = textures_->descriptor_set(item.texture);
+                vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    pipeline.layout(), 1, 1, &material_set, 0, nullptr);
+                bound_texture = item.texture;
+            }
+
+            const auto&[vertices, indices] = meshes_->get(item.mesh);
+            if (item.mesh != bound_mesh) {
+                vertices->bind(command_buffer);
+                indices->bind(command_buffer);
+                bound_mesh = item.mesh;
+            }
+
+            // phase12 手順5: model + base_color をまとめて積む
+            // （ステージはパイプラインの VkPushConstantRange と一致させること）
+            vkCmdPushConstants(command_buffer, pipeline.layout(),
+                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                0, sizeof(item.constants), &item.constants);
+
+            // インデックス数はメッシュごとに引く（共有 cube 固定をやめた点が手順2の要）
+            vkCmdDrawIndexed(command_buffer, indices->index_count(), 1, 0, 0, 0);
+        }
+    }
+
     void Renderer::create_surface() {
         glfwCreateWindowSurface(instance_->handle(), window_->handle(), nullptr, &surface_);
     }
@@ -356,30 +409,40 @@ namespace sq::graphics {
     }
 
     // ディスクリプタセットレイアウトの作成
+    // phase12 手順3: 1つのセットに2 binding を詰めるのをやめ、用途ごとに2つのセットへ分離する。
     void Renderer::create_descriptor_set_layout() {
+        // set=0: カメラUBO（フレームごとに1個。フレーム先頭で1回だけバインドする）
         VkDescriptorSetLayoutBinding ubo_layout_binding{};
         ubo_layout_binding.binding = 0;
         ubo_layout_binding.descriptorCount = 1;
         ubo_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         ubo_layout_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-        // combined image sampler 用の binding を追加する (phase8 項目7)
+        VkDescriptorSetLayoutCreateInfo camera_layout_info{};
+        camera_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        camera_layout_info.bindingCount = 1;
+        camera_layout_info.pBindings = &ubo_layout_binding;
+
+        if (vkCreateDescriptorSetLayout(device_->handle(), &camera_layout_info, nullptr, &camera_set_layout_) != VK_SUCCESS) {
+            throw std::runtime_error("Renderer::create_descriptor_set_layout : カメラ用ディスクリプタセットレイアウトの作成に失敗しました！");
+        }
+
+        // set=1: マテリアル（テクスチャごとに1個。マテリアルが変わるたびバインドし直す）
+        // ★ 別セットなので binding は 1 ではなく 0 から振り直す（シェーダの set=1, binding=0 と合わせる）。
         VkDescriptorSetLayoutBinding sampler_layout_binding{};
-        sampler_layout_binding.binding = 1;
+        sampler_layout_binding.binding = 0;
         sampler_layout_binding.descriptorCount = 1;
         sampler_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         sampler_layout_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        std::vector<VkDescriptorSetLayoutBinding> bindings;
-        bindings.push_back(ubo_layout_binding);
-        bindings.push_back(sampler_layout_binding);
+        VkDescriptorSetLayoutCreateInfo material_layout_info{};
+        material_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        material_layout_info.bindingCount = 1;
+        material_layout_info.pBindings = &sampler_layout_binding;
 
-        VkDescriptorSetLayoutCreateInfo descriptor_set_layout_info{};
-        descriptor_set_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        descriptor_set_layout_info.bindingCount = 2;
-        descriptor_set_layout_info.pBindings = bindings.data();
-
-        vkCreateDescriptorSetLayout(device_->handle(), &descriptor_set_layout_info, nullptr, &descriptor_set_layout_);
+        if (vkCreateDescriptorSetLayout(device_->handle(), &material_layout_info, nullptr, &material_set_layout_) != VK_SUCCESS) {
+            throw std::runtime_error("Renderer::create_descriptor_set_layout : マテリアル用ディスクリプタセットレイアウトの作成に失敗しました！");
+        }
     }
 
     // UBOの作成
@@ -395,9 +458,10 @@ namespace sq::graphics {
         camera_pool_size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         camera_pool_size.descriptorCount = static_cast<uint32_t>(kFramesInFlight);
 
+        // phase12 手順3: マテリアルセット（テクスチャごとに1個）の分を確保する。
         VkDescriptorPoolSize sampler_pool_size;
         sampler_pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        sampler_pool_size.descriptorCount = static_cast<uint32_t>(kFramesInFlight);
+        sampler_pool_size.descriptorCount = kMaxTextures;
 
         std::vector<VkDescriptorPoolSize> descriptor_pools;
         descriptor_pools.push_back(camera_pool_size);
@@ -405,7 +469,8 @@ namespace sq::graphics {
 
         VkDescriptorPoolCreateInfo descriptor_pool_info{};
         descriptor_pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        descriptor_pool_info.maxSets = kFramesInFlight;
+        // set=0 が kFramesInFlight 個、set=1 が最大 kMaxTextures 個。
+        descriptor_pool_info.maxSets = static_cast<uint32_t>(kFramesInFlight) + kMaxTextures;
         descriptor_pool_info.poolSizeCount = 2;
         descriptor_pool_info.pPoolSizes = descriptor_pools.data();
 
@@ -413,13 +478,14 @@ namespace sq::graphics {
     }
 
     void Renderer::create_descriptor_sets() {
+        // -- set=0: カメラUBO（フレームごとに1個）--
         descriptor_sets_.resize(kFramesInFlight);
         for (std::size_t i = 0; i < kFramesInFlight; ++i) {
             VkDescriptorSetAllocateInfo alloc_info{};
             alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
             alloc_info.descriptorPool = descriptor_pool_;
             alloc_info.descriptorSetCount = 1;
-            alloc_info.pSetLayouts = &descriptor_set_layout_;
+            alloc_info.pSetLayouts = &camera_set_layout_;
 
             vkAllocateDescriptorSets(device_->handle(), &alloc_info, &descriptor_sets_[i]);
 
@@ -437,36 +503,10 @@ namespace sq::graphics {
             ubo_write.descriptorCount = 1;
             ubo_write.pBufferInfo = &buffer_info;
 
-            // binding=1（combined image sampler）の書き込みを追加する (phase8 項目7)
-            VkDescriptorImageInfo image_info{};
-            image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            image_info.imageView = texture_->view();
-            image_info.sampler = sampler_->handle();
-
-            VkWriteDescriptorSet image_write{};
-            image_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            image_write.dstSet = descriptor_sets_[i];
-            image_write.dstBinding = 1;
-            image_write.dstArrayElement = 0;
-            image_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            image_write.descriptorCount = 1;
-            image_write.pImageInfo = &image_info;
-
-            std::vector<VkWriteDescriptorSet> descriptor_write_sets;
-            descriptor_write_sets.push_back(ubo_write);
-            descriptor_write_sets.push_back(image_write);
-
-            vkUpdateDescriptorSets(device_->handle(), 2, descriptor_write_sets.data(), 0, nullptr);
+            vkUpdateDescriptorSets(device_->handle(), 1, &ubo_write, 0, nullptr);
         }
-    }
 
-    // テクスチャの読み込み（textures/ の画像を Texture として生成する）。
-    void Renderer::create_texture() {
-        // 実行ファイル隣の textures/ にある画像を読み込む（phase8プラン 項目3・11）
-        texture_ = std::make_unique<Texture>(
-            physical_device_, device_->handle(), device_->allocator(),
-            *queue_family_indices_.graphics_family, device_->graphics_queue(),
-            "textures/hsr_icon_01/Blade 1.png");
+        // set=1（マテリアル）のセットは TextureRegistry がテクスチャごとに確保・書き込みする（phase12 手順4）。
     }
 
     // 全テクスチャで共有するサンプラーの生成
@@ -478,6 +518,11 @@ namespace sq::graphics {
     // メッシュの登録・参照（phase12 手順2）
     MeshRegistry& Renderer::meshes() {
         return *meshes_;
+    }
+
+    // テクスチャの登録・参照（phase12 手順4）
+    TextureRegistry& Renderer::textures() {
+        return *textures_;
     }
 
     void Renderer::recreate_swapchain() {

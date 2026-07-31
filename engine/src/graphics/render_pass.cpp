@@ -65,8 +65,6 @@ RenderPass::RenderPass(VkDevice device, VkFormat color_format, VkFormat depth_fo
 
     // レンダーパスを作成する
     vkCreateRenderPass(device_, &render_pass_info, nullptr, &render_pass_);
-
-    (void)color_format;
 }
 
 RenderPass::~RenderPass() {

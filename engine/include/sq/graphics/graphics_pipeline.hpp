@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include <vulkan/vulkan.h>
 
@@ -19,12 +20,13 @@ struct PipelineConfig {
 // 単一の不変の VkPipeline に組み込みます。Vulkan には、GL とは異なり、グローバルなレンダリング状態はありません。
 class GraphicsPipeline {
 public:
-    // descriptor_set_layout: パイプラインレイアウトに組み込むディスクリプタセット
-    // レイアウト（カメラUBO用、set=0）。呼び出し側が所有・破棄する（ここでは破棄しない）。
+    // set_layouts: パイプラインレイアウトに組み込むディスクリプタセットレイアウト。
+    //   index が set 番号に対応する（[0]=カメラUBO, [1]=マテリアル）。phase12 手順3 で単体から複数へ。
+    //   呼び出し側が所有・破棄する（ここでは破棄しない）。
     // config: depth write / blend の有無（phase11 ①。既定は不透明相当）。
     GraphicsPipeline(VkDevice device, VkRenderPass render_pass, VkExtent2D viewport_extent,
                       const std::string& vert_spv_path, const std::string& frag_spv_path,
-                      VkDescriptorSetLayout descriptor_set_layout,
+                      const std::vector<VkDescriptorSetLayout>& set_layouts,
                       const PipelineConfig& config);
     ~GraphicsPipeline();
 

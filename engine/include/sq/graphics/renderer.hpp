@@ -15,11 +15,13 @@
 #include "sq/graphics/mesh.hpp"
 #include "sq/graphics/mesh_registry.hpp"
 #include "sq/graphics/physical_device.hpp"
+#include "sq/graphics/push_constants.hpp"
 #include "sq/graphics/render_pass.hpp"
 #include "sq/graphics/sampler.hpp"
 #include "sq/graphics/swapchain.hpp"
 #include "sq/graphics/sync_objects.hpp"
 #include "sq/graphics/texture.hpp"
+#include "sq/graphics/texture_registry.hpp"
 #include "sq/graphics/uniform_buffer.hpp"
 #include "sq/graphics/vulkan_instance.hpp"
 #include "sq/graphics/window.hpp"
@@ -69,17 +71,37 @@ public:
     // scene::MeshHandle コンポーネントに入れる。
     [[nodiscard]] MeshRegistry& meshes();
 
+    // テクスチャの登録・参照（phase12 手順4）。アプリ側が起動時に
+    // renderer.textures().load("textures/foo.png") で登録し、得た TextureId を
+    // scene::Material::albedo に入れる。
+    [[nodiscard]] TextureRegistry& textures();
+
 private:
+    // 描画1件の情報（phase12 手順6）。収集フェーズで作り、ソートしてから記録する。
+    struct DrawItem {
+        PushConstants constants;    // model 行列 + base_color（そのまま push する）
+        scene::MeshId mesh;
+        scene::TextureId texture;
+        float distance_sq;          // カメラからの2乗距離（半透明ソート用）
+    };
+
+    // items を順に記録する。直前にバインドしたメッシュ／テクスチャを覚えて、
+    // 変化したときだけ再バインドすることで冗長な vkCmdBind* を省く。
+    // ★ items の順序は呼び出し側が決める（不透明はバッチ順、半透明は back-to-front）。
+    void record_draw_items(VkCommandBuffer command_buffer,
+                           const GraphicsPipeline& pipeline,
+                           const std::vector<DrawItem>& items);
+
     void create_surface();
     void create_framebuffers();
     void destroy_framebuffers();
     void recreate_swapchain();
-    // カメラUBO用ディスクリプタ一式（パイプライン作成の前にレイアウトが必要）。
-    void create_descriptor_set_layout();  // vkCreateDescriptorSetLayout（set=0, binding=0, UNIFORM_BUFFER, VERTEX）
+    // ディスクリプタ一式（パイプライン作成の前にレイアウトが必要）。
+    // phase12 手順3: set=0（カメラUBO）と set=1（マテリアル）の2つのレイアウトを作る。
+    void create_descriptor_set_layout();
     void create_uniform_buffers();        // camera_ubos_をkFramesInFlight個作成
     void create_descriptor_pool();        // vkCreateDescriptorPool（UNIFORM_BUFFER + COMBINED_IMAGE_SAMPLER）
     void create_descriptor_sets();        // vkAllocateDescriptorSets + vkUpdateDescriptorSetsで各UBO/テクスチャと結びつける
-    void create_texture();                // textures/ の画像を読み込み Texture を生成（descriptor_sets の前に呼ぶ）
     void create_sampler();                // 全テクスチャで共有する VkSampler を生成
 
     static constexpr std::size_t kFramesInFlight = 2;
@@ -106,15 +128,30 @@ private:
     // 描画対象は scene::MeshHandle を持つエンティティのみ。
     std::unique_ptr<MeshRegistry> meshes_;
 
-    // カメラUBO用ディスクリプタ（すべてkFramesInFlight個。スワップチェーン画像枚数には非依存）。
-    VkDescriptorSetLayout descriptor_set_layout_ = VK_NULL_HANDLE;
+    // phase12 手順3: ディスクリプタセットを用途で分離した。
+    //   set=0: カメラUBO（binding=0, UNIFORM_BUFFER, VERTEX）。kFramesInFlight 個。
+    //   set=1: マテリアル（binding=0, COMBINED_IMAGE_SAMPLER, FRAGMENT）。テクスチャごとに1個。
+    // テクスチャは起動後に不変なので、set=1 はフレーム数と無関係に1個で足りる。
+    static constexpr std::uint32_t kMaxTextures = 64;  // 登録できるテクスチャ数の上限（プールの容量）
+
+    VkDescriptorSetLayout camera_set_layout_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout material_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
     std::vector<std::unique_ptr<UniformBuffer>> camera_ubos_;
-    std::vector<VkDescriptorSet> descriptor_sets_;  // プールから確保（個別破棄は不要、プール破棄でまとめて解放）
+    std::vector<VkDescriptorSet> descriptor_sets_;  // set=0。プールから確保（個別破棄は不要）
 
-    // テクスチャ一式（スワップチェーン非依存。全エンティティ・全フレームで共有）。
-    std::unique_ptr<Texture> texture_;
+    // サンプラーは全テクスチャで共有する（スワップチェーン非依存）。
     std::unique_ptr<Sampler> sampler_;
+
+    // phase12 手順4: 単一の共有テクスチャをやめ、TextureId で引くレジストリに置き換えた。
+    // set=1 のディスクリプタセットもテクスチャごとにレジストリが持つ。
+    std::unique_ptr<TextureRegistry> textures_;
+
+    // 描画アイテムの収集バッファ（phase12 手順6）。
+    // 毎フレームのヒープ確保を避けるためメンバに持ち、draw_frame の先頭で clear() して再利用する
+    // （clear() は capacity を保つ）。
+    std::vector<DrawItem> opaque_items_;
+    std::vector<DrawItem> transparent_items_;
 
     std::size_t current_frame_ = 0;
 };

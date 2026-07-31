@@ -22,6 +22,7 @@ add_library(sq_engine_lib STATIC
     src/scene/transform.cpp
     src/graphics/depth_image.cpp
     src/graphics/texture.cpp
+    src/graphics/texture_registry.cpp
     src/graphics/sampler.cpp
     src/graphics/single_time_commands.cpp
     src/input/input_manager.cpp

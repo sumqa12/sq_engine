@@ -5,7 +5,12 @@ layout(location = 1) in vec3 in_color;
 layout(location = 2) in vec2 in_uv;
 
 layout(set = 0, binding = 0) uniform CameraUBO { mat4 view_proj; } camera;
-layout(push_constant) uniform PushConstants { mat4 model; } pc;
+// phase12 手順5: base_color を追加。★ frag と宣言を完全に一致させること
+// （vert では base_color を使わないが、ブロック定義は揃える）。
+layout(push_constant) uniform PushConstants {
+    mat4 model;
+    vec4 base_color;
+} pc;
 
 layout(location = 0) out vec3 frag_color;
 layout(location = 1) out vec2 frag_uv;
