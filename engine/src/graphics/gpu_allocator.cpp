@@ -1,5 +1,6 @@
 #include "sq/graphics/gpu_allocator.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <stdexcept>
 
@@ -48,37 +49,77 @@ Allocation GpuAllocator::allocate(const VkMemoryRequirements& reqs, VkMemoryProp
                 block.free_ranges.erase(block.free_ranges.begin() + static_cast<long long>(ri));
 
                 if (aligned > offset) { // 前の隙間
-                    block.free_ranges.push_back({ offset, aligned - offset });
+                    insert_free_range(block,    { .offset = offset, .size = aligned - offset });
                 }
 
                 if (VkDeviceSize used_end = aligned + reqs.size; used_end < offset + size) { // 後ろの残り
-                    block.free_ranges.push_back({ used_end, offset + size - used_end });
+                    insert_free_range(block, { .offset = used_end, .size = offset + size - used_end });
                 }
 
                 return Allocation{
-                    block.memory, aligned, reqs.size, type, bi,
-                    block.mapped ? static_cast<char*>(block.mapped) + aligned : nullptr
+                    .memory = block.memory,
+                    .offset = aligned,
+                    .size = reqs.size,
+                    .memory_type_index = type,
+                    .block_index = bi,
+                    .mapped = block.mapped ? static_cast<char*>(block.mapped) + aligned : nullptr
                 };
             }
         }
     }
 
     // 4. 見つからない場合、作る
-    uint32_t index = create_block(type, max(kDefaultBlockSize, reqs.size), properties, linear);
+    uint32_t index = create_block(type, std::max(kDefaultBlockSize, reqs.size), properties, linear);
     Block& block = blocks_[index];
     block.free_ranges.erase(block.free_ranges.begin());
 
     return Allocation{
-        block.memory, 0, reqs.size, type, index,
-        block.mapped ? static_cast<char*>(block.mapped) : nullptr
+        .memory = block.memory,
+        .offset = 0,
+        .size = reqs.size,
+        .memory_type_index = type,
+        .block_index = index,
+        .mapped = block.mapped ? static_cast<char*>(block.mapped) : nullptr
     };
 }
 
 void GpuAllocator::free(const Allocation& allocation) {
     Block& block = blocks_[allocation.block_index];
-    block.free_ranges.push_back({ allocation.offset, allocation.size });
-    // phase13 隣接空きのマージ
+    insert_free_range(block, { .offset = allocation.offset, .size = allocation.size });
+}
 
+void GpuAllocator::insert_free_range(Block& block, const FreeRange& range) {
+    // phase13 ④-3: 隣接空きのマージ（coalescing）
+    //
+    //  1. free_ranges は offset 昇順。std::lower_bound で「range より後ろに来る最初の区間」を探す。
+    //     比較関数は FreeRange::offset 同士を見る（`r.offset < value.offset`）。
+    auto cur = std::ranges::lower_bound(block.free_ranges, range,
+        [](const FreeRange& r, const FreeRange& value) {
+            return r.offset < value.offset;
+        }
+    );
+
+    //  2. その位置に range を挿入する（insert が返すイテレータを cur とする）。
+    cur = block.free_ranges.insert(cur, range);
+
+    //  3. 後ろと統合: cur + 1 が end でなく、cur->offset + cur->size == (cur + 1)->offset なら
+    //     cur->size に (cur + 1)->size を足して cur + 1 を erase する。
+    if (cur + 1 != block.free_ranges.end() && cur->offset + cur->size == (cur + 1)->offset) {
+        cur->size += (cur + 1)->size;
+        block.free_ranges.erase(cur + 1);
+    }
+
+    //  4. 前と統合: cur が begin でなく、(cur - 1)->offset + (cur - 1)->size == cur->offset なら
+    //     (cur - 1)->size に cur->size を足して cur を erase する。
+    if (cur != block.free_ranges.begin() && (cur - 1)->offset + (cur - 1)->size == cur->offset) {
+        (cur - 1)->size += cur->size;
+        block.free_ranges.erase(cur);
+    }
+
+    //  ★ 3 → 4 の順で行うこと。先に前と統合すると cur が指す要素が消え、後ろの判定ができなくなる。
+    //  ★ erase / insert のたびにイテレータは無効化され得るので、戻り値で取り直すこと。
+    //  ★ 区間が重なることは無い前提（同じ Allocation を二重に free しない限り）。
+    //     デバッグ時は cur->offset + cur->size <= (cur + 1)->offset を assert してもよい。
 }
 
 std::uint32_t GpuAllocator::create_block(std::uint32_t memory_type_index, VkDeviceSize size,
@@ -113,7 +154,7 @@ std::uint32_t GpuAllocator::create_block(std::uint32_t memory_type_index, VkDevi
     }
 
     // 4. ブロックの空き区間
-    block.free_ranges = {{ 0, size }};
+    block.free_ranges = {{ .offset = 0, .size = size }};
 
     // 5. ブロックを追加して、インデックスを返す
     blocks_.push_back(std::move(block));

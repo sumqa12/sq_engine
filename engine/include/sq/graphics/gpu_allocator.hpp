@@ -42,12 +42,14 @@ public:
                                       bool linear = true);
 
     // allocation の区間を空きリストへ戻す。
-    //   block_index からブロックを引き、{offset, size} を空きリストへ push する。
-    //   （隣接する空き区間のマージ=defrag は将来課題。まずは push するだけでよい）
+    //   block_index からブロックを引き、{offset, size} を insert_free_range で戻す。
+    //   隣接する空き区間のマージはそこで行う（phase13 ④-3）。
     void free(const Allocation& allocation);
 
 private:
     // ブロック内の空き区間 [offset, offset+size]。
+    // free_ranges 内では常に offset 昇順に並び、互いに重ならず、隣接もしない
+    // （隣接するものは insert_free_range で1つに統合されるため）。
     struct FreeRange {
         VkDeviceSize offset = 0;
         VkDeviceSize size = 0;
@@ -62,6 +64,14 @@ private:
         std::vector<FreeRange> free_ranges;  // 初期状態は [{0, size}] の 1 区間
         bool linear = true;                  // このブロックが linear 用か(混合させない)
     };
+
+    // ブロックの空きリストへ1区間を戻す。free_ranges の offset 昇順を保ちつつ挿入し、
+    // 前後の区間と接していれば1つに統合する（coalescing。phase13 ④-3）。
+    //
+    // マージしないと、DepthImage のようにスワップチェーン再生成のたびに確保／解放を
+    // 繰り返すリソースで空きが細切れのまま残り、合計サイズは足りていても連続した区間が
+    // 取れずに確保へ失敗し得る（リサイズ連打で顕在化する）。
+    static void insert_free_range(Block& block, const FreeRange& range);
 
     // 新しいブロックを確保して blocks_ に追加し、その index を返す。
     [[nodiscard]] std::uint32_t create_block(std::uint32_t memory_type_index, VkDeviceSize size,

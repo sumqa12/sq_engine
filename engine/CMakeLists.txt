@@ -35,9 +35,16 @@ target_compile_features(sq_engine_lib PUBLIC cxx_std_20)
 
 # VulkanのNDC深度は[0,1]。GLMの既定([-1,1])と食い違うため全体で定義する。
 if(WIN32)
+    # NOMINMAX: VK_USE_PLATFORM_WIN32_KHR により vulkan.h が windows.h を引き込むため、
+    #   minwindef.h の関数形式マクロ min/max が全TUに漏れる。std::max(a, b) と書いても
+    #   `max` の直後が `(` なのでマクロ展開され `std::((a)>(b)?(a):(b))` になって壊れる。
+    #   windows.h より前に定義される必要があるので、コマンドラインで与える。
+    # WIN32_LEAN_AND_MEAN: winsock 等の未使用ヘッダを外し、汚染とコンパイル時間を減らす。
     target_compile_definitions(sq_engine_lib PUBLIC
             VK_USE_PLATFORM_WIN32_KHR
             GLFW_EXPOSE_NATIVE_WIN32
+            NOMINMAX
+            WIN32_LEAN_AND_MEAN
             GLM_FORCE_DEPTH_ZERO_TO_ONE
             $<$<CONFIG:Debug>:DEBUG>)
 else ()
