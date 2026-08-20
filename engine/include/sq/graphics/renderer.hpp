@@ -128,10 +128,6 @@ private:
     // 描画対象は scene::MeshHandle を持つエンティティのみ。
     std::unique_ptr<MeshRegistry> meshes_;
 
-    // phase12 手順3: ディスクリプタセットを用途で分離した。
-    //   set=0: カメラUBO（binding=0, UNIFORM_BUFFER, VERTEX）。kFramesInFlight 個。
-    //   set=1: マテリアル（binding=0, COMBINED_IMAGE_SAMPLER, FRAGMENT）。テクスチャごとに1個。
-    // テクスチャは起動後に不変なので、set=1 はフレーム数と無関係に1個で足りる。
     static constexpr std::uint32_t kMaxTextures = 64;  // 登録できるテクスチャ数の上限（プールの容量）
 
     VkDescriptorSetLayout camera_set_layout_ = VK_NULL_HANDLE;
@@ -144,7 +140,7 @@ private:
     std::unique_ptr<Sampler> sampler_;
 
     // phase12 手順4: 単一の共有テクスチャをやめ、TextureId で引くレジストリに置き換えた。
-    // set=1 のディスクリプタセットもテクスチャごとにレジストリが持つ。
+    // set=1 のディスクリプタセットはテクスチャ全体で1個
     std::unique_ptr<TextureRegistry> textures_;
 
     // 描画アイテムの収集バッファ（phase12 手順6）。

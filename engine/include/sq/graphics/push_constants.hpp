@@ -27,7 +27,7 @@ struct PushConstants {
 // glm::mat4 / vec4 のアライメントが16なので、構造体末尾に12バイトのパディングが入り 96 になる。
 // シェーダ側のブロックは 84 バイトまでしか使わないが、VkPushConstantRange が
 // それ以上でも問題ない（範囲はシェーダの使用量以上であればよい）。
-static_assert(sizeof(PushConstants) == 96,
+static_assert(sizeof(PushConstants) == 84,
               "PushConstants のサイズがシェーダの push_constant ブロックと一致しません");
 static_assert(sizeof(PushConstants) % 4 == 0,
               "push constant のサイズは4の倍数である必要があります");
