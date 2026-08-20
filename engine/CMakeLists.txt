@@ -20,6 +20,7 @@ add_library(sq_engine_lib STATIC
     src/graphics/renderer.cpp
     src/scene/camera.cpp
     src/scene/transform.cpp
+    src/scene/frustum.cpp
     src/graphics/depth_image.cpp
     src/graphics/texture.cpp
     src/graphics/texture_registry.cpp

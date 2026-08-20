@@ -39,7 +39,15 @@ public:
     scene::TextureId load(const std::string& path);
 
     // 描画時に set=1 としてバインドするディスクリプタセット。
+    // TODO(phase13 ①-3): bindless 化が済んだら削除する（テクスチャごとのセットは無くなる）。
     [[nodiscard]] VkDescriptorSet descriptor_set(scene::TextureId id) const;
+
+    // 全テクスチャ共有の bindless ディスクリプタセット（set=1）。phase13 ①-3。
+    // binding=0 が sampler2D の配列で、**TextureId がそのまま配列の添字**になる。
+    // 内容は起動後に増えるだけ（既存要素は書き換わらない）なので、
+    // フレーム先頭で1回バインドすれば以後ドロー中に触る必要がない。
+    [[nodiscard]] VkDescriptorSet bindless_set() const;
+
     [[nodiscard]] bool contains(scene::TextureId id) const;
 
     // Material::albedo が無効／未登録のときに使う既定テクスチャ（最初に load したもの）。
@@ -48,6 +56,8 @@ public:
 private:
     struct Entry {
         std::unique_ptr<Texture> texture;
+        // TODO(phase13 ①-3): bindless 化が済んだら削除する。
+        // セットはテクスチャごとに持たず、bindless_set_ の「添字 id の要素」を書くだけになる。
         VkDescriptorSet set = VK_NULL_HANDLE;  // プールから確保（個別破棄は不要、プール破棄でまとめて解放）
     };
 
@@ -59,6 +69,10 @@ private:
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;        // 所有しない（Renderer が所有）
     VkDescriptorSetLayout material_set_layout_ = VK_NULL_HANDLE;  // 所有しない（Renderer が所有）
     VkSampler sampler_ = VK_NULL_HANDLE;                       // 所有しない（Renderer が所有）
+
+    // 全テクスチャ共有の set=1（phase13 ①-3）。コンストラクタで1つだけ確保する。
+    // プールから確保するので個別破棄は不要（プール破棄でまとめて解放される）。
+    VkDescriptorSet bindless_set_ = VK_NULL_HANDLE;
 
     std::vector<Entry> entries_;                                  // 添字が TextureId
     std::unordered_map<std::string, scene::TextureId> by_path_;   // 同一パスの再ロード防止

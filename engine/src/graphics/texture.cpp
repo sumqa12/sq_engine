@@ -1,6 +1,7 @@
 #include "sq/graphics/texture.hpp"
 #include "sq/graphics/buffer.hpp"
 
+#include <cmath>     // phase13 ③: mip レベル数の算出（std::floor / std::log2）
 #include <stdexcept>
 
 // stb_image の実装をこの翻訳単位でのみ実体化する。
@@ -46,17 +47,24 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator
     //     usage=VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
     //     samples=VK_SAMPLE_COUNT_1_BIT, initialLayout=UNDEFINED, sharingMode=EXCLUSIVE）
     //     → vkCreateImage(device_, ..., &image_)。
+
+    mip_levels_ = supports_linear_blit(physical_device, VK_FORMAT_R8G8B8A8_SRGB)
+        ? static_cast<std::uint32_t>(std::floor(std::log2(std::max(width, height)))) + 1
+        : 1;
+    //   例: 512x512 なら floor(log2(512)) + 1 = 10 枚（512, 256, ..., 1）。
+    //   ★ blit 非対応フォーマットでは 1 にフォールバックする（生成できないため）。
+
     VkImageCreateInfo image_create_info = {};
     image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     image_create_info.imageType = VK_IMAGE_TYPE_2D;
     image_create_info.extent.width = width;
     image_create_info.extent.height = height;
     image_create_info.extent.depth = 1;
-    image_create_info.mipLevels = 1;
+    image_create_info.mipLevels = mip_levels_;
     image_create_info.arrayLayers = 1;
     image_create_info.format = VK_FORMAT_R8G8B8A8_SRGB;
     image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
     image_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -83,7 +91,9 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator
     // 5. 「一時プール生成〜プール破棄」までを SingleTimeCommands に置き換える（phase10プラン E-2）
     SingleTimeCommands cmd(device, graphics_queue_family, graphics_queue);
 
-    transition_image_layout(cmd.handle(), image_, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    // 全レベルをまとめて転送先レイアウトにする（レベル0以外は blit の書き込み先になる）。
+    transition_image_layout(cmd.handle(), image_, VK_IMAGE_LAYOUT_UNDEFINED,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, mip_levels_);
 
     VkBufferImageCopy region = {};
     region.bufferOffset = 0;
@@ -97,8 +107,13 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator
     vkCmdCopyBufferToImage(cmd.handle(), staging_buffer.handle(), image_,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    transition_image_layout(cmd.handle(), image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (mip_levels_ > 1) {
+        generate_mipmaps(cmd.handle(), width, height);  // 中で全レベルを SHADER_READ_ONLY まで持っていく
+    } else {
+        transition_image_layout(cmd.handle(), image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
+    }
+    // ★ vkCmdCopyBufferToImage で埋まるのはレベル0だけ。残りは blit で作る。
 
     cmd.submit_and_wait();
 
@@ -110,7 +125,7 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator
     view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
     view_create_info.format = VK_FORMAT_R8G8B8A8_SRGB;
     view_create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    view_create_info.subresourceRange.levelCount = 1;
+    view_create_info.subresourceRange.levelCount = mip_levels_;
     view_create_info.subresourceRange.layerCount = 1;
     view_create_info.subresourceRange.baseMipLevel = 0;
     view_create_info.subresourceRange.baseArrayLayer = 0;
@@ -133,8 +148,75 @@ VkImageView Texture::view() const {
     return view_;
 }
 
+std::uint32_t Texture::mip_levels() const {
+    return mip_levels_;
+}
+
+void Texture::generate_mipmaps(VkCommandBuffer command_buffer,
+                              std::int32_t width, std::int32_t height) {
+    for (std::uint32_t mip_level = 1; mip_level < mip_levels_; mip_level++) {
+        // 1. レベル i-1 を TRANSFER_DST_OPTIMAL -> TRANSFER_SRC_OPTIMAL へ遷移
+        // （直前の blit の書き込み完了を待つ意味も兼ねる。ここを飛ばすと競合する）
+        transition_image_layout(command_buffer, image_,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            mip_level - 1, 1);
+
+        // 2. VkImageBlit を作る:
+        VkImageBlit blit = {
+            .srcSubresource = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel = mip_level - 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1
+            },
+            .srcOffsets = {
+                {.x = 0, .y = 0, .z = 0},
+                {.x = width, .y = height, .z = 1}
+            },
+            .dstSubresource = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel = mip_level,
+                .baseArrayLayer = 0,
+                .layerCount = 1
+            },
+            .dstOffsets = {
+                {.x = 0, .y = 0, .z = 0},
+                {.x = std::max(width / 2, 1), .y = std::max(height / 2, 1), .z = 1}
+            },
+        };
+        vkCmdBlitImage(command_buffer, image_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       1, &blit, VK_FILTER_LINEAR);
+
+        // 3. レベル i-1 を TRANSFER_SRC_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL へ遷移（もう使わないので確定）
+        transition_image_layout(command_buffer, image_,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            mip_level - 1, 1);
+
+        // 4.　サイズを半分にする（1未満にならないようにする）
+        width = std::max(width / 2, 1);
+        height = std::max(height / 2, 1);
+    }
+
+    // ループ後: 最後のレベル（mip_levels_ - 1）は blit の書き込み先のままなので、
+    //   TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL へ個別に遷移させる（★忘れやすい）。
+    transition_image_layout(command_buffer, image_,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        mip_levels_ - 1, 1);
+}
+
+bool Texture::supports_linear_blit(VkPhysicalDevice physical_device, VkFormat format) {
+    VkFormatProperties props{};
+    vkGetPhysicalDeviceFormatProperties(physical_device, format, &props);
+    return (props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
+}
+
 void Texture::transition_image_layout(VkCommandBuffer command_buffer, VkImage image,
-                                      VkImageLayout old_layout, VkImageLayout new_layout) {
+                                      VkImageLayout old_layout, VkImageLayout new_layout,
+                                      std::uint32_t base_mip_level, std::uint32_t level_count) {
     // VkImageMemoryBarrier を構築し vkCmdPipelineBarrier で発行する（phase8プラン 項目3）
     VkImageMemoryBarrier barrier = {};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -144,17 +226,28 @@ void Texture::transition_image_layout(VkCommandBuffer command_buffer, VkImage im
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseMipLevel = base_mip_level;
+    barrier.subresourceRange.levelCount = level_count;
     barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount = 1;
-
+    
     VkPipelineStageFlags src_stage;
     VkPipelineStageFlags dst_stage;
     if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED) {
         barrier.srcAccessMask = 0;
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    } else if (old_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    } else if (old_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
+               new_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
         dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     } else {
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;

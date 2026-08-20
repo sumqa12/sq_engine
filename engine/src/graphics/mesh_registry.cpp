@@ -28,6 +28,27 @@ scene::MeshId MeshRegistry::add(const std::vector<Vertex>& vertices,
     Entry entry;
     entry.vertices = std::make_unique<VertexBuffer>(*allocator_, device_, queue_family_, queue_, vertices);
     entry.indices  = std::make_unique<IndexBuffer>(*allocator_, device_, queue_family_, queue_, indices);
+
+    // ローカル空間の境界球を計算して entry.bounds に入れる。
+    //   1. 全頂点の position から AABB（各成分の最小・最大）を求める
+    glm::vec3 min = vertices[0].position;
+    glm::vec3 max = vertices[0].position;
+    for (const auto& vertex : vertices) {
+        min = glm::min(min, vertex.position);
+        max = glm::max(max, vertex.position);
+    }
+    //   2. 中心を求める
+    entry.bounds.center = (min + max) * 0.5f;
+
+    //   3. entry.bounds.radius = 全頂点について max(length(v.position - center))
+    //      （AABB の対角長 / 2 でも正しいが、頂点から直接求めた方が球が締まる＝無駄な描画が減る）
+    float radius = 0;
+    for (const auto& vertex : vertices) {
+        float dist = glm::length(vertex.position - entry.bounds.center);
+        radius = glm::max(radius, dist);
+    }
+    entry.bounds.radius = radius;
+
     entries_.push_back(std::move(entry));
 
     //   3. 添字を MeshId として返す:

@@ -12,9 +12,10 @@ Sampler::Sampler(VkPhysicalDevice physical_device, VkDevice device)
     sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    // mipmapMode = LINEAR はレベル間も補間する（トライリニア）。
     sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
     sampler_info.minLod = 0;
-    sampler_info.maxLod = 0;
+    sampler_info.maxLod = VK_LOD_CLAMP_NONE;
     sampler_info.mipLodBias = 0;
     sampler_info.compareEnable = VK_FALSE;
     sampler_info.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;

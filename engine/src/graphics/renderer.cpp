@@ -12,6 +12,7 @@
 #include <glm/ext/matrix_transform.hpp>
 
 #include "sq/scene/camera.hpp"
+#include "sq/scene/frustum.hpp"
 #include "sq/scene/material.hpp"
 #include "sq/scene/mesh_handle.hpp"
 #include "sq/scene/transform.hpp"
@@ -236,12 +237,34 @@ namespace sq::graphics {
 
             // 1. 収集（不透明・半透明に振り分ける）
             // MeshHandle を持つエンティティのみが描画対象（カメラ等の非描画エンティティは除外される）。
+            //
+            // phase13 ⑤: この view-projection から視錐台を作り、収集の時点で画面外を落とす。
+            // カメラ解決後・収集前に1回だけ作ればよい（フレーム中は不変）。
+            const scene::Frustum frustum = scene::Frustum::from_view_projection(view_projection);
+
             opaque_items_.clear();
             transparent_items_.clear();
+
+            uint32_t cull_count = 0;
             registry.view<scene::Transform, scene::MeshHandle>().each(
                 [&](ecs::Entity e, scene::Transform& t, scene::MeshHandle& mh) {
                     // 未登録のメッシュを指すハンドルはスキップする
                     if (!meshes_->contains(mh.id)) { return; }
+
+                    // (phase13 ⑤-3): フラスタムカリング。ローカルの境界球をワールドへ移して判定する。
+                    const MeshRegistry::Entry& entry = meshes_->get(mh.id);
+                    const glm::mat4 model = t.model();
+
+                    //   中心は model で変換する（平行移動を含めるため vec4 の w は 1）
+                    const auto world_center = glm::vec3(model * glm::vec4(entry.bounds.center, 1.0f));
+
+                    //   回転は球を変えない。非等方スケールは最大成分で保守的に見積もる
+                    const float max_scale = std::max({ t.scale.x, t.scale.y, t.scale.z });
+                    if (const float world_radius = entry.bounds.radius * max_scale
+                        ; !frustum.intersects(world_center, world_radius)) {
+                        cull_count++;
+                        return;
+                    }
 
                     // Material を1回だけ引く。持たないエンティティは既定マテリアル
                     // （既定テクスチャ・白 tint・不透明）として扱う（後方互換）。
@@ -256,15 +279,20 @@ namespace sq::graphics {
                         : textures_->default_texture();
 
                     // model 行列を合成し（T * R * S）、push constant の中身を作る
+                    // TODO(phase13 ①-5): .texture_index = texture を足す。
+                    //   TextureId が bindless 配列の添字そのものなので、変換は不要。
                     const glm::vec3 d = t.position - cam_pos;
                     const DrawItem item{
-                        PushConstants{ t.model(), material.base_color },
-                        mh.id, texture,
-                        glm::dot(d, d),  // 2乗距離（順序比較にしか使わないので sqrt 不要）
+                        .constants = PushConstants{ .model = model, .base_color = material.base_color },
+                        .mesh = mh.id, .texture = texture,
+                        .distance_sq = glm::dot(d, d),  // 2乗距離（順序比較にしか使わないので sqrt 不要）
                     };
 
                     (material.transparent ? transparent_items_ : opaque_items_).push_back(item);
-                });
+                }
+            );
+            printf("cull_count=%u, opaque=%zu, transparent=%zu\n", cull_count, opaque_items_.size(), transparent_items_.size());
+
 
             // 2. ソート
             // 不透明: 順序は自由（深度テストが前後関係を解決する）ので、
@@ -342,6 +370,18 @@ namespace sq::graphics {
         // 直前にバインドしたものを覚えて、変化したときだけ再バインドする。
         // パスをまたぐと状態は引き継がないが（呼び出しごとにリセットされる）、
         // 余分なバインドが1回起きるだけで正しさには影響しない。
+        //
+        // TODO(phase13 ①-6): bindless 化するとこのループから set=1 のバインドが丸ごと消える。
+        //   - 下の if ブロックと bound_texture の追跡を削除する
+        //   - 代わりに draw_frame のフレーム先頭で、set=0 の隣に1回だけバインドする:
+        //       VkDescriptorSet bindless = textures_->bindless_set();
+        //       vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        //                               pipeline_opaque_->layout(), 1, 1, &bindless, 0, nullptr);
+        //     （レイアウトは2本のパイプラインで共通なのでどちらのものでもよい）
+        //   - どのテクスチャを使うかは item.constants.texture_index が運ぶ
+        //     （収集フェーズで texture をそこへ入れる）
+        //   - 不透明ソートの基準も (texture, mesh) → **mesh のみ**でよくなる。
+        //     テクスチャがバインドの切れ目でなくなるため（②のバッチ化の前提にもなる）。
         scene::MeshId bound_mesh = scene::kInvalidMeshId;
         scene::TextureId bound_texture = scene::kInvalidTextureId;
 
@@ -354,7 +394,7 @@ namespace sq::graphics {
                 bound_texture = item.texture;
             }
 
-            const auto&[vertices, indices] = meshes_->get(item.mesh);
+            const auto&[vertices, indices, bound] = meshes_->get(item.mesh);
             if (item.mesh != bound_mesh) {
                 vertices->bind(command_buffer);
                 indices->bind(command_buffer);
@@ -429,6 +469,24 @@ namespace sq::graphics {
 
         // set=1: マテリアル（テクスチャごとに1個。マテリアルが変わるたびバインドし直す）
         // ★ 別セットなので binding は 1 ではなく 0 から振り直す（シェーダの set=1, binding=0 と合わせる）。
+        //
+        // TODO(phase13 ①-2): binding=0 を「テクスチャ1枚」から「テクスチャ配列」へ変える。
+        //   これによりセットは全体で1つになり、テクスチャごとのバインドが不要になる。
+        //     sampler_layout_binding.descriptorCount = kMaxTextures;   // ★ 1 ではなく配列長
+        //
+        //   さらに binding フラグを繋ぐ:
+        //     constexpr VkDescriptorBindingFlags binding_flags =
+        //         VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |      // 64枠中3枚だけ埋まっていてよい
+        //         VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;     // バインド後に書き込んでよい
+        //     VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info{};
+        //     flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+        //     flags_info.bindingCount  = 1;                        // ★ pBindings の数と一致させる
+        //     flags_info.pBindingFlags = &binding_flags;
+        //     material_layout_info.pNext = &flags_info;
+        //     material_layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;  // ★必須
+        //
+        //   ★ PARTIALLY_BOUND が無いと、未書き込みの枠が1つでもあるとバインド時に不正になる。
+        //     kMaxTextures=64 に対して実際は数枚しか登録しないので、これが無いと動かない。
         VkDescriptorSetLayoutBinding sampler_layout_binding{};
         sampler_layout_binding.binding = 0;
         sampler_layout_binding.descriptorCount = 1;
@@ -469,6 +527,13 @@ namespace sq::graphics {
 
         VkDescriptorPoolCreateInfo descriptor_pool_info{};
         descriptor_pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        // TODO(phase13 ①-2): bindless 化に伴いプールを調整する。
+        //   descriptor_pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+        //     ★ レイアウト側の UPDATE_AFTER_BIND_POOL_BIT と対で必要。片方だけだと確保に失敗する。
+        //   descriptor_pool_info.maxSets = static_cast<uint32_t>(kFramesInFlight) + 1;
+        //     set=1 は「テクスチャごとに1個」から「全体で1個」に減る。
+        //   sampler_pool_size.descriptorCount は kMaxTextures のままでよい
+        //     （1セットが配列要素を kMaxTextures 個消費するため、総数は変わらない）。
         // set=0 が kFramesInFlight 個、set=1 が最大 kMaxTextures 個。
         descriptor_pool_info.maxSets = static_cast<uint32_t>(kFramesInFlight) + kMaxTextures;
         descriptor_pool_info.poolSizeCount = 2;

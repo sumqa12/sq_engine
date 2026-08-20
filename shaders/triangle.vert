@@ -7,6 +7,8 @@ layout(location = 2) in vec2 in_uv;
 layout(set = 0, binding = 0) uniform CameraUBO { mat4 view_proj; } camera;
 // phase12 手順5: base_color を追加。★ frag と宣言を完全に一致させること
 // （vert では base_color を使わないが、ブロック定義は揃える）。
+// TODO(phase13 ①-4): frag に合わせて `uint texture_index;` を末尾に追加する
+//   （vert では使わないが、ブロック定義がずれるとリンクで落ちる）。
 layout(push_constant) uniform PushConstants {
     mat4 model;
     vec4 base_color;

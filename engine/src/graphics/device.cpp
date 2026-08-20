@@ -62,6 +62,23 @@ namespace sq::graphics {
         features.samplerAnisotropy = supported_features.samplerAnisotropy;
         device_create_info.pEnabledFeatures = &features;
 
+        // TODO(phase13 ①-1): descriptor indexing（bindless）を有効化する。
+        //   if (!is_supported_descriptor_indexing(physical_device_)) {
+        //       throw std::runtime_error("Device : bindless（descriptor indexing）に非対応の環境です。");
+        //   }
+        //   VkPhysicalDeviceVulkan12Features features12{};
+        //   features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        //   features12.runtimeDescriptorArray                       = VK_TRUE;
+        //   features12.descriptorBindingPartiallyBound              = VK_TRUE;
+        //   features12.shaderSampledImageArrayNonUniformIndexing    = VK_TRUE;
+        //   features12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+        //   device_create_info.pNext = &features12;   // ★ 上の pNext = nullptr を上書きする
+        //
+        // ★ pEnabledFeatures（samplerAnisotropy）はこのまま併用してよい。
+        //   pNext に VkPhysicalDeviceFeatures2 を繋ぐ場合だけ pEnabledFeatures を nullptr にする必要がある。
+        //   VkPhysicalDeviceVulkan12Features を直接繋ぐ分には競合しない。
+        // ★ features12 は vkCreateDevice が読むまで生存している必要がある（スコープに注意）。
+
         vkCreateDevice(physical_device_, &device_create_info, nullptr, &device_);
 
         // キューを取得する
@@ -119,6 +136,24 @@ namespace sq::graphics {
             }
         }
 
+        return false;
+    }
+
+    bool Device::is_supported_descriptor_indexing(VkPhysicalDevice physical_device) {
+        // TODO(phase13 ①-1): 4つの機能フラグが揃っているかを問い合わせる。
+        //   VkPhysicalDeviceVulkan12Features features12{};
+        //   features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        //   VkPhysicalDeviceFeatures2 features2{};
+        //   features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        //   features2.pNext = &features12;                       // ★ ここへ繋いで受け取る
+        //   vkGetPhysicalDeviceFeatures2(physical_device, &features2);
+        //   return features12.runtimeDescriptorArray && features12.descriptorBindingPartiallyBound
+        //       && features12.shaderSampledImageArrayNonUniformIndexing
+        //       && features12.descriptorBindingSampledImageUpdateAfterBind;
+        //
+        // ★ 暫定で false を返している。これを実装するまで上の有効化ブロックは書かないこと
+        //   （有効化せずにシェーダで配列を使うと、動く環境と壊れる環境が出る＝最も追いにくい）。
+        (void)physical_device;
         return false;
     }
 

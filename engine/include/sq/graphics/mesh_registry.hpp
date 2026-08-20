@@ -8,6 +8,7 @@
 
 #include "sq/graphics/gpu_allocator.hpp"
 #include "sq/graphics/mesh.hpp"
+#include "sq/scene/frustum.hpp"  // BoundingSphere（phase13 ⑤）
 #include "sq/scene/mesh_handle.hpp"
 
 namespace sq::graphics {
@@ -27,10 +28,13 @@ public:
     MeshRegistry(const MeshRegistry&) = delete;
     MeshRegistry& operator=(const MeshRegistry&) = delete;
 
-    // 1つのメッシュが持つGPUバッファ。
+    // 1つのメッシュが持つGPUバッファと、CPU側で保持する形状情報。
     struct Entry {
         std::unique_ptr<VertexBuffer> vertices;
         std::unique_ptr<IndexBuffer> indices;
+        // ローカル空間の境界球（phase13 ⑤）。フラスタムカリングの判定に使う。
+        // 頂点はGPUへ送った後CPU側に残らないので、add() の時点で計算しておく必要がある。
+        scene::BoundingSphere bounds;
     };
 
     // 頂点・インデックスをGPUへ登録し、その MeshId を返す。

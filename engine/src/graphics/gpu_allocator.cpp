@@ -71,7 +71,10 @@ Allocation GpuAllocator::allocate(const VkMemoryRequirements& reqs, VkMemoryProp
     // 4. 見つからない場合、作る
     uint32_t index = create_block(type, std::max(kDefaultBlockSize, reqs.size), properties, linear);
     Block& block = blocks_[index];
-    block.free_ranges.erase(block.free_ranges.begin());
+    block.free_ranges.clear();
+    if (reqs.size < block.size) {
+        insert_free_range(block, { .offset = reqs.size, .size = block.size - reqs.size });
+    }
 
     return Allocation{
         .memory = block.memory,
