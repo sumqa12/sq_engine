@@ -17,6 +17,7 @@ add_library(sq_engine_lib STATIC
     src/graphics/command_buffers.cpp
     src/graphics/sync_objects.cpp
     src/graphics/uniform_buffer.cpp
+    src/graphics/instance_buffer.cpp
     src/graphics/renderer.cpp
     src/scene/camera.cpp
     src/scene/transform.cpp

@@ -7,20 +7,18 @@
 #include <vulkan/vulkan.h>
 
 #include "depth_image.hpp"
+#include "instance_buffer.hpp"
 #include "sq/ecs/registry.hpp"
 #include "sq/graphics/command_buffers.hpp"
 #include "sq/graphics/debug_messenger.hpp"
 #include "sq/graphics/device.hpp"
 #include "sq/graphics/graphics_pipeline.hpp"
-#include "sq/graphics/mesh.hpp"
 #include "sq/graphics/mesh_registry.hpp"
 #include "sq/graphics/physical_device.hpp"
-#include "sq/graphics/push_constants.hpp"
 #include "sq/graphics/render_pass.hpp"
 #include "sq/graphics/sampler.hpp"
 #include "sq/graphics/swapchain.hpp"
 #include "sq/graphics/sync_objects.hpp"
-#include "sq/graphics/texture.hpp"
 #include "sq/graphics/texture_registry.hpp"
 #include "sq/graphics/uniform_buffer.hpp"
 #include "sq/graphics/vulkan_instance.hpp"
@@ -79,18 +77,18 @@ public:
 private:
     // 描画1件の情報（phase12 手順6）。収集フェーズで作り、ソートしてから記録する。
     struct DrawItem {
-        PushConstants constants;    // model 行列 + base_color（そのまま push する）
-        scene::MeshId mesh;
-        scene::TextureId texture;
-        float distance_sq;          // カメラからの2乗距離（半透明ソート用）
+        InstanceData instance_data;
+        scene::MeshId mesh{};
+        float distance_sq{};          // カメラからの2乗距離（半透明ソート用）
     };
 
-    // items を順に記録する。直前にバインドしたメッシュ／テクスチャを覚えて、
-    // 変化したときだけ再バインドすることで冗長な vkCmdBind* を省く。
-    // ★ items の順序は呼び出し側が決める（不透明はバッチ順、半透明は back-to-front）。
+    //   first_instance: InstanceData 配列における items[0] の位置。
+    //   instanced: false なら範囲でまとめず1件ずつ描く（半透明パス用。順序が正しさそのもの）。
     void record_draw_items(VkCommandBuffer command_buffer,
                            const GraphicsPipeline& pipeline,
-                           const std::vector<DrawItem>& items);
+                           const std::vector<DrawItem>& items,
+                           std::uint32_t first_instance,
+                           bool instanced);
 
     void create_surface();
     void create_framebuffers();
@@ -100,6 +98,7 @@ private:
     // phase12 手順3: set=0（カメラUBO）と set=1（マテリアル）の2つのレイアウトを作る。
     void create_descriptor_set_layout();
     void create_uniform_buffers();        // camera_ubos_をkFramesInFlight個作成
+    void create_instance_buffers();
     void create_descriptor_pool();        // vkCreateDescriptorPool（UNIFORM_BUFFER + COMBINED_IMAGE_SAMPLER）
     void create_descriptor_sets();        // vkAllocateDescriptorSets + vkUpdateDescriptorSetsで各UBO/テクスチャと結びつける
     void create_sampler();                // 全テクスチャで共有する VkSampler を生成
@@ -135,6 +134,16 @@ private:
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
     std::vector<std::unique_ptr<UniformBuffer>> camera_ubos_;
     std::vector<VkDescriptorSet> descriptor_sets_;  // set=0。プールから確保（個別破棄は不要）
+
+    // phase13 ②: per-instance データ（model / base_color / texture_index）の SSBO。
+    // 「フレームごとに書き換わるもの」なのでカメラUBOと同じ set=0 に binding=1 として同居させる。
+    // ★ kFramesInFlight 個持つ（GPU が読んでいる最中に上書きしないため。D-5）。
+    static constexpr std::size_t kMaxInstances = 4096;  // 1フレームに描ける最大体数
+    std::vector<std::unique_ptr<InstanceBuffer>> instance_buffers_;
+
+    // InstanceData の組み立て用バッファ（毎フレームのヒープ確保を避けるためメンバに持つ）。
+    // 並び順は「不透明→半透明」で連結し、DrawItem の並び順と1対1に対応させる。
+    std::vector<InstanceData> instances_;
 
     // サンプラーは全テクスチャで共有する（スワップチェーン非依存）。
     std::unique_ptr<Sampler> sampler_;

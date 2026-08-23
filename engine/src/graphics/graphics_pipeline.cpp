@@ -4,7 +4,6 @@
 #include <fstream>
 
 #include "sq/graphics/mesh.hpp"
-#include "sq/graphics/push_constants.hpp"
 
 namespace sq::graphics {
 
@@ -124,17 +123,9 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
     depth_stencil_state_info.stencilTestEnable = VK_FALSE;
 
     // パイプラインレイアウトを作成する
-    // phase12 手順5: model に加えて base_color を渡すため、フラグメントステージも対象にする。
-    // サイズ・レイアウトは PushConstants（push_constants.hpp）とシェーダの定義に一致させる。
-    VkPushConstantRange push_constant_range = {};
-    push_constant_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    push_constant_range.offset = 0;
-    push_constant_range.size = sizeof(PushConstants);
-
     VkPipelineLayoutCreateInfo pipeline_layout_info = {};
     pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipeline_layout_info.pushConstantRangeCount = 1;
-    pipeline_layout_info.pPushConstantRanges = &push_constant_range;
+    pipeline_layout_info.pushConstantRangeCount = 0;
     // phase12 手順3: set=0（カメラUBO）と set=1（マテリアル）の2つを組み込む。
     pipeline_layout_info.setLayoutCount = static_cast<std::uint32_t>(set_layouts.size());
     pipeline_layout_info.pSetLayouts = set_layouts.data();

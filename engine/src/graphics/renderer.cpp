@@ -4,7 +4,6 @@
 #include <array>
 #include <stdexcept>
 #include <thread>
-#include <tuple>
 #include <utility>
 #include <vector>
 #include <fmt/format.h>
@@ -59,11 +58,14 @@ namespace sq::graphics {
         // 10. サンプラーを生成する（TextureRegistry へ渡すのでプールより前に必要）
         create_sampler();
 
-        // 11. ディスクリプタプールの作成
+        // 11. インスタンスバッファの作成
+        create_instance_buffers();
+
+        // 12. ディスクリプタプールの作成
         create_descriptor_pool();
         create_descriptor_sets();
 
-        // 12. パイプラインの作成（phase11 ①: 不透明用・半透明用の 2 本。SPV とレイアウトは共通）
+        // 13. パイプラインの作成（phase11 ①: 不透明用・半透明用の 2 本。SPV とレイアウトは共通）
         // phase12 手順3: index が set 番号に対応する（[0]=カメラ, [1]=マテリアル）。
         const std::vector<VkDescriptorSetLayout> set_layouts = { camera_set_layout_, material_set_layout_ };
 
@@ -77,16 +79,16 @@ namespace sq::graphics {
                                             set_layouts,
                                             PipelineConfig{ .depth_write_enable = false, .blend_enable = true });
 
-        // 13. フレームバッファの作成
+        // 14. フレームバッファの作成
         create_framebuffers();
 
-        // 14. コマンドバッファの作成
+        // 15. コマンドバッファの作成
         command_buffers_ = std::make_unique<CommandBuffers>(device_->handle(), *queue_family_indices_.graphics_family, kFramesInFlight);
 
-        // 15. 同期オブジェクトの作成
+        // 16. 同期オブジェクトの作成
         sync_objects_ = std::make_unique<SyncObjects>(device_->handle(), kFramesInFlight, framebuffers_.size());
 
-        // 16. アセットレジストリの生成（phase12 手順2・4）
+        // 17. アセットレジストリの生成（phase12 手順2・4）
         // 実際の登録はアプリ側が renderer.meshes() / renderer.textures() 経由で行う
         // （例: graphics::add_cube_mesh(renderer.meshes())）。
         meshes_ = std::make_unique<MeshRegistry>(
@@ -122,6 +124,7 @@ namespace sq::graphics {
 
         sampler_.reset();
         camera_ubos_.clear();
+        instance_buffers_.clear();
         descriptor_sets_.clear();
         descriptor_pool_ = VK_NULL_HANDLE;
         camera_set_layout_ = VK_NULL_HANDLE;
@@ -279,11 +282,11 @@ namespace sq::graphics {
                         ? material.albedo
                         : textures_->default_texture();
 
-                    // model 行列を合成し（T * R * S）、push constant の中身を作る
+                    // model 行列を合成し（T * R * S）、描画用データを作る
                     const glm::vec3 d = t.position - cam_pos;
                     const DrawItem item{
-                        .constants = PushConstants{ .model = model, .base_color = material.base_color, .texture_index = texture },
-                        .mesh = mh.id, .texture = texture,
+                        .instance_data = InstanceData{ .model = model, .base_color = material.base_color, .texture_index = texture },
+                        .mesh = mh.id,
                         .distance_sq = glm::dot(d, d),  // 2乗距離（順序比較にしか使わないので sqrt 不要）
                     };
 
@@ -306,13 +309,42 @@ namespace sq::graphics {
                 }
             );
 
+            // ソート済みの並びから InstanceData 配列を作り、1回で転送する。
+            instances_.clear();
+            instances_.reserve(opaque_items_.size() + transparent_items_.size());
+            // 不透明 → 半透明 の順に詰める（★この順序が first_instance の基準になる）:
+            for (const DrawItem& item : opaque_items_) {
+                instances_.push_back(item.instance_data);
+            }
+            for (const DrawItem& item : transparent_items_) {
+                instances_.push_back(item.instance_data);
+            }
+
+            // 上限超えたら警告を出し、リサイズ
+            if (instances_.size() > kMaxInstances) {
+                printf("Warning: instance count %zu exceeds kMaxInstances %zu. Truncating.\n",
+                       instances_.size(), kMaxInstances);
+                instances_.resize(kMaxInstances);
+                // 描画側も同じ位置で止める（転送されていない範囲を描かないため）
+                if (opaque_items_.size() > kMaxInstances) {
+                    opaque_items_.resize(kMaxInstances);
+                    transparent_items_.clear();
+                } else {
+                    transparent_items_.resize(kMaxInstances - opaque_items_.size());
+                }
+            }
+
+            instance_buffers_[current_frame_]->update(instances_.data(), instances_.size());
+
             // 3. 記録（不透明パス → 半透明パス）
             vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_opaque_->handle());
-            record_draw_items(command_buffer, *pipeline_opaque_, opaque_items_);
+            record_draw_items(command_buffer, *pipeline_opaque_, opaque_items_, 0, true);
 
             // 半透明は depthWrite=FALSE のパイプライン（phase11 ①）
+            // ★ 半透明はインスタンス化しない（描画順が正しさそのもの。まとめると順序が壊れる。D-5）。
+            //   ただし InstanceData 経由でデータを渡す形は共通なので、シェーダは1本で済む。
             vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_transparent_->handle());
-            record_draw_items(command_buffer, *pipeline_transparent_, transparent_items_);
+            record_draw_items(command_buffer, *pipeline_transparent_, transparent_items_, static_cast<uint32_t>(opaque_items_.size()), false);
 
             // レンダーパスの終了
             vkCmdEndRenderPass(command_buffer);
@@ -361,25 +393,32 @@ namespace sq::graphics {
     // 収集・ソート済みの描画アイテムを順に記録する（phase12 手順6）。
     void Renderer::record_draw_items(VkCommandBuffer command_buffer,
                                      const GraphicsPipeline& pipeline,
-                                     const std::vector<DrawItem>& items) {
-        scene::MeshId bound_mesh = scene::kInvalidMeshId;
-
-        for (const DrawItem& item : items) {
-            const auto&[vertices, indices, _] = meshes_->get(item.mesh);
-            if (item.mesh != bound_mesh) {
-                vertices->bind(command_buffer);
-                indices->bind(command_buffer);
-                bound_mesh = item.mesh;
+                                     const std::vector<DrawItem>& items,
+                                     std::uint32_t first_instance,
+                                     bool instanced) {
+        std::size_t i = 0;
+        while (i < items.size()) {
+            // 1. 同じメッシュが続く範囲 [i, j) を数える
+            std::size_t j = i;
+            if (!instanced) {
+                j = i + 1;
+            } else {
+                while (j < items.size() && items[j].mesh == items[i].mesh) { ++j; }
             }
+            // ★ instanced == false（半透明）なら j = i + 1 に固定する（まとめない）
 
-            // phase12 手順5: model + base_color をまとめて積む
-            // （ステージはパイプラインの VkPushConstantRange と一致させること）
-            vkCmdPushConstants(command_buffer, pipeline.layout(),
-                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                0, sizeof(item.constants), &item.constants);
+            // 2. 範囲の先頭で1回だけメッシュをバインドする
+            const auto& [vertices, indices, bounds] = meshes_->get(items[i].mesh);
+            vertices->bind(command_buffer);
+            indices->bind(command_buffer);
 
-            // インデックス数はメッシュごとに引く（共有 cube 固定をやめた点が手順2の要）
-            vkCmdDrawIndexed(command_buffer, indices->index_count(), 1, 0, 0, 0);
+            // 3. 範囲まるごとを1回のドローで描く
+            vkCmdDrawIndexed(command_buffer, indices->index_count(),
+                 static_cast<std::uint32_t>(j - i),               // instanceCount
+                 0, 0,
+                 first_instance + static_cast<std::uint32_t>(i)   // firstInstance
+            );
+            i = j;
         }
     }
 
@@ -429,18 +468,28 @@ namespace sq::graphics {
         ubo_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         ubo_layout_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
+        // set=0 に binding=1 として per-instance の SSBO を追加する。
+        VkDescriptorSetLayoutBinding instance_binding{};
+        instance_binding.binding         = 1;
+        instance_binding.descriptorCount = 1;
+        instance_binding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        instance_binding.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT;
+        // ★ base_color / texture_index は vert で読んで frag へ渡す形にするので、
+        //   FRAGMENT は不要（frag から直接引くなら VERTEX | FRAGMENT にする）。
+
+        // ★ set=1（bindless）と違い、こちらは UPDATE_AFTER_BIND 不要
+        //   （フレーム先頭でバインドする前に書き終えているため）。
+        const std::array bindings{ ubo_layout_binding, instance_binding };
         VkDescriptorSetLayoutCreateInfo camera_layout_info{};
         camera_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        camera_layout_info.bindingCount = 1;
         camera_layout_info.pBindings = &ubo_layout_binding;
+        camera_layout_info.bindingCount = bindings.size();
+        camera_layout_info.pBindings    = bindings.data();
 
         if (vkCreateDescriptorSetLayout(device_->handle(), &camera_layout_info, nullptr, &camera_set_layout_) != VK_SUCCESS) {
             throw std::runtime_error("Renderer::create_descriptor_set_layout : カメラ用ディスクリプタセットレイアウトの作成に失敗しました！");
         }
-
-        // (phase13 ①-2): binding=0 を「テクスチャ1枚」から「テクスチャ配列」へ変える。
-        //   これによりセットは全体で1つになり、テクスチャごとのバインドが不要になる。
-        //   さらに binding フラグを繋ぐ:
+        
         constexpr VkDescriptorBindingFlags binding_flags =
             VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |      // 64枠中3枚だけ埋まっていてよい
             VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;     // バインド後に書き込んでよい
@@ -477,6 +526,15 @@ namespace sq::graphics {
         }
     }
 
+    // per-instance SSBO の作成（phase13 ②）
+    void Renderer::create_instance_buffers() {
+        // create_uniform_buffers と同じ形で kFramesInFlight 個作る。
+        for (std::size_t i = 0; i < kFramesInFlight; ++i) {
+            instance_buffers_.push_back(std::make_unique<InstanceBuffer>(
+                device_->allocator(), device_->handle(), kMaxInstances));
+        }
+    }
+
     // ディスクリプタプールの作成
     void Renderer::create_descriptor_pool() {
         VkDescriptorPoolSize camera_pool_size;
@@ -487,16 +545,21 @@ namespace sq::graphics {
         sampler_pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         sampler_pool_size.descriptorCount = kMaxTextures;
 
+        VkDescriptorPoolSize instance_pool_size{};
+        instance_pool_size.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        instance_pool_size.descriptorCount = static_cast<uint32_t>(kFramesInFlight);
+
         std::vector<VkDescriptorPoolSize> descriptor_pools;
         descriptor_pools.push_back(camera_pool_size);
         descriptor_pools.push_back(sampler_pool_size);
+        descriptor_pools.push_back(instance_pool_size);
 
         VkDescriptorPoolCreateInfo descriptor_pool_info{};
         descriptor_pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         // (phase13 ①-2): bindless 化に伴いプールを調整する。
         descriptor_pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
         descriptor_pool_info.maxSets = static_cast<uint32_t>(kFramesInFlight) + 1;
-        descriptor_pool_info.poolSizeCount = 2;
+        descriptor_pool_info.poolSizeCount = static_cast<uint32_t>(descriptor_pools.size());
         descriptor_pool_info.pPoolSizes = descriptor_pools.data();
 
         vkCreateDescriptorPool(device_->handle(), &descriptor_pool_info, nullptr, &descriptor_pool_);
@@ -528,7 +591,26 @@ namespace sq::graphics {
             ubo_write.descriptorCount = 1;
             ubo_write.pBufferInfo = &buffer_info;
 
-            vkUpdateDescriptorSets(device_->handle(), 1, &ubo_write, 0, nullptr);
+            // binding=1 へ instance_buffers_[i] を書き込む。
+            VkDescriptorBufferInfo instance_info{};
+            instance_info.buffer = instance_buffers_[i]->handle();
+            instance_info.offset = 0;
+            instance_info.range  = VK_WHOLE_SIZE;
+
+            VkWriteDescriptorSet instance_write{};
+            instance_write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            instance_write.dstSet          = descriptor_sets_[i];
+            instance_write.dstBinding      = 1;
+            instance_write.dstArrayElement = 0;
+
+            instance_write.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            instance_write.descriptorCount = 1;
+            instance_write.pBufferInfo     = &instance_info;
+
+            //   2件をまとめて vkUpdateDescriptorSets へ渡す（配列にして count=2）。
+            std::array writes = { ubo_write, instance_write };
+
+            vkUpdateDescriptorSets(device_->handle(), 2, writes.data(), 0, nullptr);
         }
     }
 
