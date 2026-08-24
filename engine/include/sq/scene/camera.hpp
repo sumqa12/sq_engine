@@ -17,7 +17,7 @@ namespace sq::scene {
         glm::vec3 up{0.0f, 1.0f, 0.0f};        // 上方向
         float fov_y_radians = glm::radians(45.0f);  // 垂直画角
         float near_plane = 0.1f;
-        float far_plane = 50.0f;
+        float far_plane = 500.0f;
 
         // view-projection行列を返す。aspectはウィンドウの (幅 / 高さ)。
         // glm::perspectiveの深度範囲を[0,1]にするため、GLM_FORCE_DEPTH_ZERO_TO_ONE が必要（CMakeでプロジェクト全体に定義するのを推奨）。
