@@ -209,7 +209,7 @@ namespace sq::graphics {
         // 3. コマンドバッファの記録と送信
         command_buffers_->record(current_frame_, [this, &image_index, &registry](VkCommandBuffer command_buffer, std::size_t _) {
             std::array<VkClearValue, 2> clear_values{};
-            clear_values[0].color = { {0.8f, 0.8f, 0.8f, 1.0f} };
+            clear_values[0].color = { {0.6f, 0.6f, 0.6f, 1.0f} };
             clear_values[1].depthStencil = { 1.0f, 0 };  // far=1.0でクリア（GLM_FORCE_DEPTH_ZERO_TO_ONE前提）
 
             VkRenderPassBeginInfo render_pass_begin_info{};
@@ -719,7 +719,13 @@ namespace sq::graphics {
 
         destroy_framebuffers();
 
+        const auto& image_format = swapchain_->image_format(); // ★ ここで取得しておく。recreate() 後に変わる可能性があるため。
         swapchain_->recreate(window_->width(), window_->height());
+        if (swapchain_->image_format() != image_format) {
+            // 同サーフェス・同物理デバイスなら変わらないはずで、他のバグが発生する可能性があるので、落とす。
+            throw std::runtime_error("Renderer::recreate_swapchain : スワップチェーン再作成により、フォーマットが変わりました。\n" + std::to_string(image_format) + " -> " + std::to_string(swapchain_->image_format()));
+        }
+
         depth_image_ = std::make_unique<DepthImage>(physical_device_, device_->handle(), device_->allocator(), swapchain_->extent(), depth_format_);
 
         create_framebuffers();

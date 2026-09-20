@@ -69,20 +69,24 @@ namespace sq::graphics {
         }
 
         VkSurfaceFormatKHR surface_format = formats[0];
-        image_format_ = surface_format.format;
+        bool has_srgb_format = false;
         for (const auto &surfaceFormat : formats) {
             if (surfaceFormat.colorSpace != VK_COLORSPACE_SRGB_NONLINEAR_KHR) {
                 continue;
             }
-            if (surfaceFormat.format == VK_FORMAT_B8G8R8A8_UNORM || surfaceFormat.format == VK_FORMAT_R8G8B8A8_UNORM) {
+            if (surfaceFormat.format == VK_FORMAT_B8G8R8A8_SRGB || surfaceFormat.format == VK_FORMAT_R8G8B8A8_SRGB) {
                 surface_format = surfaceFormat;
-                image_format_ = surfaceFormat.format;
+                has_srgb_format = true;
                 break;
             }
         }
+        image_format_ = surface_format.format;
 
         if (image_format_ == VK_FORMAT_UNDEFINED) {
             throw std::runtime_error("サーフェス形式の選択に失敗しました。");
+        }
+        if (!has_srgb_format) {
+            spdlog::warn("Swapchain::create : サーフェス形式に sRGB が見つかりませんでした。");
         }
 
         // プレゼンテーションモードを選択する（VK_PRESENT_MODE_MAILBOX_KHR を優先、フォールバックは VK_PRESENT_MODE_FIFO_KHR）
@@ -122,7 +126,7 @@ namespace sq::graphics {
         create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
         create_info.surface = surface_;
         create_info.minImageCount = image_count;
-        create_info.imageFormat = surface_format.format;
+        create_info.imageFormat = image_format_;
         create_info.imageColorSpace = surface_format.colorSpace;
         create_info.imageExtent = extent_;
         create_info.imageArrayLayers = 1;

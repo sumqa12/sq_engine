@@ -162,10 +162,10 @@ static void loop(sq::ecs::Registry &registry, sq::graphics::Renderer &renderer) 
     }
 }
 
-sq::ecs::Entity create_camera(sq::ecs::Registry& registry,
-        ControlScheme scheme,
-        float x, float y, float z,
-        float tx, float ty, float tz) {
+static sq::ecs::Entity create_camera(sq::ecs::Registry& registry,
+                                     ControlScheme scheme,
+                                     float x, float y, float z,
+                                     float tx, float ty, float tz) {
     const sq::ecs::Entity camera_entity = registry.create();
     auto position = glm::vec3(x, y, z);
     auto target = glm::vec3(tx, ty, tz);
@@ -252,14 +252,11 @@ int main() {
     // ★ 段階的に上げること:
     //     15 -> 3375 体（kMaxInstances = 4096 未満。まず正しく描けることを確認する）
     //     17 -> 4913 体（上限超え。描画側クランプが無いと表示が壊れる境界テスト）
-    constexpr int kGridSide = 0;
+    constexpr int kGridSide = 10;
     constexpr float kSpacing = 2.0f;
     // 何体に1体を半透明にするか。半透明はインスタンス化されず1体1ドローなので、
     // ここを小さくするとドローコール数が半透明の体数に支配され、
     // 「不透明がバッチ化されている」ことが見えにくくなる。
-    constexpr int kTransparentEvery = 16;
-
-    constexpr int kEntityCount = kGridSide * kGridSide * kGridSide;
     // 格子の中心が原点に来るようにするオフセット
     constexpr float kGridOrigin = -0.5f * static_cast<float>(kGridSide - 1) * kSpacing;
 
@@ -267,6 +264,7 @@ int main() {
     for (int gx = 0; gx < kGridSide; ++gx) {
         for (int gy = 0; gy < kGridSide; ++gy) {
             for (int gz = 0; gz < kGridSide; ++gz) {
+                constexpr int kTransparentEvery = 16;
                 const sq::ecs::Entity e = registry.create();
 
                 // 格子内の正規化座標（0..1）。色の決定にも使う。
