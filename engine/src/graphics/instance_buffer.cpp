@@ -20,6 +20,9 @@ InstanceBuffer::~InstanceBuffer() {
 }
 
 void InstanceBuffer::update(const InstanceData* data, std::size_t count) {
+    if (count == 0) {
+        return;
+    }
     // count 要素を memcpy する。
     //   ★ 先に count を capacity_ で切り詰めること。上限を超えて書くと、
     //     GpuAllocator の同じブロックに載っている**別のバッファを踏み潰す**（原因の分かりにくい破壊になる）。

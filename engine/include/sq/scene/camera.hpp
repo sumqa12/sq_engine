@@ -59,7 +59,10 @@ namespace sq::scene {
     // Uniform Bufferへ転送するカメラデータのGPU側レイアウト。
     // シェーダーの layout(set=0, binding=0) uniform CameraUBO と一致させる。
     struct CameraUBO {
-        glm::mat4 view_projection;
+        glm::mat4  view_projection;   // offset  0, 64
+        glm::vec4  camera_position;   // offset 64, 16  xyz=ワールド位置, w=未使用
+        glm::uvec4 light_count;       // offset 80, 16  x=有効ライト数
     };
 
+    static_assert(sizeof(CameraUBO) == 96, "std140 のレイアウトと一致させること");
 }  // namespace sq::scene

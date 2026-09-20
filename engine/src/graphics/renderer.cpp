@@ -6,13 +6,14 @@
 #include <thread>
 #include <utility>
 #include <vector>
-#include <fmt/format.h>
 #include <GLFW/glfw3.h>
 #include <glm/ext/matrix_transform.hpp>
+#include <spdlog/spdlog.h>
 
 #include "sq/scene/camera.hpp"
 #include "sq/scene/frustum.hpp"
 #include "sq/scene/hierarchy.hpp"  // WorldTransform（phase14 ④）
+#include "sq/scene/light.hpp"
 #include "sq/scene/material.hpp"
 #include "sq/scene/mesh_handle.hpp"
 #include "sq/scene/transform.hpp"
@@ -62,11 +63,15 @@ namespace sq::graphics {
         // 11. インスタンスバッファの作成
         create_instance_buffers();
 
-        // 12. ディスクリプタプールの作成
+        // 12. 光源バッファの作成
+        create_light_buffers();
+        lights_.reserve(kMaxLights); // サイズが小さいので、事前に確保しておく（push_back の再確保を避けるため）。
+
+        // 13. ディスクリプタプールの作成
         create_descriptor_pool();
         create_descriptor_sets();
 
-        // 13. パイプラインの作成（phase11 ①: 不透明用・半透明用の 2 本。SPV とレイアウトは共通）
+        // 14. パイプラインの作成（phase11 ①: 不透明用・半透明用の 2 本。SPV とレイアウトは共通）
         // phase12 手順3: index が set 番号に対応する（[0]=カメラ, [1]=マテリアル）。
         const std::vector<VkDescriptorSetLayout> set_layouts = { camera_set_layout_, material_set_layout_ };
 
@@ -80,19 +85,19 @@ namespace sq::graphics {
                                             set_layouts,
                                             PipelineConfig{ .depth_write_enable = false, .blend_enable = true });
 
-        // 14. フレームバッファの作成
+        // 15. フレームバッファの作成
         create_framebuffers();
 
-        // 15. コマンドバッファの作成
+        // 16. コマンドバッファの作成
         command_buffers_ = std::make_unique<CommandBuffers>(device_->handle(), *queue_family_indices_.graphics_family, kFramesInFlight);
 
-        // 16. 同期オブジェクトの作成
+        // 17. 同期オブジェクトの作成
         sync_objects_ = std::make_unique<SyncObjects>(device_->handle(), kFramesInFlight, framebuffers_.size());
 
-        // レジストリより 先に 遅延解放キューを作る。
+        // 18. レジストリより 先に 遅延解放キューを作る。
         deletions_ = std::make_unique<DeletionQueue>(static_cast<std::uint32_t>(kFramesInFlight));
 
-        // 17. アセットレジストリの生成（phase12 手順2・4）
+        // 19. アセットレジストリの生成（phase12 手順2・4）
         // 各レジストリのコンストラクタに *deletions_ を渡す。
         meshes_ = std::make_unique<MeshRegistry>(
             device_->allocator(), device_->handle(),
@@ -150,6 +155,7 @@ namespace sq::graphics {
         sampler_.reset();
         camera_ubos_.clear();
         instance_buffers_.clear();
+        light_buffers_.clear();
         descriptor_sets_.clear();
         descriptor_pool_ = VK_NULL_HANDLE;
         camera_set_layout_ = VK_NULL_HANDLE;
@@ -177,6 +183,7 @@ namespace sq::graphics {
             !swapchain_->exclusive_acquired() && swapchain_->created_with_fse() &&
             window_->is_focused()) {
             swapchain_->acquire_full_screen_exclusive();
+
         }
 
         // 1. フェンスの待機
@@ -254,9 +261,39 @@ namespace sq::graphics {
                 cam_pos = camera.position;  // ソートの距離基準（phase10 で確定した ActiveCamera の位置）
             }
 
+            // 光源の収集
+            lights_.clear();
+            registry.view<scene::Light, scene::WorldTransform>().each(
+            [&](ecs::Entity e, scene::Light& light, scene::WorldTransform& wt) {
+                // 強度 0 はスキップ
+                if (light.intensity <= 0.0f) { return; }
+
+                auto position = glm::vec3(wt.matrix[3]);
+                auto direction = glm::normalize(-glm::vec3(wt.matrix[2]));
+
+                LightData light_data = {
+                    .position_type = glm::vec4(position, static_cast<float>(static_cast<int>(light.type))),
+                    .direction_range = glm::vec4(direction, light.range),
+                    .color_intensity = glm::vec4(light.color, light.intensity)
+                };
+
+                lights_.emplace_back(light_data);
+            });
+
+            if (lights_.size() > kMaxLights) {
+                spdlog::warn("警告: 光源の個数 {} は上限 {} を超過しています。切り詰めます。\n",
+                       lights_.size(), kMaxLights);
+                lights_.resize(kMaxLights);
+            }
+
+            // 光源バッファの更新
+            light_buffers_[current_frame_]->update(lights_.data(), lights_.size());
+
             // カメラUBOの更新
             scene::CameraUBO camera_ubo{};
             camera_ubo.view_projection = view_projection;
+            camera_ubo.camera_position = glm::vec4(cam_pos, 1.0f);
+            camera_ubo.light_count = glm::uvec4(static_cast<uint32_t>(lights_.size()));
             camera_ubos_[current_frame_]->update(&camera_ubo, sizeof(camera_ubo));
 
             // ディスクリプタセットのバインド（レイアウトは 2 本のパイプラインで共通なので使い回せる）
@@ -373,7 +410,7 @@ namespace sq::graphics {
 
             // 上限超えたら警告を出し、リサイズ
             if (instances_.size() > kMaxInstances) {
-                printf("Warning: instance count %zu exceeds kMaxInstances %zu. Truncating.\n",
+                spdlog::warn("警告: インスタンスの個数 {} は上限 {} を超過しています。切り詰めます。\n",
                        instances_.size(), kMaxInstances);
                 instances_.resize(kMaxInstances);
                 // 描画側も同じ位置で止める（転送されていない範囲を描かないため）
@@ -517,7 +554,7 @@ namespace sq::graphics {
         ubo_layout_binding.binding = 0;
         ubo_layout_binding.descriptorCount = 1;
         ubo_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        ubo_layout_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        ubo_layout_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
         // set=0 に binding=1 として per-instance の SSBO を追加する。
         VkDescriptorSetLayoutBinding instance_binding{};
@@ -528,32 +565,27 @@ namespace sq::graphics {
         // ★ phase14 ① 以降、InstanceData は model と material_index だけ。
         //   material_index は vert で読んで flat 補間で frag へ渡すので、FRAGMENT は不要のまま。
 
+        // set=0 に binding=2 として 光源 の SSBO を追加する。
+        VkDescriptorSetLayoutBinding light_binding{};
+        light_binding.binding         = 2;
+        light_binding.descriptorCount = 1;
+        light_binding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        light_binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
         // ★ set=1（bindless）と違い、こちらは UPDATE_AFTER_BIND 不要
         //   （フレーム先頭でバインドする前に書き終えているため）。
-        const std::array bindings{ ubo_layout_binding, instance_binding };
+        const std::array bindings{ ubo_layout_binding, instance_binding, light_binding };
         VkDescriptorSetLayoutCreateInfo camera_layout_info{};
         camera_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        camera_layout_info.bindingCount = bindings.size();
+        camera_layout_info.bindingCount = static_cast<std::uint32_t>(bindings.size());
         camera_layout_info.pBindings    = bindings.data();
 
         if (vkCreateDescriptorSetLayout(device_->handle(), &camera_layout_info, nullptr, &camera_set_layout_) != VK_SUCCESS) {
             throw std::runtime_error("Renderer::create_descriptor_set_layout : カメラ用ディスクリプタセットレイアウトの作成に失敗しました！");
         }
 
-        constexpr std::array<VkDescriptorBindingFlags, 2> binding_flag = {
-            VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |      // 64枠中3枚だけ埋まっていてよい
-            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,     // バインド後に書き込んでよい
-            VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT
-        };
-
-        VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info = {
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-            .bindingCount  = 2,                        // ★ pBindings の数と一致させる
-            .pBindingFlags = binding_flag.data(),
-        };
         //   ★ PARTIALLY_BOUND が無いと、未書き込みの枠が1つでもあるとバインド時に不正になる。
         //     kMaxTextures=64 に対して実際は数枚しか登録しないので、これが無いと動かない。
-
         VkDescriptorSetLayoutBinding sampler_layout_binding{};
         sampler_layout_binding.binding = 0;
         sampler_layout_binding.descriptorCount = kMaxTextures;
@@ -573,10 +605,22 @@ namespace sq::graphics {
         //     マテリアルはバインド前に書き終えているので通常のバインディングで足りる（D-2 の注記）。
         //     プール側の UPDATE_AFTER_BIND_BIT は set 単位なのでそのままでよい。
         const std::array material_bindings{ sampler_layout_binding, material_binding };
+        constexpr std::array<VkDescriptorBindingFlags, 2> binding_flag = {
+            VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |      // 64枠中3枚だけ埋まっていてよい
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,     // バインド後に書き込んでよい
+            VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT
+        };
+
+        VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+            .bindingCount  = static_cast<uint32_t>(material_bindings.size()),        // ★ pBindings の数と一致させる
+            .pBindingFlags = binding_flag.data(),
+        };
+
         VkDescriptorSetLayoutCreateInfo material_layout_info{};
         material_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         material_layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-        material_layout_info.bindingCount = 2;
+        material_layout_info.bindingCount = static_cast<uint32_t>(material_bindings.size());
         material_layout_info.pBindings = material_bindings.data();
         material_layout_info.pNext = &flags_info;
 
@@ -601,6 +645,13 @@ namespace sq::graphics {
         }
     }
 
+    void Renderer::create_light_buffers() {
+        // create_uniform_buffers と同じ形で kFramesInFlight 個作る。
+        for (std::size_t i = 0; i < kFramesInFlight; ++i) {
+            light_buffers_.push_back(std::make_unique<LightBuffer>(
+                device_->allocator(), device_->handle(), kMaxLights));
+        }
+    }
     // ディスクリプタプールの作成
     void Renderer::create_descriptor_pool() {
         VkDescriptorPoolSize camera_pool_size;
@@ -612,15 +663,14 @@ namespace sq::graphics {
         sampler_pool_size.descriptorCount = kMaxTextures;
 
         //   STORAGE_BUFFER の枠を +1 する。
-        //   set=0 の instance_buffers_（kFramesInFlight 個）に加えて、
+        //   set=0 の instance_buffers_ + light_buffers_（kFramesInFlight 個）に加えて、
         //   set=1 binding=1 のマテリアル SSBO が1個要る。
         //   同じ type のプールサイズは足し合わせて1エントリにしてよい:
-        //     instance_pool_size.descriptorCount = kFramesInFlight + 1;
         //   ★ maxSets は変えなくてよい（set=1 は TextureRegistry が確保する1個のままで、
         //     binding が増えるだけ。セット数は増えない）。
         VkDescriptorPoolSize instance_pool_size{};
         instance_pool_size.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        instance_pool_size.descriptorCount = static_cast<uint32_t>(kFramesInFlight) + 1;
+        instance_pool_size.descriptorCount = static_cast<uint32_t>(kFramesInFlight) * 2 + 1;
 
         std::vector<VkDescriptorPoolSize> descriptor_pools;
         descriptor_pools.push_back(camera_pool_size);
@@ -675,15 +725,28 @@ namespace sq::graphics {
             instance_write.dstSet          = descriptor_sets_[i];
             instance_write.dstBinding      = 1;
             instance_write.dstArrayElement = 0;
-
             instance_write.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             instance_write.descriptorCount = 1;
             instance_write.pBufferInfo     = &instance_info;
 
-            //   2件をまとめて vkUpdateDescriptorSets へ渡す（配列にして count=2）。
-            std::array writes = { ubo_write, instance_write };
+            // binding=2 へ light_buffers_[i] を書き込む。
+            VkDescriptorBufferInfo light_info{};
+            light_info.buffer = light_buffers_[i]->handle();
+            light_info.offset = 0;
+            light_info.range  = VK_WHOLE_SIZE;
 
-            vkUpdateDescriptorSets(device_->handle(), 2, writes.data(), 0, nullptr);
+            VkWriteDescriptorSet light_write{};
+            light_write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            light_write.dstSet          = descriptor_sets_[i];
+            light_write.dstBinding      = 2;
+            light_write.dstArrayElement = 0;
+            light_write.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            light_write.descriptorCount = 1;
+            light_write.pBufferInfo     = &light_info;
+
+            //   3件をまとめて vkUpdateDescriptorSets へ渡す（配列にして count=3）。
+            std::array writes = { ubo_write, instance_write, light_write };
+            vkUpdateDescriptorSets(device_->handle(), writes.size(), writes.data(), 0, nullptr);
         }
     }
 

@@ -8,6 +8,7 @@
 
 #include "depth_image.hpp"
 #include "instance_buffer.hpp"
+#include "light_buffer.hpp"
 #include "sq/ecs/registry.hpp"
 #include "sq/graphics/command_buffers.hpp"
 #include "sq/graphics/debug_messenger.hpp"
@@ -107,6 +108,7 @@ private:
     void create_descriptor_set_layout();
     void create_uniform_buffers();        // camera_ubos_をkFramesInFlight個作成
     void create_instance_buffers();
+    void create_light_buffers();
     void create_descriptor_pool();        // vkCreateDescriptorPool（UNIFORM_BUFFER + COMBINED_IMAGE_SAMPLER）
     void create_descriptor_sets();        // vkAllocateDescriptorSets + vkUpdateDescriptorSetsで各UBO/テクスチャと結びつける
     void create_sampler();                // 全テクスチャで共有する VkSampler を生成
@@ -159,10 +161,15 @@ private:
     // ★ kFramesInFlight 個持つ（GPU が読んでいる最中に上書きしないため。D-5）。
     static constexpr std::size_t kMaxInstances = 4096;  // 1フレームに描ける最大体数
     std::vector<std::unique_ptr<InstanceBuffer>> instance_buffers_;
+    static constexpr std::size_t kMaxLights = 64;       // 1フレームに描ける最大光源数
+    std::vector<std::unique_ptr<LightBuffer>> light_buffers_;
 
     // InstanceData の組み立て用バッファ（毎フレームのヒープ確保を避けるためメンバに持つ）。
     // 並び順は「不透明→半透明」で連結し、DrawItem の並び順と1対1に対応させる。
     std::vector<InstanceData> instances_;
+
+    // LightData の組み立て用バッファ（毎フレームのヒープ確保を避けるためメンバに持つ）。
+    std::vector<LightData> lights_;
 
     // サンプラーは全テクスチャで共有する（スワップチェーン非依存）。
     std::unique_ptr<Sampler> sampler_;

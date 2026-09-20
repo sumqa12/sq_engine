@@ -156,7 +156,7 @@ void MeshRegistry::unload(scene::MeshId id) {
 
 scene::MeshId add_cube_mesh(MeshRegistry& registry) {
     // テクスチャを貼るため、面ごとに独立した24頂点構成にする（phase8プラン 項目9 から移設）。
-    // 各面の4頂点に uv = {0,0}/{1,0}/{1,1}/{0,1} を割り当て、インデックスは面ごと6個×6面=36個。
+    // 各面の4頂点に uv = {1,0}/{1,1}/{0,1}/{0,0} を割り当て、インデックスは面ごと6個×6面=36個。
     // 左- 右+ 上- 下+ 手前- 奥+
     const std::vector<Vertex> vertices = {
         // 手前

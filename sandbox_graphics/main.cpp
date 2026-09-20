@@ -21,6 +21,7 @@
 #include "sq/scene/camera.hpp"
 #include "sq/scene/controller.hpp"
 #include "sq/scene/hierarchy.hpp"        // Parent / WorldTransform（phase14 ④）
+#include "sq/scene/light.hpp"
 #include "sq/scene/material.hpp"
 #include "sq/scene/mesh_handle.hpp"
 #include "sq/scene/transform_system.hpp" // ワールド行列の伝播（phase14 ④）
@@ -150,7 +151,7 @@ static void loop(sq::ecs::Registry &registry, sq::graphics::Renderer &renderer) 
         }
 
         if (one_second >= 1.0) {
-            spdlog::info("総エンティティ数: {}", registry.entity_count());
+            // spdlog::info("総エンティティ数: {}", registry.entity_count());
             one_second--;
         }
 
@@ -189,6 +190,75 @@ static sq::ecs::Entity create_camera(sq::ecs::Registry& registry,
     return camera_entity;
 }
 
+// phase15 ①: 方向光を1つ作る（D-2）。
+//
+// ★ Light は位置も向きも持たない。位置は WorldTransform::matrix[3]、
+//   向きは -matrix[2]（-Z 前方）から Renderer が取り出す。そのため
+//   **Transform / WorldTransform / Light の3点セット**で生成すること。
+//   WorldTransform を付け忘れると TransformSystem の対象から外れ、
+//   黙って「原点・無回転のライト」として扱われる（落ちないので気付きにくい）。
+//
+// direction は「光が進む向き」。真上から差す光なら (0, -1, 0)。
+static sq::ecs::Entity create_directional_light(sq::ecs::Registry& registry,
+                                                const glm::vec3& direction,
+                                                const glm::vec3& color,
+                                                float intensity) {
+    const sq::ecs::Entity entity = registry.create();
+
+    // -Z が direction を向く回転を作る。
+    //   mat3 は「列が x/y/z 軸」なので、+Z 軸には direction の逆向きを入れる。
+    //   ★ glm::quatLookAt を使わないのは、それが gtx（実験的拡張）にあり
+    //     GLM_ENABLE_EXPERIMENTAL の定義を要求するため。基底を手で組む方が素直で、
+    //     「-Z 前方とは何か」も式の形で残る。
+    const glm::vec3 axis_z = -glm::normalize(direction);
+
+    // ★ 参照の上方向が z 軸とほぼ平行だと cross がゼロになり、回転が NaN になる。
+    //   真上・真下からの光は「ほぼ平行」そのものなので、ここは必ず分岐が要る。
+    const glm::vec3 reference_up = (std::abs(axis_z.y) > 0.99f)
+        ? glm::vec3(0.0f, 0.0f, 1.0f)
+        : glm::vec3(0.0f, 1.0f, 0.0f);
+
+    const glm::vec3 axis_x = glm::normalize(glm::cross(reference_up, axis_z));
+    const glm::vec3 axis_y = glm::cross(axis_z, axis_x);
+
+    // 方向光は位置を使わないが、Transform は回転を運ぶ器として必要。
+    registry.add<Transform>(entity,
+        Transform(glm::vec3(0.0f), glm::quat(glm::mat3(axis_x, axis_y, axis_z)), glm::vec3(1.0f)));
+    registry.add<WorldTransform>(entity, WorldTransform{});
+    registry.add<Light>(entity,
+        Light {
+            .type = LightType::Directional,
+            .color = color,
+            .intensity = intensity,
+        }
+    );
+
+    return entity;
+}
+
+// phase15 ①: 点光源を1つ作る。向きは使わないので回転は単位quat。
+static sq::ecs::Entity create_point_light(sq::ecs::Registry& registry,
+                                          const glm::vec3& position,
+                                          const glm::vec3& color,
+                                          float intensity,
+                                          float range) {
+    const sq::ecs::Entity entity = registry.create();
+
+    registry.add<Transform>(entity,
+        Transform(position, glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f)));
+    registry.add<WorldTransform>(entity, WorldTransform{});
+    registry.add<Light>(entity,
+        Light {
+            .type = LightType::Point,
+            .color = color,
+            .intensity = intensity,
+            .range = range,
+        }
+    );
+
+    return entity;
+}
+
 int main() {
     sq::ecs::Registry registry;
 
@@ -219,17 +289,16 @@ int main() {
     // kMaterialCount 個（8〜16 程度）のマテリアルを作り、materials に積む。
     // 不透明用と半透明用の両方が要る（transparent は Material コンポーネント側のフラグだが、
     // a < 1.0 の base_color は MaterialData 側に要るため、実体を分けて作る必要がある）。
-    constexpr int kMaterialCount = 12;
+    constexpr int kMaterialCount = 16;
     std::vector<MaterialId> opaque_materials;
     std::vector<MaterialId> transparent_materials;
     for (int i = 0; i < kMaterialCount; ++i) {
         const float f = static_cast<float>(i) / static_cast<float>(kMaterialCount - 1);
         const TextureId tex = textures.empty() ? default_texture : textures[i % textures.size()];
-        // 色は f から作る（HSV 的に回すと段階が見分けやすい）
         opaque_materials.push_back(renderer.materials().add(sq::graphics::MaterialData{
-            .base_color = glm::vec4(f, 1.0f - f, 0.5f, 1.0f)}, tex));
+            .base_color = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f)}, tex));
         transparent_materials.push_back(renderer.materials().add(sq::graphics::MaterialData{
-            .base_color = glm::vec4(f, 1.0f - f, 0.5f, 0.5f)}, tex));
+            .base_color = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f)}, tex));
     }
     //   ★ テクスチャの巡回は「マテリアルごと」になる。phase13 では体ごとに添字が変わっていたが、
     //     マテリアル数ぶんしか変わらなくなる。bindless / nonuniformEXT の検証としては
@@ -381,6 +450,32 @@ int main() {
         }
     }
 
+    // ---- 光源（phase15 ①）----
+    //
+    // ★ 確認の順序（①-8）: まず点光源だけで「陰影が出るか」「距離で減衰するか」を見て、
+    //   通ってから方向光を足すと、向きの取り違え（-Z 前方）を切り分けやすい。
+    {
+        // 太陽。方向光なので位置は使われず、向きだけが効く。
+        create_directional_light(registry,
+            glm::vec3(0.0f, -1.0f, 0.0f),  // 光が進む向き。下向き成分が大きいほど真上からの光になる
+            glm::vec3(1.0f, 0.95f, 0.9f),    // ★ linear 値（⓪ の約束。sRGB の値をそのまま入れない）
+            2.0f);
+
+        // 点光源。格子（kGridSide × kSpacing = 18 四方）の内側に散らし、
+        // 距離減衰と range の打ち切りが見えるようにする。
+        //
+        // ★ 色を強く振ってあるのは確認のため。赤い面が右側だけ、緑が左側だけ…と分かれて出れば
+        //   「位置が正しく渡っている」ことが一目で分かる。全部が同じ色に染まるなら、
+        //   位置の取り出し（matrix[3]）か減衰の式を疑う。
+        // ★ intensity が方向光より1桁大きいのは 1/d² で急速に落ちるため
+        //   （距離5で 1/25 になる）。方向光と同じ 2.0 ではまず見えない。
+        create_point_light(registry, glm::vec3(-6.0f, 2.0f, -6.0f), glm::vec3(1.0f, 0.2f, 0.2f), 40.0f, 15.0f);
+        create_point_light(registry, glm::vec3( 6.0f, 2.0f, -6.0f), glm::vec3(0.2f, 1.0f, 0.2f), 40.0f, 15.0f);
+        create_point_light(registry, glm::vec3(-6.0f, 2.0f,  6.0f), glm::vec3(0.2f, 0.4f, 1.0f), 40.0f, 15.0f);
+        create_point_light(registry, glm::vec3( 0.0f, 8.0f, 12.0f), glm::vec3(1.0f, 1.0f, 1.0f), 60.0f, 25.0f);
+    }
+
+    // ---- メインループ ----
     loop(registry, renderer);
     return 0;
 }

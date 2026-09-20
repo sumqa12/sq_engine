@@ -4,7 +4,11 @@ layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec2 in_uv;
 
-layout(set = 0, binding = 0) uniform CameraUBO { mat4 view_proj; } camera;
+layout(set = 0, binding = 0) uniform CameraUBO {
+    mat4 view_proj;
+    vec4 camera_position;
+    uvec4 light_count;
+} camera;
 
 // 型の定義。struct 自体はメモリ上の配置を持たないので layout 修飾子は付かない
 // （付けると glslang が "useless application of layout qualifier" を出す）。
@@ -31,11 +35,22 @@ layout(location = 1) out vec2 frag_uv;
 // frag 側は set=1 binding=1 の MaterialBuffer から直接 base_color を引く。
 // ★ flat 必須（整数は補間できない）。
 layout(location = 2) out flat uint frag_material_index;
+// ワールド座標（点光の距離計算と視線ベクトルに要る）
+layout(location = 3) out vec3 frag_world_pos;
 
 void main() {
     InstanceData inst = instances[gl_InstanceIndex];
-    gl_Position = camera.view_proj * inst.model * vec4(in_position, 1.0);
-    frag_normal = in_normal;
+    vec4 world_pos = inst.model * vec4(in_position, 1.0);
+    gl_Position = camera.view_proj * world_pos;
+    // ★ 法線はワールドへ「逆転置」で変換する。
+    //   mat3(model) をそのまま掛けると、非等方スケール（親のスケール含む）が入ったとき
+    //   法線が面に対して傾き、陰影が歪む。
+    mat3 normal_matrix = transpose(inverse(mat3(inst.model)));
+    frag_normal = normalize(normal_matrix * in_normal);
+    // ★ inverse() は頂点ごとに走るので本来は重い。
+    //   CPU 側で計算して InstanceData に積む案は phase16 の課題（後述）。
     frag_uv = in_uv;
     frag_material_index = inst.material_index;
+    frag_world_pos = world_pos.xyz;
+
 }
