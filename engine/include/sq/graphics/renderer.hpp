@@ -11,8 +11,10 @@
 #include "sq/ecs/registry.hpp"
 #include "sq/graphics/command_buffers.hpp"
 #include "sq/graphics/debug_messenger.hpp"
+#include "sq/graphics/deletion_queue.hpp"
 #include "sq/graphics/device.hpp"
 #include "sq/graphics/graphics_pipeline.hpp"
+#include "sq/graphics/material_registry.hpp"
 #include "sq/graphics/mesh_registry.hpp"
 #include "sq/graphics/physical_device.hpp"
 #include "sq/graphics/render_pass.hpp"
@@ -71,8 +73,14 @@ public:
 
     // テクスチャの登録・参照（phase12 手順4）。アプリ側が起動時に
     // renderer.textures().load("textures/foo.png") で登録し、得た TextureId を
-    // scene::Material::albedo に入れる。
+    // MaterialData::albedo_index に入れる（phase14 ① 以降。以前は Material::albedo）。
     [[nodiscard]] TextureRegistry& textures();
+
+    // マテリアルの登録・参照（phase14 ①）。アプリ側が起動時に
+    // renderer.materials().add(MaterialData{ ... }) で登録し、得た MaterialId を
+    // scene::Material::id に入れる。
+    // ★ 同じマテリアルを共有する体が何百あっても、GPU 上の実体は1件で済む。
+    [[nodiscard]] MaterialRegistry& materials();
 
 private:
     // 描画1件の情報（phase12 手順6）。収集フェーズで作り、ソートしてから記録する。
@@ -123,11 +131,22 @@ private:
     std::vector<VkFramebuffer> framebuffers_;
     std::unique_ptr<CommandBuffers> command_buffers_;
     std::unique_ptr<SyncObjects> sync_objects_;
+
+    // GPUリソースの遅延解放キュー（phase14 ②-4）。
+    // ★ 各レジストリより**先に**生成し、**後に**破棄すること
+    //   （レジストリが参照を持つため）。宣言順 = 構築順、破棄は逆順。
+    std::unique_ptr<DeletionQueue> deletions_;
     // phase12 手順2: 共有の単一メッシュをやめ、MeshId で引くレジストリに置き換えた。
     // 描画対象は scene::MeshHandle を持つエンティティのみ。
     std::unique_ptr<MeshRegistry> meshes_;
 
     static constexpr std::uint32_t kMaxTextures = 64;  // 登録できるテクスチャ数の上限（プールの容量）
+
+    // 登録できるマテリアル数の上限（phase14 ①。MaterialBuffer の容量）。
+    // ★ テクスチャと違いディスクリプタ枠を消費しないので、多めに取ってもコストは
+    //   sizeof(MaterialData) * kMaxMaterials = 48 * 256 = 12KiB だけ。
+    //   glTF（③）が1ファイルで数十件を登録し得るので、テクスチャより余裕を持たせる。
+    static constexpr std::uint32_t kMaxMaterials = 256;
 
     VkDescriptorSetLayout camera_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout material_set_layout_ = VK_NULL_HANDLE;
@@ -151,6 +170,12 @@ private:
     // phase12 手順4: 単一の共有テクスチャをやめ、TextureId で引くレジストリに置き換えた。
     // set=1 のディスクリプタセットはテクスチャ全体で1個
     std::unique_ptr<TextureRegistry> textures_;
+
+    // phase14 ①: マテリアル本体（MaterialData の配列）を持つ SSBO のレジストリ。
+    // set=1 の binding=1 に同居する（set=1 = 「起動後は不変なアセット」。D-2）。
+    // ★ textures_ の後に生成し、textures_ より先に破棄すること
+    //   （bindless_set() を借りており、フォールバック判定でも参照しているため）。
+    std::unique_ptr<MaterialRegistry> materials_;
 
     // 描画アイテムの収集バッファ（phase12 手順6）。
     // 毎フレームのヒープ確保を避けるためメンバに持ち、draw_frame の先頭で clear() して再利用する

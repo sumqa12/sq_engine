@@ -35,13 +35,28 @@ namespace sq::graphics {
             // phase11 ②: TRANSFER_DST を追加し、properties を DEVICE_LOCAL に変更する。
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
-            index_count_(static_cast<std::uint32_t>(indices.size())) {
+            index_count_(static_cast<std::uint32_t>(indices.size())),
+            index_type_(VK_INDEX_TYPE_UINT16) {
+
+        upload_with_staging(allocator, queue_family, queue, indices.data(), size());
+    }
+
+    // phase14 ③: uint32 版。uint16 版とほぼ同じで、sizeof と index_type_ だけが違う。
+    IndexBuffer::IndexBuffer(GpuAllocator& allocator, VkDevice device,
+                            std::uint32_t queue_family, VkQueue queue,
+                            const std::vector<std::uint32_t> &indices)
+        : Buffer(allocator, device,
+            sizeof(std::uint32_t) * indices.size(),
+            VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+            index_count_(static_cast<std::uint32_t>(indices.size())),
+            index_type_(VK_INDEX_TYPE_UINT32) {
 
         upload_with_staging(allocator, queue_family, queue, indices.data(), size());
     }
 
     void IndexBuffer::bind(VkCommandBuffer command_buffer) const {
-        vkCmdBindIndexBuffer(command_buffer, buffer_, 0, VK_INDEX_TYPE_UINT16);
+        vkCmdBindIndexBuffer(command_buffer, buffer_, 0, index_type_);
     }
 
     std::uint32_t IndexBuffer::index_count() const {

@@ -27,6 +27,22 @@ public:
     Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator& allocator,
             std::uint32_t graphics_queue_family, VkQueue graphics_queue,
             const std::string& path);
+
+    // デコード済みピクセル列からテクスチャを作る（phase14 ③-4）。
+    //
+    // なぜ必要か:
+    //   glTF の画像は「外部ファイル参照」「data: URI の base64 埋め込み」「GLB のバッファ内」の
+    //   3形態がある。後ろ2つにはファイルパスが存在しないので、パス前提の経路では読めない。
+    //   tinygltf は3形態すべてを自前でデコードして tinygltf::Image::image（RGBA バイト列）に
+    //   入れてくれるので、**ピクセル列から作れる入口**さえあればすべて同じ扱いにできる。
+    //
+    // pixels は RGBA8 で width * height * 4 バイト（★ ここでコピーされる。呼び出し後に解放してよい）。
+    // ★ パス版の実装は「stb_image で読む」→「以降は共通」なので、
+    //   共通部分をプライベートな関数に括り出して両方から呼ぶ形にすると重複が消える。
+    Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator& allocator,
+            std::uint32_t graphics_queue_family, VkQueue graphics_queue,
+            const unsigned char* pixels, std::uint32_t width, std::uint32_t height);
+
     ~Texture();  // view -> image -> memory の順で破棄する
 
     Texture(const Texture&) = delete;
@@ -39,6 +55,22 @@ public:
     [[nodiscard]] std::uint32_t mip_levels() const;
 
 private:
+    // RGBA8 のピクセル列から VkImage / メモリ / VkImageView を作る（phase14 ③）。
+    //
+    // 2つのコンストラクタが共有する本体。パス版は「stbi_load で RGBA8 に展開する」だけが
+    // 追加の仕事で、そこから先はピクセル列版と完全に同じ処理になる。
+    //
+    // ★ 括り出す理由は重複を減らすためだけではない。ここを1本にしておかないと、
+    //   ミップ生成やレイアウト遷移を直したときに**片方だけ直す**事故が起きる。
+    //   実際、ピクセル列版を空のまま放置したせいで view_ が VK_NULL_HANDLE になり、
+    //   バリデーションエラーとテクスチャの黒化を招いた。
+    //
+    // ★ 呼ぶ前に allocator_ と device_ をメンバへ代入しておくこと（この関数が両方を使う）。
+    void create_from_pixels(VkPhysicalDevice physical_device,
+                            std::uint32_t graphics_queue_family, VkQueue graphics_queue,
+                            const unsigned char* pixels,
+                            std::uint32_t width, std::uint32_t height);
+
     // old_layout -> new_layout のイメージメモリバリアを command_buffer に記録する。
     // phase13 ③: mip レベル範囲を指定できるようにした（生成中はレベルごとに遷移させるため）。
     //   base_mip_level から level_count 枚ぶんが対象になる。

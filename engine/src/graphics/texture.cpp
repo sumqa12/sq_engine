@@ -36,11 +36,39 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator
         throw std::runtime_error("Texture : stbi_load : デフォルトテクスチャの読み込みに失敗しました。");
     }
 
-    //  2. StagingBuffer(physical_device, device, pixels, image_size) を作成 → stbi_image_free(pixels)。
-    // コピーした後、コピー元を解放する
-    VkDeviceSize image_size = width * height * 4;
-    StagingBuffer staging_buffer(allocator, device, stbi_image, image_size);  // phase11 ③: アロケータ経由
+    //  2. 作成
+    create_from_pixels(physical_device, graphics_queue_family, graphics_queue,
+                          stbi_image, width, height);
     stbi_image_free(stbi_image);
+}
+
+Texture::Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator &allocator,
+                 std::uint32_t graphics_queue_family, VkQueue graphics_queue,
+                 const unsigned char *pixels, std::uint32_t width, std::uint32_t height)
+    : allocator_(&allocator), device_(device) {
+    // ★ メンバ初期化子リストを**必ず**書くこと。ここが空だと allocator_ が nullptr のまま
+    //   デストラクタの allocator_->free(allocation_) に到達し、ヌルポインタ参照で落ちる。
+    //   （実際にこの状態で Duck.glb を読み、バリデーションエラーと黒いモデルが出た）
+
+    //   1. 引数の検証。pixels == nullptr / width == 0 / height == 0 なら throw する。
+    //      ★ glTF 側のデコード失敗が negative な width/height で伝わってくることがある。
+    //        TextureRegistry へ到達する前にここで止めた方が原因を追いやすい。
+    if (pixels == nullptr || width == 0 || height == 0) {
+        throw std::runtime_error("Texture::Texture : ピクセルデータ、または画像サイズが不正です。");
+    }
+
+    //   2. 作成
+    create_from_pixels(physical_device, graphics_queue_family, graphics_queue,
+                          pixels, width, height);
+}
+
+void Texture::create_from_pixels(VkPhysicalDevice physical_device,
+                                 std::uint32_t graphics_queue_family, VkQueue graphics_queue,
+                                 const unsigned char* pixels,
+                                 std::uint32_t width, std::uint32_t height) {
+    //  2. StagingBuffer(physical_device, device, pixels, image_size) を作成
+    VkDeviceSize image_size = width * height * 4;
+    StagingBuffer staging_buffer(*allocator_, device_, pixels, image_size);  // phase11 ③: アロケータ経由
 
     //  3. VkImageCreateInfo（imageType=2D, extent={w,h,1}, mipLevels=1, arrayLayers=1,
     //     format=VK_FORMAT_R8G8B8A8_SRGB, tiling=OPTIMAL,
@@ -79,7 +107,7 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator
     VkMemoryRequirements memory_requirements;
     vkGetImageMemoryRequirements(device_, image_, &memory_requirements);
     // plan13
-    allocation_ = allocator.allocate(memory_requirements,
+    allocation_ = allocator_->allocate(memory_requirements,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         /*linear=*/false);   // ★ optimal tiling なので false)
 
@@ -89,7 +117,7 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator
     }
 
     // 5. 「一時プール生成〜プール破棄」までを SingleTimeCommands に置き換える（phase10プラン E-2）
-    SingleTimeCommands cmd(device, graphics_queue_family, graphics_queue);
+    SingleTimeCommands cmd(device_, graphics_queue_family, graphics_queue);
 
     // 全レベルをまとめて転送先レイアウトにする（レベル0以外は blit の書き込み先になる）。
     transition_image_layout(cmd.handle(), image_, VK_IMAGE_LAYOUT_UNDEFINED,
@@ -132,12 +160,21 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator
     if (VkResult result = vkCreateImageView(device_, &view_create_info, nullptr, &view_); result != VK_SUCCESS) {
         throw std::runtime_error("Texture : vkCreateImageView : イメージビューの作成に失敗しました。");
     }
+    //   移したら、パス版コンストラクタは
+    //     「stbi_load → create_from_pixels(...) → stbi_image_free」
+    //   の3行に痩せるはず。★ stbi_image_free は create_from_pixels の**後**に呼ぶこと
+    //   （ステージングバッファへのコピーが済む前に解放すると壊れる）。
 }
 
 Texture::~Texture() {
     vkDestroyImageView(device_, view_, nullptr);
     vkDestroyImage(device_, image_, nullptr);
-    allocator_->free(allocation_);
+    // ★ allocator_ が nullptr になり得るのは「コンストラクタが途中で throw した」場合。
+    //   vkDestroy* は VK_NULL_HANDLE を受け取っても no-op だが、こちらは生ポインタなので
+    //   自分で守る必要がある。
+    if (allocator_ != nullptr) {
+        allocator_->free(allocation_);
+    }
     allocator_ = nullptr;
     view_ = VK_NULL_HANDLE;
     image_ = VK_NULL_HANDLE;

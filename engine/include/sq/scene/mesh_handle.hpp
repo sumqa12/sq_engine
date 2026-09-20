@@ -1,6 +1,6 @@
 #pragma once
 
-#include <cstdint>
+#include "sq/scene/asset_handle.hpp"
 
 namespace sq::scene {
 
@@ -8,8 +8,10 @@ namespace sq::scene {
 // VertexBuffer / IndexBuffer はコピー禁止のRAII型であり、本エンジンのECSは add<T> 時に
 // 値をストレージへmoveするため、実体をコンポーネントに入れるとアーキタイプ間移動で壊れる。
 // そのためコンポーネントはIDのみを持つ。
-using MeshId = std::uint32_t;
-inline constexpr MeshId kInvalidMeshId = ~0u;
+//
+// phase14 ②: 添字そのもの（std::uint32_t）から { index, generation } の
+// scene::MeshId（asset_handle.hpp）へ移行した。既定構築が無効値になる。
+inline constexpr MeshId kInvalidMeshId{};
 
 // このエンティティが描画するジオメトリ（ECSコンポーネント）。
 // MeshHandle を持たないエンティティは描画されない

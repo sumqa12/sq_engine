@@ -1,6 +1,8 @@
 #include "sq/ecs/registry.hpp"
 
 #include <stdexcept>
+#include <fmt/base.h>
+#include <spdlog/spdlog.h>
 
 namespace sq::ecs {
 
@@ -29,6 +31,7 @@ Entity Registry::create() {
     const Entity entity(id, generation);
     const std::size_t index = empty_archetype_->push_entity(entity);
     records_[id] = EntityRecord{empty_archetype_, index, generation, true};
+
     return entity;
 }
 
@@ -52,6 +55,23 @@ bool Registry::is_alive(const Entity entity) const {
     }
     const EntityRecord& record = records_[entity.id()];
     return record.alive && record.generation == entity.generation();
+}
+
+// Registry::components_of() は、entity が属するアーキタイプの Signature を返します。
+const Signature& Registry::components_of(const Entity entity) const {
+    // 無効／破棄済みのハンドルに対して返す空の一覧。
+    // ★ 参照を返す関数なので、どこかに実体が要る。関数内 static にしておけば
+    //   初期化順の問題も起きない。
+    static const Signature kEmpty{};
+
+    //   is_alive(entity) でなければ kEmpty を返す
+    if (is_alive(entity)) {
+        return records_[entity.id()].archetype->signature();
+    }
+    //   ★ record_of() は使わないこと。あちらは無効ハンドルで throw する仕様で、
+    //     「壊れたハンドルも調べられる」というこの関数の目的と噛み合わない。
+    //     is_alive() で弾いた後なので records_ を直接引いて問題ない。
+    return kEmpty;
 }
 
 // Registry::record_of() は、EntityRecord を返します。Entity が無効または古い場合は、std::runtime_error をスローします。

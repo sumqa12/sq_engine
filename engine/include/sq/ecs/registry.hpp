@@ -91,6 +91,58 @@ public:
         return View<Components...>(std::move(matches));
     }
 
+
+
+    // -- デバッグ用 --------------------------------------------------------
+
+    // entity が持つコンポーネント型の一覧を返す（所有しないビュー）。
+    //
+    // 実体はそのエンティティが属するアーキタイプの Signature そのものなので、コピーは起きない。
+    //
+    // ★ 返るのは「型の一覧」であって**値ではない**。コンポーネントは型消去して保持されており、
+    //   値まで一様に取り出す手段は無い（取り出すには get<T>() のように型を指定するしかない）。
+    //   デバッグで知りたいのはたいてい「何が付いているか／付け忘れていないか」なので、
+    //   型の一覧で足りる。値が見たい型は get<T>() で個別に引くこと。
+    //
+    // ★ 無効／破棄済みのハンドルでは **throw せず空を返す**。get() や has() と違い、
+    //   「壊れたハンドルを調べる」こと自体がこの関数の用途に含まれるため。
+    //   生死そのものは is_alive() で判定すること。
+    //
+    // ★ 返った参照が有効なのは、そのエンティティが add/remove でアーキタイプを移るまで。
+    //   移った後は別の Signature を指すべきなので、持ち回らずその場で使うこと。
+    //
+    // 出力例（std::type_index::name() は MSVC なら "struct sq::scene::Transform" のように読める）:
+    //   for (const ComponentTypeId& id : registry.components_of(e)) {
+    //       spdlog::info("  {}", id.name());
+    //   }
+    [[nodiscard]] const Signature& components_of(Entity entity) const;
+
+    // 生存しているエンティティの総数。
+    // ★ 破棄済みで ID が再利用待ちのスロットは数えない。
+    // 指定コンポーネントを持つエンティティの総数
+    template <typename... Components>
+    [[nodiscard]] std::size_t entity_count() {
+        if (sizeof...(Components) == 0) {
+            //   create() は「free_ids_ から再利用する」か「records_ を1つ伸ばす」かのどちらかで、
+            //   destroy() は必ず free_ids_ へ id を戻す。したがって
+            //     records_ の総数 － 解放済みID数 ＝ 生存数
+            //   が常に成り立つ。O(1) で求まる。
+            //
+            //   ★ この不変条件を疑う場面では、records_ を走査して alive を数える実装
+            //     （O(n)）に差し替えてもよい。デバッグ用途なら十分速いし、
+            //     両者の値が食い違えば、それ自体が create/destroy 側のバグを示す手がかりになる。
+            return records_.size() - free_ids_.size();
+        }
+
+        std::size_t result = 0;
+        for (auto& archetype : archetypes_ | std::views::values) {
+            if ((archetype->has_component(std::type_index(typeid(Components))) && ...)) {
+                result++;
+            }
+        }
+        return result;
+    }
+
 private:
     struct EntityRecord {
         Archetype* archetype = nullptr;

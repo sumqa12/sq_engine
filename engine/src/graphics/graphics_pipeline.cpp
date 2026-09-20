@@ -46,8 +46,12 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
     attribute_descriptions[0].offset = offsetof(Vertex, position);
     attribute_descriptions[1].binding = 0;
     attribute_descriptions[1].location = 1;
-    attribute_descriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT; // vec3 color
-    attribute_descriptions[1].offset = offsetof(Vertex, color);
+    //
+    //   ★ vec3 → vec3 で offset も同じなので、直さなくてもコンパイルもバリデーションも通る。
+    //     「通ってしまう」のが危険で、法線を色として使い続ける事故になる。
+    //     Vertex 側と一緒に必ず直すこと。
+    attribute_descriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT; // vec3 normal
+    attribute_descriptions[1].offset = offsetof(Vertex, normal);
     attribute_descriptions[2].binding = 0;
     attribute_descriptions[2].location = 2;
     attribute_descriptions[2].format = VK_FORMAT_R32G32_SFLOAT; // vec2 uv
@@ -86,7 +90,10 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
     rasterization_state_info.polygonMode = VK_POLYGON_MODE_FILL;
     rasterization_state_info.lineWidth = 1.0f;
     rasterization_state_info.cullMode = VK_CULL_MODE_BACK_BIT;
-    rasterization_state_info.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    // VK_FRONT_FACE_COUNTER_CLOCKWISE に変える。
+    //   glTF の仕様は**反時計回り（CCW）が表**。現状の CLOCKWISE のままだと
+    //   読み込んだモデルが裏返り、背面カリングで**面が全部消える**（透明になったように見える）。
+    rasterization_state_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterization_state_info.depthBiasEnable = VK_FALSE;
 
     VkPipelineMultisampleStateCreateInfo multisample_state_info = {};

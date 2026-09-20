@@ -270,7 +270,7 @@ CLAUDE.mdのルール（コード生成は宣言まで）に従い以下を作�
   - [engine/CMakeLists.txt](../../engine/CMakeLists.txt): `find_package(Stb)` + include追加、`texture.cpp`/`sampler.cpp`追加、
     **重複していた`buffer.cpp`の一方を削除（バグ修正）**
   - [sandbox_graphics/CMakeLists.txt](../../sandbox_graphics/CMakeLists.txt): `textures/`を実行ファイル隣へコピーするステップ追加
-  - `textures/`ディレクトリを新設（[README.md](../../textures/README.md)。画像はユーザーが配置）
+  - `textures/`ディレクトリを新設（[README.md](../../assets/textures/README.md)。画像はユーザーが配置）
 
 ## ユーザーが実装する本体（TODO・推奨順）
 1. `StagingBuffer`コンストラクタ（`map`→`memcpy`→`unmap`、`<cstring>`）

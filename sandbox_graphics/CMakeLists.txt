@@ -38,10 +38,23 @@ add_custom_command(TARGET sandbox_graphics POST_BUILD
 )
 
 # テクスチャ画像を実行ファイルの隣の textures/ にコピーする（Renderer は "textures/<name>.png" を
-# 実行時CWD基準で開く）。画像はプロジェクトルートの textures/ に置くこと。
+# 実行時CWD基準で開く）。
 add_custom_command(TARGET sandbox_graphics POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:sandbox_graphics>/textures
         COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_SOURCE_DIR}/textures $<TARGET_FILE_DIR:sandbox_graphics>/textures
+        ${CMAKE_SOURCE_DIR}/assets/textures $<TARGET_FILE_DIR:sandbox_graphics>/textures
         COMMENT "Copying textures next to sandbox_graphics.exe"
+)
+
+# glTF モデルを実行ファイルの隣の models/ にコピーする（phase14 ③）。
+# テクスチャと同じ理由・同じ形。アプリ側は "models/<name>.glb" を実行時CWD基準で開く。
+#
+# ★ .gltf（JSON形式）を置く場合は、参照している .bin や画像も同じ相対位置に
+#   揃っていないと読めない。copy_directory はディレクトリを丸ごと写すので、
+#   assets/models の中の構造さえ保っていればそのまま動く。
+add_custom_command(TARGET sandbox_graphics POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:sandbox_graphics>/models
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/assets/models $<TARGET_FILE_DIR:sandbox_graphics>/models
+        COMMENT "Copying models next to sandbox_graphics.exe"
 )

@@ -6,8 +6,11 @@
 
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <spdlog/spdlog.h>
 #include <spdlog/details/registry.h>
 
+#include "sq/assets/gltf_loader.hpp"    // glTF 読み込み（phase14 ③）
+#include "sq/assets/model_spawner.hpp"  // LoadedModel → エンティティ展開（phase14 ③）
 #include "sq/ecs/registry.hpp"
 #include "sq/ecs/system_scheduler.hpp"
 #include "sq/graphics/renderer.hpp"
@@ -17,8 +20,10 @@
 #include "sq/scene/transform.hpp"
 #include "sq/scene/camera.hpp"
 #include "sq/scene/controller.hpp"
+#include "sq/scene/hierarchy.hpp"        // Parent / WorldTransform（phase14 ④）
 #include "sq/scene/material.hpp"
 #include "sq/scene/mesh_handle.hpp"
+#include "sq/scene/transform_system.hpp" // ワールド行列の伝播（phase14 ④）
 
 using namespace sq::scene;
 using namespace std::chrono;
@@ -47,6 +52,7 @@ static void loop(sq::ecs::Registry &registry, sq::graphics::Renderer &renderer) 
     constexpr double time_u = 1000 / TARGET_UPS;
     double delta_f = 0;
     double delta_u = 0;
+    double one_second = 0;
 
     steady_clock::time_point prev_f = steady_clock::now();
     steady_clock::time_point prev_u = steady_clock::now();
@@ -66,6 +72,7 @@ static void loop(sq::ecs::Registry &registry, sq::graphics::Renderer &renderer) 
         double delta_t = duration_cast<duration<double>>(now - init).count() * 1000;
         delta_u += delta_t / time_u;
         delta_f += delta_t / time_f;
+        one_second += delta_t / 1000;
 
         // モーダルブロック（ウィンドウのドラッグ・最小化等）からの復帰時に
         // 借金が爆発してバーストするのを防ぐ。長い停止は「なかったこと」にして穏やかに再開する。
@@ -128,10 +135,23 @@ static void loop(sq::ecs::Registry &registry, sq::graphics::Renderer &renderer) 
         // フレーム制限
         if (!render_paused && delta_f >= 1.0) {
             double delta_f_time = duration_cast<duration<double>>(now - prev_f).count() * 1000;
+
+            // ワールド行列の伝播を draw_frame の**直前**に毎フレーム1回走らせる。
+            TransformSystem::update(registry);
+            //   ★ 更新レート（TARGET_UPS）側ではなく描画レート側に置く理由:
+            //     draw_frame が読むのは WorldTransform なので、描画のたびに最新化されていないと
+            //     フレーム間で1テンポ遅れた行列で描くことになる。
+            //   ★ SystemScheduler へ載せない理由: scheduler.update は入力系のシステムを回す場所で、
+            //     呼ばれる頻度が描画と一致しない。将来 Scheduler が描画前フェーズを持ったら移す。
             renderer.draw_frame(registry);
 
             delta_f--;
             prev_f = now;
+        }
+
+        if (one_second >= 1.0) {
+            spdlog::info("総エンティティ数: {}", registry.entity_count());
+            one_second--;
         }
 
         if (render_paused) {
@@ -191,6 +211,30 @@ int main() {
     }
     const TextureId default_texture = renderer.textures().default_texture();
 
+    // ---- phase14 ①: マテリアルを起動時にまとめて作る ----
+    //
+    // phase13 までは体ごとに base_color を持たせていたが、per-instance からマテリアルへ
+    // 追い出したので「色差はマテリアルを複数作って表現する」形になる（D-1）。
+    //
+    // kMaterialCount 個（8〜16 程度）のマテリアルを作り、materials に積む。
+    // 不透明用と半透明用の両方が要る（transparent は Material コンポーネント側のフラグだが、
+    // a < 1.0 の base_color は MaterialData 側に要るため、実体を分けて作る必要がある）。
+    constexpr int kMaterialCount = 12;
+    std::vector<MaterialId> opaque_materials;
+    std::vector<MaterialId> transparent_materials;
+    for (int i = 0; i < kMaterialCount; ++i) {
+        const float f = static_cast<float>(i) / static_cast<float>(kMaterialCount - 1);
+        const TextureId tex = textures.empty() ? default_texture : textures[i % textures.size()];
+        // 色は f から作る（HSV 的に回すと段階が見分けやすい）
+        opaque_materials.push_back(renderer.materials().add(sq::graphics::MaterialData{
+            .base_color = glm::vec4(f, 1.0f - f, 0.5f, 1.0f)}, tex));
+        transparent_materials.push_back(renderer.materials().add(sq::graphics::MaterialData{
+            .base_color = glm::vec4(f, 1.0f - f, 0.5f, 0.5f)}, tex));
+    }
+    //   ★ テクスチャの巡回は「マテリアルごと」になる。phase13 では体ごとに添字が変わっていたが、
+    //     マテリアル数ぶんしか変わらなくなる。bindless / nonuniformEXT の検証としては
+    //     kMaterialCount を textures.size() 以上にしておけば従来どおり機能する。
+
     // 1. 非決定的な乱数シードを取得
     std::random_device rd;
     // 2. メルセンヌ・ツイスタの乱数エンジンを初期化
@@ -208,7 +252,7 @@ int main() {
     // ★ 段階的に上げること:
     //     15 -> 3375 体（kMaxInstances = 4096 未満。まず正しく描けることを確認する）
     //     17 -> 4913 体（上限超え。描画側クランプが無いと表示が壊れる境界テスト）
-    constexpr int kGridSide = 17;
+    constexpr int kGridSide = 0;
     constexpr float kSpacing = 2.0f;
     // 何体に1体を半透明にするか。半透明はインスタンス化されず1体1ドローなので、
     // ここを小さくするとドローコール数が半透明の体数に支配され、
@@ -235,54 +279,85 @@ int main() {
                 const glm::vec3 axis = glm::normalize(
                     glm::vec3(axis_dis(gen), axis_dis(gen), axis_dis(gen)) + glm::vec3(0.001f));
 
-                registry.add<Transform>(e,
-                    Transform{
-                        .position = {
-                            kGridOrigin + static_cast<float>(gx) * kSpacing,
-                            kGridOrigin + static_cast<float>(gy) * kSpacing,
-                            kGridOrigin + static_cast<float>(gz) * kSpacing,
-                        },
-                        .rotation = glm::angleAxis(angle_dis(gen), axis),
-                        .scale = glm::vec3(0.35f + 0.25f * v),  // 高さでスケールを変える
-                    }
+                registry.add<Transform>(e, Transform(
+                    glm::vec3(kGridOrigin + static_cast<float>(gx) * kSpacing,
+                              kGridOrigin + static_cast<float>(gy) * kSpacing,
+                              kGridOrigin + static_cast<float>(gz) * kSpacing),
+                    glm::angleAxis(angle_dis(gen), axis),
+                    glm::vec3(0.35f + 0.25f * v))   // 高さでスケールを変える
                 );
+
+                // ★ WorldTransform をここで付ける。
+                registry.add<WorldTransform>(e, WorldTransform{});
+                //   伝播システムの中で後付けすると View::each() の反復中に
+                //   アーキタイプ移動が起きてストレージが壊れる（D-4）。
+                //   「描画対象には生成時に必ず付ける」を規約にすること。
 
                 // 3体に1体を板にする。メッシュが2種類なので、不透明パスの
                 // vkCmdDrawIndexed は（ソートが効いていれば）2回に収まるはず。
                 registry.add<MeshHandle>(e, MeshHandle{ .id = (index % 3 == 0) ? plane_mesh : cube_mesh });
 
                 const bool is_transparent = (index % kTransparentEvery == 0);
-                // テクスチャは順に巡回させる。1回のドローの中で添字が変わるので、
-                // bindless（①）と nonuniformEXT が効いていないとここが崩れる。
-                const TextureId texture = textures.empty()
-                    ? default_texture
-                    : textures[static_cast<std::size_t>(index) % textures.size()];
 
-                // ★ base_color を格子座標から決めるのが要点。
-                //   per-instance データがずれると、なめらかなグラデーションが
-                //   縞・まだらになって一目で分かる（乱数色だと気付けない）。
-                registry.add<Material>(e,
-                    Material{
-                        .albedo = texture,
-                        .base_color = glm::vec4(u, v, w, is_transparent ? 0.5f : 1.0f),
-                        .transparent = is_transparent,
-                    }
-                );
+                // 「格子座標 → base_color」を「格子座標 → マテリアル選択」に変える。
+                //   phase13 では u/v/w からなめらかなグラデーションを作り、
+                //   「per-instance データがずれると縞・まだらになる」ことを検証に使っていた。
+                //   マテリアル経由でも、格子座標から決定的に選べば同じ検証が成立する
+                //   （段階は kMaterialCount 段に粗くなるが、ずれれば模様が崩れるのは同じ）。
+                //
+                const auto pick = static_cast<std::size_t>((u + v + w) / 3.0f * (kMaterialCount - 1));
+                const MaterialId material_id = is_transparent
+                    ? transparent_materials[pick]
+                    : opaque_materials[pick];
+
+                registry.add<Material>(e, Material{ .id = material_id, .transparent = is_transparent });
+                //   ★ u/v/w は Transform の位置・スケールでまだ使っているので消さないこと。
 
                 ++index;
             }
         }
     }
 
-    fmt::println("エンティティ数: {} ({}^3), うち半透明: {}",
-                 kEntityCount, kGridSide, (kEntityCount + kTransparentEvery - 1) / kTransparentEvery);
+    // ---- phase14 ③: glTF モデルの読み込みと配置 ----
+    // ★ assets/models/ の中身が、ビルド後に実行ファイルの隣の models/ へコピーされる
+    //   （sandbox_graphics/CMakeLists.txt の POST_BUILD）。パスは実行時CWD基準。
+    std::vector<sq::assets::LoadedModel> models;
+    models.reserve(2);
+    models.emplace_back(sq::assets::load_gltf("models/Duck.glb",
+        renderer.meshes(), renderer.textures(), renderer.materials())
+    );
+    models.emplace_back(sq::assets::load_gltf("models/Box.glb",
+        renderer.meshes(), renderer.textures(), renderer.materials())
+    );
+
+    for (int j = 0; j < 5; ++j) {
+        for (int i = 0; i < models.size(); i++) {
+            // モデル全体をまとめて動かすための空の親を1つ作る（④ の階層の使いどころ）
+            auto& model = models[i];
+            const sq::ecs::Entity model_root = registry.create();
+            registry.add<Transform>(model_root, Transform(
+                glm::vec3(0.0f, i * 10, j * 10), glm::quat(1,0,0,0), glm::vec3(2)));
+            registry.add<WorldTransform>(model_root, WorldTransform{});
+
+            std::vector<sq::ecs::Entity> model_entities = sq::assets::spawn_model(registry, model, model_root);
+        }
+    }
+    //   ★ 検証順序（③-6）。いま assets/models にあるのは Box.glb のみ:
+    //     1. Box.glb（無地・バイナリ形式）→ 形が出るか・**裏返っていないか**  ← 現在ここ
+    //     2. BoxTextured               → UV が上下反転していないか（glTF の UV 原点は左上）
+    //     3. SimpleMeshes              → ノードの入れ子が反映されるか
+    //     4. .gltf（JSON形式）          → テキスト形式も読めるか（.bin / 画像の相対参照を含む）
+    //     5. 65536 頂点超のモデル       → uint32 インデックスで崩れないか
+    //     6. matrix 形式のノードを持つモデル
+    //   ★ 同時に「組み込み cube / plane が従来どおり表示されること」も毎回見ること
+    //     （巻き順を CCW に変えた影響がこちらに出る）。
 
     {
         sq::ecs::Entity camera_1 = create_camera(
             registry, ControlScheme::FreeFly,
             0.0f, 1.5f, 3.0f, 0.0f,0.0f,0.0f);
 
-        // このカメラを描画対象にする（phase10プラン D-3）
+        // このカメラを使用して描画する（phase10プラン D-3）
         // または、set_active_camera
         registry.add<ActiveCamera>(camera_1, {});
 

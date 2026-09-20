@@ -12,6 +12,7 @@
 
 #include "sq/scene/camera.hpp"
 #include "sq/scene/frustum.hpp"
+#include "sq/scene/hierarchy.hpp"  // WorldTransform（phase14 ④）
 #include "sq/scene/material.hpp"
 #include "sq/scene/mesh_handle.hpp"
 #include "sq/scene/transform.hpp"
@@ -88,30 +89,54 @@ namespace sq::graphics {
         // 16. 同期オブジェクトの作成
         sync_objects_ = std::make_unique<SyncObjects>(device_->handle(), kFramesInFlight, framebuffers_.size());
 
+        // レジストリより 先に 遅延解放キューを作る。
+        deletions_ = std::make_unique<DeletionQueue>(static_cast<std::uint32_t>(kFramesInFlight));
+
         // 17. アセットレジストリの生成（phase12 手順2・4）
-        // 実際の登録はアプリ側が renderer.meshes() / renderer.textures() 経由で行う
-        // （例: graphics::add_cube_mesh(renderer.meshes())）。
+        // 各レジストリのコンストラクタに *deletions_ を渡す。
         meshes_ = std::make_unique<MeshRegistry>(
             device_->allocator(), device_->handle(),
-            *queue_family_indices_.graphics_family, device_->graphics_queue());
+            *queue_family_indices_.graphics_family, device_->graphics_queue(), *deletions_);
 
         textures_ = std::make_unique<TextureRegistry>(
             physical_device_, device_->handle(), device_->allocator(),
             *queue_family_indices_.graphics_family, device_->graphics_queue(),
-            descriptor_pool_, material_set_layout_, sampler_->handle(), kMaxTextures);
+            descriptor_pool_, material_set_layout_, sampler_->handle(), kMaxTextures, *deletions_);
 
-        // 既定テクスチャを最初に登録する（Material::albedo が無効なエンティティが使う）。
+        // 既定テクスチャを最初に登録する（読み込み・変換に失敗したときに使う市松模様）。
         // 最初に load したものが TextureRegistry::default_texture() になる。
         textures_->load("textures/default.png");
+
+        // 続けて中立な 1×1 白テクスチャを登録する。
+        textures_->create_white_texture();
+        //   ★ 必ず default.png の**後**に呼ぶこと。default_texture() は
+        //     「最初に登録されたもの」で決まるので、順序を逆にすると白が既定になり、
+        //     読み込み失敗が市松模様で可視化されなくなる。
+        //   ★ 用途の違いは texture_registry.hpp の create_white_texture() のコメントを参照。
+
+        // マテリアルレジストリを生成する。
+        materials_ = std::make_unique<MaterialRegistry>(
+            device_->allocator(), device_->handle(), *textures_,
+            textures_->bindless_set(), kMaxMaterials);
+
+        // 続けて既定マテリアルを1件登録する（Material を持たない／無効IDのエンティティ用）。
+        materials_->add(MaterialData{}, textures_->default_texture());
     }
 
     Renderer::~Renderer() {
         vkDeviceWaitIdle(device_->handle());
+
+        // ★ vkDeviceWaitIdle の後、レジストリ破棄の前に呼ぶ。
+        if (deletions_) { deletions_->flush_all(); }
+
         destroy_framebuffers();
-        // メッシュ・テクスチャ（GPUリソース）は GpuAllocator（= Device）より前に破棄する
+        // メッシュ・テクスチャ・マテリアル（GPUリソース）は GpuAllocator（= Device）より前に破棄する
         // （phase11 ③ の不変条件）。ディスクリプタセットはこの後のプール破棄でまとめて解放される。
         meshes_.reset();
+        // ★ materials_ は textures_ への参照を持つので、textures_ より**先に**破棄する（phase14 ①）。
+        materials_.reset();
         textures_.reset();
+        deletions_.reset();  // ★ レジストリより後（レジストリが参照を持つため。phase14 ②）
         sync_objects_.reset();
         command_buffers_.reset();
         pipeline_transparent_.reset();
@@ -158,6 +183,14 @@ namespace sq::graphics {
         VkFence in_flight_fence = sync_objects_->in_flight_fence(current_frame_);
         vkWaitForFences(device_->handle(), 1, &in_flight_fence, VK_TRUE, UINT64_MAX);
 
+        // 遅延解放キューを1フレーム進める。
+        deletions_->flush_expired();
+        //   ★ 位置が重要。フェンス待機の 直後 に置くこと。
+        //     待機より前に呼ぶと、まだ GPU が実行中のフレームを「終わった」と数えてしまい、
+        //     kFramesInFlight 待っているつもりで実際には足りなくなる。
+        //     acquire より後でもよいが、early return（OUT_OF_DATE 等）を跨ぐと
+        //     フレームによって呼ばれたり呼ばれなかったりするので、ここが一番素直。
+
         // 2. 画像の取得
         uint32_t image_index = 0;
         VkSemaphore image_available = sync_objects_->image_available(current_frame_);
@@ -176,7 +209,7 @@ namespace sq::graphics {
         // 3. コマンドバッファの記録と送信
         command_buffers_->record(current_frame_, [this, &image_index, &registry](VkCommandBuffer command_buffer, std::size_t _) {
             std::array<VkClearValue, 2> clear_values{};
-            clear_values[0].color = { {0.2f, 0.2f, 0.2f, 1.0f} };
+            clear_values[0].color = { {0.8f, 0.8f, 0.8f, 1.0f} };
             clear_values[1].depthStencil = { 1.0f, 0 };  // far=1.0でクリア（GLM_FORCE_DEPTH_ZERO_TO_ONE前提）
 
             VkRenderPassBeginInfo render_pass_begin_info{};
@@ -251,41 +284,56 @@ namespace sq::graphics {
             opaque_items_.clear();
             transparent_items_.clear();
 
-            registry.view<scene::Transform, scene::MeshHandle>().each(
-                [&](ecs::Entity e, scene::Transform& t, scene::MeshHandle& mh) {
+            // view を <scene::Transform, scene::MeshHandle> から
+            //   <scene::WorldTransform, scene::MeshHandle> へ変える。
+            //   ワールド行列の合成は TransformSystem::update が draw_frame より前に済ませている。
+            registry.view<scene::WorldTransform, scene::MeshHandle>().each(
+                [&](ecs::Entity e, scene::WorldTransform& wt, scene::MeshHandle& mh) {
                     // 未登録のメッシュを指すハンドルはスキップする
                     if (!meshes_->contains(mh.id)) { return; }
 
                     // (phase13 ⑤-3): フラスタムカリング。ローカルの境界球をワールドへ移して判定する。
                     const MeshRegistry::Entry& entry = meshes_->get(mh.id);
-                    const glm::mat4 model = t.model();
+                    const glm::mat4& model = wt.matrix;
 
                     //   中心は model で変換する（平行移動を含めるため vec4 の w は 1）
                     const auto world_center = glm::vec3(model * glm::vec4(entry.bounds.center, 1.0f));
 
                     //   回転は球を変えない。非等方スケールは最大成分で保守的に見積もる
-                    const float max_scale = std::max({ t.scale.x, t.scale.y, t.scale.z });
-                    if (const float world_radius = entry.bounds.radius * max_scale
+                    // ★ t.scale の直参照をやめる。
+                    //   ワールド行列には**親のスケールも掛かっている**ので、自分のローカル
+                    //   スケールだけを見ると半径を過小評価する。ワールド行列の3本の基底
+                    //   ベクトルの長さから求め直すこと:
+                    const float sx = glm::length(glm::vec3(model[0]));
+                    const float sy = glm::length(glm::vec3(model[1]));
+                    const float sz = glm::length(glm::vec3(model[2]));
+                    //   ★ 直し忘れると、親でスケールした子が画面端で消える
+                    //     （phase13 ⑤ で踏んだのと同じ症状が、原因だけ変わって再発する）。
+
+                    if (const float world_radius = entry.bounds.radius * std::max({ sx, sy, sz })
                         ; !frustum.intersects(world_center, world_radius)) {
                         return;
                     }
 
                     // Material を1回だけ引く。持たないエンティティは既定マテリアル
-                    // （既定テクスチャ・白 tint・不透明）として扱う（後方互換）。
+                    // （既定テクスチャ・白・不透明）として扱う（後方互換）。
                     scene::Material material{};
                     if (registry.has<scene::Material>(e)) {
                         material = registry.get<scene::Material>(e);
                     }
 
-                    // albedo が無効／未登録なら既定テクスチャへフォールバックする
-                    const scene::TextureId texture = textures_->contains(material.albedo)
-                        ? material.albedo
-                        : textures_->default_texture();
+                    // (phase14 ①): テクスチャのフォールバックはここから消える。
+                    const scene::MaterialId material_id = materials_->contains(material.id)
+                        ? material.id
+                        : materials_->default_material();
 
-                    // model 行列を合成し（T * R * S）、描画用データを作る
-                    const glm::vec3 d = t.position - cam_pos;
+                    // 描画用データを作る（phase14 ①: model と material_index だけになった）
+                    //
+                    // ★ 半透明ソートの距離基準もワールド位置にする。
+                    //   t.position はローカル座標なので、親が動くと距離が嘘になる
+                    const glm::vec3 d = glm::vec3(model[3]) - cam_pos;
                     const DrawItem item{
-                        .instance_data = InstanceData{ .model = model, .base_color = material.base_color, .texture_index = texture },
+                        .instance_data = InstanceData{ .model = model, .material_index = material_id.index },
                         .mesh = mh.id,
                         .distance_sq = glm::dot(d, d),  // 2乗距離（順序比較にしか使わないので sqrt 不要）
                     };
@@ -295,6 +343,9 @@ namespace sq::graphics {
             );
 
             // 2. meshでソート
+            // phase14 ②: MeshId が構造体になったので、比較は AssetHandle::operator<
+            //   （index 比較）が担う。ここの式自体は変えなくてよいが、
+            //   「何を比べているのか」が asset_handle.hpp 側に移ったことは意識しておくこと。
             std::ranges::sort(opaque_items_,
                 [](const DrawItem& a, const DrawItem& b) {
                     return a.mesh < b.mesh;
@@ -474,8 +525,8 @@ namespace sq::graphics {
         instance_binding.descriptorCount = 1;
         instance_binding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         instance_binding.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT;
-        // ★ base_color / texture_index は vert で読んで frag へ渡す形にするので、
-        //   FRAGMENT は不要（frag から直接引くなら VERTEX | FRAGMENT にする）。
+        // ★ phase14 ① 以降、InstanceData は model と material_index だけ。
+        //   material_index は vert で読んで flat 補間で frag へ渡すので、FRAGMENT は不要のまま。
 
         // ★ set=1（bindless）と違い、こちらは UPDATE_AFTER_BIND 不要
         //   （フレーム先頭でバインドする前に書き終えているため）。
@@ -489,15 +540,18 @@ namespace sq::graphics {
         if (vkCreateDescriptorSetLayout(device_->handle(), &camera_layout_info, nullptr, &camera_set_layout_) != VK_SUCCESS) {
             throw std::runtime_error("Renderer::create_descriptor_set_layout : カメラ用ディスクリプタセットレイアウトの作成に失敗しました！");
         }
-        
-        constexpr VkDescriptorBindingFlags binding_flags =
-            VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |      // 64枠中3枚だけ埋まっていてよい
-            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;     // バインド後に書き込んでよい
 
-        VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info{};
-        flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-        flags_info.bindingCount  = 1;                        // ★ pBindings の数と一致させる
-        flags_info.pBindingFlags = &binding_flags;
+        constexpr std::array<VkDescriptorBindingFlags, 2> binding_flag = {
+            VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |      // 64枠中3枚だけ埋まっていてよい
+            VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,     // バインド後に書き込んでよい
+            VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT
+        };
+
+        VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+            .bindingCount  = 2,                        // ★ pBindings の数と一致させる
+            .pBindingFlags = binding_flag.data(),
+        };
         //   ★ PARTIALLY_BOUND が無いと、未書き込みの枠が1つでもあるとバインド時に不正になる。
         //     kMaxTextures=64 に対して実際は数枚しか登録しないので、これが無いと動かない。
 
@@ -507,11 +561,24 @@ namespace sq::graphics {
         sampler_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         sampler_layout_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+        // set=1 に binding=1 としてマテリアル SSBO を足す。
+        VkDescriptorSetLayoutBinding material_binding{};
+        material_binding.binding         = 1;
+        material_binding.descriptorCount = 1;
+        material_binding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        material_binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;  // frag から直接引く
+        //   ★ binding_flags / flags_info も2要素の配列にすること。
+        //     bindingCount は pBindings の数と一致していなければならない（不一致は即バリデーション違反）。
+        //     binding=1 側のフラグは **0**（UPDATE_AFTER_BIND_BIT を付けない）。
+        //     付けると descriptorBindingStorageBufferUpdateAfterBind の機能有効化が必要になるが、
+        //     マテリアルはバインド前に書き終えているので通常のバインディングで足りる（D-2 の注記）。
+        //     プール側の UPDATE_AFTER_BIND_BIT は set 単位なのでそのままでよい。
+        const std::array material_bindings{ sampler_layout_binding, material_binding };
         VkDescriptorSetLayoutCreateInfo material_layout_info{};
         material_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         material_layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-        material_layout_info.bindingCount = 1;
-        material_layout_info.pBindings = &sampler_layout_binding;
+        material_layout_info.bindingCount = 2;
+        material_layout_info.pBindings = material_bindings.data();
         material_layout_info.pNext = &flags_info;
 
         if (vkCreateDescriptorSetLayout(device_->handle(), &material_layout_info, nullptr, &material_set_layout_) != VK_SUCCESS) {
@@ -545,9 +612,16 @@ namespace sq::graphics {
         sampler_pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         sampler_pool_size.descriptorCount = kMaxTextures;
 
+        //   STORAGE_BUFFER の枠を +1 する。
+        //   set=0 の instance_buffers_（kFramesInFlight 個）に加えて、
+        //   set=1 binding=1 のマテリアル SSBO が1個要る。
+        //   同じ type のプールサイズは足し合わせて1エントリにしてよい:
+        //     instance_pool_size.descriptorCount = kFramesInFlight + 1;
+        //   ★ maxSets は変えなくてよい（set=1 は TextureRegistry が確保する1個のままで、
+        //     binding が増えるだけ。セット数は増えない）。
         VkDescriptorPoolSize instance_pool_size{};
         instance_pool_size.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        instance_pool_size.descriptorCount = static_cast<uint32_t>(kFramesInFlight);
+        instance_pool_size.descriptorCount = static_cast<uint32_t>(kFramesInFlight) + 1;
 
         std::vector<VkDescriptorPoolSize> descriptor_pools;
         descriptor_pools.push_back(camera_pool_size);
@@ -628,6 +702,11 @@ namespace sq::graphics {
     // テクスチャの登録・参照（phase12 手順4）
     TextureRegistry& Renderer::textures() {
         return *textures_;
+    }
+
+    // マテリアルの登録・参照（phase14 ①）
+    MaterialRegistry& Renderer::materials() {
+        return *materials_;
     }
 
     void Renderer::recreate_swapchain() {

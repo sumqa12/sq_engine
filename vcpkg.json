@@ -8,6 +8,7 @@
     "glfw3",
     "glm",
     "vulkan",
-    "stb"
+    "stb",
+    "tinygltf"
   ]
 }
