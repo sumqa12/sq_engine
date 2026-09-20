@@ -156,11 +156,8 @@ bool TextureRegistry::contains(scene::TextureId id) const {
 }
 
 scene::TextureId TextureRegistry::create_white_texture() {
-    // TODO(phase14 ③): 1×1 の白（RGBA8）を load_from_pixels で登録し、white_texture_ に控える。
-    //   constexpr unsigned char kWhite[4] = { 255, 255, 255, 255 };
-    //   white_texture_ = load_from_pixels(kWhite, 1, 1);
-    //   return white_texture_;
-    //
+    constexpr unsigned char kWhite[4] = { 255, 255, 255, 255 };
+    white_texture_ = load_from_pixels(kWhite, 1, 1);
     //   ★ 二重登録の防止: 既に有効なら何もせず white_texture_ を返す
     //     （contains(white_texture_) で判定できる）。
     //   ★ ファイルを用意しないのは、これが「絵」ではなく「乗算の恒等元」だから。
