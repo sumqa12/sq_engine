@@ -57,7 +57,7 @@ scene::TextureId TextureRegistry::load(const std::string& path) {
 
     //  2. スロットの上限チェックと確保
     if (slots_.size() >= max_textures_ && free_indices_.empty()) {
-        spdlog::error("MaterialRegistry::add: Too many materials");
+        spdlog::error("textureRegistry::add: Too many textures");
         return default_texture_;
     }
 
@@ -92,7 +92,7 @@ scene::TextureId TextureRegistry::load_from_pixels(const unsigned char* pixels,
 
     //  1. スロットの上限チェックと確保
     if (slots_.size() >= max_textures_ && free_indices_.empty()) {
-        spdlog::error("MaterialRegistry::add: Too many materials");
+        spdlog::error("TextureRegistry::add: Too many textures");
         return default_texture_;
     }
 
@@ -156,12 +156,15 @@ bool TextureRegistry::contains(scene::TextureId id) const {
 }
 
 scene::TextureId TextureRegistry::create_white_texture() {
-    constexpr unsigned char kWhite[4] = { 255, 255, 255, 255 };
-    white_texture_ = load_from_pixels(kWhite, 1, 1);
     //   ★ 二重登録の防止: 既に有効なら何もせず white_texture_ を返す
     //     （contains(white_texture_) で判定できる）。
     //   ★ ファイルを用意しないのは、これが「絵」ではなく「乗算の恒等元」だから。
     //     ディスクに置くとユーザーが差し替えられてしまい、中立性が保証できなくなる。
+    if (contains(white_texture_)) {
+        return white_texture_;
+    }
+    constexpr unsigned char kWhite[4] = { 255, 255, 255, 255 };
+    white_texture_ = load_from_pixels(kWhite, 1, 1);
     return white_texture_;
 }
 

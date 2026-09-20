@@ -533,7 +533,6 @@ namespace sq::graphics {
         const std::array bindings{ ubo_layout_binding, instance_binding };
         VkDescriptorSetLayoutCreateInfo camera_layout_info{};
         camera_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        camera_layout_info.pBindings = &ubo_layout_binding;
         camera_layout_info.bindingCount = bindings.size();
         camera_layout_info.pBindings    = bindings.data();
 
