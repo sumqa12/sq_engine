@@ -104,12 +104,25 @@ private:
 };
 
 // -- 組み込みジオメトリの生成ヘルパ --
-// 将来: add_sphere_mesh / add_capsule_mesh 等を追加する。
+// 将来: add_capsule_mesh 等を追加する。
 
 // 面ごとに独立した24頂点・36インデックスのキューブ（テクスチャのUVが面ごとに破綻しない構成）。
 scene::MeshId add_cube_mesh(MeshRegistry& registry);
 
 // XZ平面上の1x1の板（4頂点・6インデックス）。メッシュ切り替えの動作確認用。
 scene::MeshId add_plane_mesh(MeshRegistry& registry);
+
+// UV 球（phase15 ②）。緯度・経度で分割した球で、**位置がそのまま法線になる**のが特徴。
+//
+// なぜ立方体では足りないのか:
+//   立方体は法線が6方向しか無いため、roughness を変えてもハイライトは
+//   「その面に載るか載らないか」の二択になり、**粗さの連続的な変化が読めない**。
+//   球なら全方向の法線が揃うので、ハイライトの広がり方とフレネル（縁の明るさ）を
+//   1体の上で同時に観察できる。②のマテリアルボール検証はこれを前提にしている。
+//
+// segments = 経度方向の分割数、rings = 緯度方向の分割数。
+// ★ 頂点数が 65536 を超えると uint16 のインデックスでは足りなくなる（phase14 ③ の uint32 版が要る）。
+//   既定の 32 × 16 なら 33 × 17 = 561 頂点なので問題ない。
+scene::MeshId add_sphere_mesh(MeshRegistry& registry, int segments = 32, int rings = 16);
 
 }  // namespace sq::graphics

@@ -1,6 +1,10 @@
 #include "sq/graphics/mesh_registry.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <stdexcept>
+
+#include <glm/gtc/constants.hpp>
 
 namespace sq::graphics {
 
@@ -220,6 +224,71 @@ scene::MeshId add_plane_mesh(MeshRegistry& registry) {
     const std::vector<std::uint16_t> indices = {
         0, 2, 1, 0, 3, 2
     };
+
+    return registry.add(vertices, indices);
+}
+
+
+scene::MeshId add_sphere_mesh(MeshRegistry& registry, int segments, int rings) {
+    // ★ 分割数が少なすぎると面が張れない。最低限を保証しておく。
+    segments = std::max(segments, 3);
+    rings    = std::max(rings, 2);
+
+    // 経度方向は「継ぎ目の頂点を重複させる」ため +1 列にする。
+    //   phi = 0 と phi = 2*PI は同じ位置だが u が 0 と 1 で異なるため、
+    //   頂点を共有すると継ぎ目で u が 1 → 0 へ巻き戻り、帯状の歪みが出る。
+    const int columns = segments + 1;
+
+    std::vector<Vertex> vertices;
+    vertices.reserve(static_cast<std::size_t>(rings + 1) * static_cast<std::size_t>(columns));
+
+    for (int ring = 0; ring <= rings; ++ring) {
+        const float v = static_cast<float>(ring) / static_cast<float>(rings);
+        const float theta = glm::pi<float>() * v;  // 0 = 北極, PI = 南極
+        const float sin_theta = std::sin(theta);
+        const float cos_theta = std::cos(theta);
+
+        for (int seg = 0; seg <= segments; ++seg) {
+            const float u = static_cast<float>(seg) / static_cast<float>(segments);
+            const float phi = glm::two_pi<float>() * u;
+
+            // 半径 0.5（cube の1辺 1.0 と大きさの感覚を揃える）。
+            const glm::vec3 position = 0.5f * glm::vec3(
+                sin_theta * std::cos(phi),
+                cos_theta,
+                sin_theta * std::sin(phi));
+
+            vertices.push_back(Vertex{
+                .position = position,
+                // ★ 球は「原点からの向き」がそのまま法線になる。極でも position は
+                //   (0, ±0.5, 0) で長さが 0 にならないので normalize は安全。
+                .normal   = glm::normalize(position),
+                .uv       = glm::vec2(u, v),
+            });
+        }
+    }
+
+    std::vector<std::uint16_t> indices;
+    indices.reserve(static_cast<std::size_t>(rings) * static_cast<std::size_t>(segments) * 6);
+
+    for (int ring = 0; ring < rings; ++ring) {
+        for (int seg = 0; seg < segments; ++seg) {
+            const auto a = static_cast<std::uint16_t>(ring * columns + seg);
+            const auto b = static_cast<std::uint16_t>(a + 1);        // 経度方向の隣（phi + d）
+            const auto c = static_cast<std::uint16_t>(a + columns);  // 緯度方向の隣（theta + d）
+            const auto d = static_cast<std::uint16_t>(c + 1);
+
+            // 外から見て反時計回りになる並び（frontFace = COUNTER_CLOCKWISE）。
+            //   赤道上の点で確かめると (b - a) × (c - a) が中心から外を向く:
+            //     b - a は +phi 方向、c - a は -y 方向（theta が増えると下がる）
+            //   ★ 逆順にすると球が裏返り、背面カリングで**丸ごと消える**。
+            // ★ 極（ring = 0 と ring = rings-1）では a と b（または c と d）が同じ位置に
+            //   重なって三角形が縮退するが、面積0はラスタライズされないので実害は無い。
+            //   極だけ三角形1枚にする最適化もあるが、条件分岐が増えるわりに得るものが少ない。
+            indices.push_back(a); indices.push_back(b); indices.push_back(c);
+            indices.push_back(b); indices.push_back(d); indices.push_back(c);
+        }
+    }
 
     return registry.add(vertices, indices);
 }

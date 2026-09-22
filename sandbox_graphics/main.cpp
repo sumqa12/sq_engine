@@ -269,6 +269,8 @@ int main() {
     // 同じ MeshId を何体が参照してもGPUバッファは1組しか作られない（レジストリのキャッシュ）。
     const MeshId cube_mesh = sq::graphics::add_cube_mesh(renderer.meshes());
     const MeshId plane_mesh = sq::graphics::add_plane_mesh(renderer.meshes());
+    // phase15 ②: roughness の連続変化を読むための球（マテリアルボール検証用）。
+    const MeshId sphere_mesh = sq::graphics::add_sphere_mesh(renderer.meshes());
 
     // phase12 手順4: 使うテクスチャを登録し、TextureId を受け取る。
     // 同じパスを2回 load しても実際のロードは1回だけ（レジストリのキャッシュ）。
@@ -293,12 +295,17 @@ int main() {
     std::vector<MaterialId> opaque_materials;
     std::vector<MaterialId> transparent_materials;
     for (int i = 0; i < kMaterialCount; ++i) {
-        const float f = static_cast<float>(i) / static_cast<float>(kMaterialCount - 1);
         const TextureId tex = textures.empty() ? default_texture : textures[i % textures.size()];
-        opaque_materials.push_back(renderer.materials().add(sq::graphics::MaterialData{
-            .base_color = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f)}, tex));
-        transparent_materials.push_back(renderer.materials().add(sq::graphics::MaterialData{
-            .base_color = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f)}, tex));
+        opaque_materials.push_back(renderer.materials().add(
+            sq::graphics::MaterialData{
+                .base_color = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f),
+            }, tex)
+        );
+        transparent_materials.push_back(renderer.materials().add(
+            sq::graphics::MaterialData{
+                .base_color = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f)
+            }, tex)
+        );
     }
     //   ★ テクスチャの巡回は「マテリアルごと」になる。phase13 では体ごとに添字が変わっていたが、
     //     マテリアル数ぶんしか変わらなくなる。bindless / nonuniformEXT の検証としては
@@ -397,7 +404,7 @@ int main() {
         renderer.meshes(), renderer.textures(), renderer.materials())
     );
 
-    for (int j = 0; j < 5; ++j) {
+    for (int j = 0; j < 1; ++j) {
         for (int i = 0; i < models.size(); i++) {
             // モデル全体をまとめて動かすための空の親を1つ作る（④ の階層の使いどころ）
             auto& model = models[i];
@@ -457,7 +464,7 @@ int main() {
     {
         // 太陽。方向光なので位置は使われず、向きだけが効く。
         create_directional_light(registry,
-            glm::vec3(0.0f, -1.0f, 0.0f),  // 光が進む向き。下向き成分が大きいほど真上からの光になる
+            glm::vec3(0.3f, -1.0f, 0.5f),  // 光が進む向き。下向き成分が大きいほど真上からの光になる
             glm::vec3(1.0f, 0.95f, 0.9f),    // ★ linear 値（⓪ の約束。sRGB の値をそのまま入れない）
             2.0f);
 
@@ -476,6 +483,69 @@ int main() {
     }
 
     // ---- メインループ ----
+    // ---- phase15 ② の検証シーン: マテリアルボール ----
+    //
+    // roughness 6段 × metallic 2段 の計12体を並べ、Cook-Torrance の挙動を1画面で見る。
+    //
+    // ★ 既存の格子（phase13 のカリング／インスタンシング検証用）から離れた高所に置く。
+    //   点光源は最も遠いものでも range = 25 なので kPanelY = 40 には届かない。
+    //   **太陽光1つだけが当たる**状態になり、roughness の違いがそのまま読み取れる。
+    //   ライトを増やすと、どの変化が roughness 由来なのか切り分けられなくなる。
+    {
+        constexpr float kPanelY         = 10.0f;  // 格子と点光源から離す高さ
+        constexpr int   kRoughnessSteps = 6;      // 横方向の段数
+        constexpr float kBallSpacing    = 3.0f;
+        constexpr float kBallScale      = 2.0f;   // メッシュは半径 0.5 なので直径 1.0 → 2.0
+
+        // ★ 白テクスチャ（乗算の恒等元）を渡し、base_color だけが出る状態にする。
+        //   既定テクスチャ（市松模様）を使うと模様がハイライトに紛れて読めなくなる。
+        const TextureId white = renderer.textures().white_texture();
+
+        for (int row = 0; row < 2; ++row) { // row 0 = 非金属, row 1 = 金属
+            const auto metallic = static_cast<float>(row);
+
+            for (int col = 0; col < kRoughnessSteps; ++col) {
+                // roughness は 0.05 → 1.0 の等間隔。
+                // ★ 0 ちょうどは避ける（D 項の分母が発散するため。シェーダ側でも 0.03 にクランプ済み）。
+                const float roughness = glm::mix(0.05f, 1.0f,
+                    static_cast<float>(col) / static_cast<float>(kRoughnessSteps - 1));
+
+                const MaterialId material = renderer.materials().add(
+                    sq::graphics::MaterialData{
+                        .base_color = glm::vec4(0.9f, 0.9f, 0.9f, 1.0f),
+                        .emissive   = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f),
+                        .metallic   = metallic,
+                        .roughness  = roughness,
+                    },
+                    white);
+
+                const sq::ecs::Entity ball = registry.create();
+
+                const float x = (static_cast<float>(col) - 0.5f * static_cast<float>(kRoughnessSteps - 1))
+                              * kBallSpacing;
+                const float y = kPanelY + (row == 0 ? 1.75f : -1.75f);
+
+                registry.add<Transform>(ball, Transform(
+                    glm::vec3(x, y, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(kBallScale)));
+                registry.add<WorldTransform>(ball, WorldTransform{});
+                registry.add<MeshHandle>(ball, MeshHandle{ .id = sphere_mesh });
+                registry.add<Material>(ball, Material{ .id = material, .transparent = false });
+            }
+        }
+
+        // パネル正面のカメラ。起動直後に②の確認ができるよう、これをアクティブ＆操作対象にする。
+        //
+        // ★ カメラ群（上のブロック）の**後**に呼ぶこと。set_active_controllable_camera は
+        //   他のエンティティから ActiveCamera を外して回るので、先に呼ぶと
+        //   後から add される camera_1 の ActiveCamera と二重になる。
+        // ★ 元の視点（格子の中心）に戻したいときは、この1行をコメントアウトすれば camera_1 に戻る。
+        const sq::ecs::Entity panel_camera = create_camera(
+            registry, ControlScheme::FreeFly,
+            0.0f, kPanelY, 18.0f,
+            0.0f, kPanelY, 0.0f);
+        set_active_controllable_camera(registry, panel_camera);
+    }
+
     loop(registry, renderer);
     return 0;
 }
