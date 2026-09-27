@@ -278,7 +278,7 @@ int main() {
     std::vector<TextureId> textures;
 
     for (const auto& entry : std::filesystem::directory_iterator(dir_path)) {
-        const TextureId texture = renderer.textures().load(entry.path().string());
+        const TextureId texture = renderer.textures().load(entry.path().string(), VK_FORMAT_R8G8B8A8_SRGB);
         textures.push_back(texture);
     }
     const TextureId default_texture = renderer.textures().default_texture();
@@ -299,12 +299,12 @@ int main() {
         opaque_materials.push_back(renderer.materials().add(
             sq::graphics::MaterialData{
                 .base_color = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f),
-            }, tex)
+            }, { .albedo = tex })
         );
         transparent_materials.push_back(renderer.materials().add(
             sq::graphics::MaterialData{
                 .base_color = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f)
-            }, tex)
+            }, { .albedo = tex })
         );
     }
     //   ★ テクスチャの巡回は「マテリアルごと」になる。phase13 では体ごとに添字が変わっていたが、
@@ -517,7 +517,7 @@ int main() {
                         .metallic   = metallic,
                         .roughness  = roughness,
                     },
-                    white);
+                    { .albedo = white });
 
                 const sq::ecs::Entity ball = registry.create();
 

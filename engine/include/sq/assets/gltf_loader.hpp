@@ -54,12 +54,16 @@ struct LoadedModel {
 // path の .gltf / .glb を読み、メッシュ・テクスチャ・マテリアルを各レジストリへ登録して
 // ノード階層を返す（phase14 ③）。
 //
-// 対応する: メッシュのプリミティブ（POSITION / NORMAL / TEXCOORD_0 / インデックス）、
+// 対応する: メッシュのプリミティブ（POSITION / NORMAL / TANGENT / TEXCOORD_0 / インデックス）、
 //   baseColorTexture、baseColorFactor、metallicFactor / roughnessFactor、emissiveFactor、
-//   ノード階層、TRS とマトリクス両方のノード変換、.gltf / .glb 両方。
+//   normalTexture / metallicRoughnessTexture / occlusionTexture / emissiveTexture（phase15 ③）、
+//   alphaMode（OPAQUE / MASK / BLEND）、ノード階層、TRS とマトリクス両方のノード変換、
+//   .gltf / .glb 両方。
 //
 // 対応しない（割り切り。D-6）: アニメーション、スキニング、モーフターゲット、カメラ、ライト、
-//   KHR 拡張全般、スパースアクセサ、TEXCOORD_1 以降、頂点カラー。
+//   KHR 拡張全般、スパースアクセサ、TEXCOORD_1 以降、頂点カラー、
+//   normalTexture.scale / occlusionTexture.strength / doubleSided / sampler のフィルタ・ラップ設定
+//   （phase15 D-6 で継続）。
 [[nodiscard]] LoadedModel load_gltf(const std::string& path,
                                     graphics::MeshRegistry& meshes,
                                     graphics::TextureRegistry& textures,

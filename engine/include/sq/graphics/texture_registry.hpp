@@ -1,8 +1,9 @@
 #pragma once
 
+#include <map>
 #include <memory>
 #include <string>
-#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <vulkan/vulkan.h>
@@ -44,7 +45,12 @@ public:
 
     // path の画像を読み込んで登録し TextureId を返す。
     // 同じ path が既に登録済みならロードせず既存のIDを返す（by_path_ で判定）。
-    scene::TextureId load(const std::string& path);
+    //
+    // format: 用途で決める（phase15 ③-1 / D-6。Texture コンストラクタへそのまま渡す）。
+    // ★ 同じ path でも format が異なれば**別のテクスチャとして登録する**こと
+    //   （by_path_ のキーを {path, format} にした理由。baseColor と occlusion が
+    //     同じ画像ファイルを指すモデルが実在する）。
+    scene::TextureId load(const std::string& path, VkFormat format);
 
     // デコード済みピクセル列から登録する（phase14 ③-4。glTF の埋め込み画像用）。
     //
@@ -52,8 +58,11 @@ public:
     //   同じ画像を2回渡せば2回登録される。glTF 側は model.images を1回だけ走査するので、
     //   1ファイル内では重複しない。複数ファイルが同じ画像を埋め込んでいる場合は素通りする。
     //   重複排除したいならピクセル列のハッシュをキーにするしかないが、このフェーズではやらない。
+    //
+    // format: load() と同じ意味（phase15 ③-1 / D-6）。
     scene::TextureId load_from_pixels(const unsigned char* pixels,
-                                      std::uint32_t width, std::uint32_t height);
+                                      std::uint32_t width, std::uint32_t height,
+                                      VkFormat format);
 
     // 全テクスチャ共有の bindless ディスクリプタセット（set=1）。phase13 ①-3。
     // binding=0 が sampler2D の配列で、**TextureId::index がそのまま配列の添字**になる。
@@ -80,6 +89,15 @@ public:
     //   先に呼ぶと白が既定テクスチャになり、失敗時に何も気付けなくなる。
     scene::TextureId create_white_texture();
 
+    // 1×1 の「真上を向いた法線」(128, 128, 255, 255) を UNORM で生成して登録する
+    // （phase15 ③-2）。normal_index を持たないマテリアル用の中立フォールバック。
+    //
+    // ★ create_white_texture() と同型だが、フォーマットは**必ず UNORM**にすること。
+    //   128 を sRGB で読むと約 0.22 になり「真上を向いた法線」のつもりが
+    //   斜めを向いた法線として解釈される（絵は出るが陰影がわずかにおかしいだけの、
+    //   一番気付きにくい壊れ方）。
+    scene::TextureId create_flat_normal_texture();
+
     // マテリアルの albedo_index が無効／未登録のときに使う既定テクスチャ（最初に load したもの）。
     // ★ 「異常を知らせる」用。テクスチャを持たないマテリアルには white_texture() を使うこと。
     [[nodiscard]] scene::TextureId default_texture() const;
@@ -87,6 +105,10 @@ public:
     // テクスチャを持たないマテリアル用の中立テクスチャ（create_white_texture() で登録したもの）。
     // ★ create_white_texture() を呼ぶ前は無効ハンドルが返る。
     [[nodiscard]] scene::TextureId white_texture() const;
+
+    // 法線マップを持たないマテリアル用の中立テクスチャ（phase15 ③-2）。
+    // ★ create_flat_normal_texture() を呼ぶ前は無効ハンドルが返る。
+    [[nodiscard]] scene::TextureId flat_normal_texture() const;
 
     // テクスチャを解放する（phase14 ②-3）。
     //
@@ -131,13 +153,17 @@ private:
     std::vector<Slot> slots_;                  // 添字が TextureId::index（= bindless 配列の添字）
     std::vector<std::uint32_t> free_indices_;  // 解放済みスロットの再利用リスト
 
-    // 同一パスの再ロード防止。
+    // 同一パス・同一フォーマットの再ロード防止。
+    // ★ phase15 ③-1 / D-6: キーを {path, format} にした。同じ画像を sRGB と UNORM の
+    //   両方の用途で読むモデルが実在するため、パスだけをキーにすると片方が
+    //   もう片方のフォーマットで静かに返ってしまう。
     // ★ phase14 ②: unload したテクスチャのエントリを**ここからも消す**こと。
     //   消し忘れると、次の load が「登録済み」と誤判定して死んだハンドルを返す。
-    std::unordered_map<std::string, scene::TextureId> by_path_;
+    std::map<std::pair<std::string, VkFormat>, scene::TextureId> by_path_;
 
     scene::TextureId default_texture_ = scene::kInvalidTextureId;
     scene::TextureId white_texture_ = scene::kInvalidTextureId;   // phase14 ③（中立フォールバック）
+    scene::TextureId flat_normal_texture_ = scene::kInvalidTextureId;  // phase15 ③-2（中立フォールバック）
     std::uint32_t max_textures_ = 0;  // 登録できるテクスチャ数の上限（プールの容量）
 };
 

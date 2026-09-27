@@ -16,7 +16,7 @@ namespace sq::graphics {
 
 Texture::Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator& allocator,
                  std::uint32_t graphics_queue_family, VkQueue graphics_queue,
-                 const std::string& path)
+                 const std::string& path, VkFormat format)
     : allocator_(&allocator), device_(device) {
     // テクスチャ生成の手順（phase8プラン 項目3）
     //  1. stbi_load(path.c_str(), &w, &h, &channels, STBI_rgb_alpha) で RGBA として読み込む。
@@ -38,13 +38,14 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator
 
     //  2. 作成
     create_from_pixels(physical_device, graphics_queue_family, graphics_queue,
-                          stbi_image, width, height);
+                          stbi_image, width, height, format);
     stbi_image_free(stbi_image);
 }
 
 Texture::Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator &allocator,
                  std::uint32_t graphics_queue_family, VkQueue graphics_queue,
-                 const unsigned char *pixels, std::uint32_t width, std::uint32_t height)
+                 const unsigned char *pixels, std::uint32_t width, std::uint32_t height,
+                 VkFormat format)
     : allocator_(&allocator), device_(device) {
     // ★ メンバ初期化子リストを**必ず**書くこと。ここが空だと allocator_ が nullptr のまま
     //   デストラクタの allocator_->free(allocation_) に到達し、ヌルポインタ参照で落ちる。
@@ -59,13 +60,14 @@ Texture::Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator
 
     //   2. 作成
     create_from_pixels(physical_device, graphics_queue_family, graphics_queue,
-                          pixels, width, height);
+                          pixels, width, height, format);
 }
 
 void Texture::create_from_pixels(VkPhysicalDevice physical_device,
                                  std::uint32_t graphics_queue_family, VkQueue graphics_queue,
                                  const unsigned char* pixels,
-                                 std::uint32_t width, std::uint32_t height) {
+                                 std::uint32_t width, std::uint32_t height,
+                                 VkFormat format) {
     //  2. StagingBuffer(physical_device, device, pixels, image_size) を作成
     VkDeviceSize image_size = width * height * 4;
     StagingBuffer staging_buffer(*allocator_, device_, pixels, image_size);  // phase11 ③: アロケータ経由
@@ -75,8 +77,7 @@ void Texture::create_from_pixels(VkPhysicalDevice physical_device,
     //     usage=VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
     //     samples=VK_SAMPLE_COUNT_1_BIT, initialLayout=UNDEFINED, sharingMode=EXCLUSIVE）
     //     → vkCreateImage(device_, ..., &image_)。
-
-    mip_levels_ = supports_linear_blit(physical_device, VK_FORMAT_R8G8B8A8_SRGB)
+    mip_levels_ = supports_linear_blit(physical_device, format)
         ? static_cast<std::uint32_t>(std::floor(std::log2(std::max(width, height)))) + 1
         : 1;
     //   例: 512x512 なら floor(log2(512)) + 1 = 10 枚（512, 256, ..., 1）。
@@ -90,7 +91,7 @@ void Texture::create_from_pixels(VkPhysicalDevice physical_device,
     image_create_info.extent.depth = 1;
     image_create_info.mipLevels = mip_levels_;
     image_create_info.arrayLayers = 1;
-    image_create_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+    image_create_info.format = format;
     image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
     image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -135,8 +136,8 @@ void Texture::create_from_pixels(VkPhysicalDevice physical_device,
     vkCmdCopyBufferToImage(cmd.handle(), staging_buffer.handle(), image_,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    if (mip_levels_ > 1) {
-        generate_mipmaps(cmd.handle(), width, height);  // 中で全レベルを SHADER_READ_ONLY まで持っていく
+    if (mip_levels_ > 1) { // 中で全レベルを SHADER_READ_ONLY まで持っていく
+        generate_mipmaps(cmd.handle(), static_cast<std::int32_t>(width), static_cast<std::int32_t>(height));
     } else {
         transition_image_layout(cmd.handle(), image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1);
@@ -151,7 +152,7 @@ void Texture::create_from_pixels(VkPhysicalDevice physical_device,
     view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     view_create_info.image = image_;
     view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    view_create_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+    view_create_info.format = format;
     view_create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     view_create_info.subresourceRange.levelCount = mip_levels_;
     view_create_info.subresourceRange.layerCount = 1;

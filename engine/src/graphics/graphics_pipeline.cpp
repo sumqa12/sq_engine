@@ -1,5 +1,6 @@
 #include "sq/graphics/graphics_pipeline.hpp"
 
+#include <array>
 #include <filesystem>
 #include <fstream>
 
@@ -39,30 +40,31 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
     binding_description.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
     // UV座標を第3の頂点属性として追加する（phase8プラン 項目8）
-    VkVertexInputAttributeDescription attribute_descriptions[3] = {};
+    // tangent（glm::vec4）を4番目の頂点属性として追加する。(phase15)
+    std::array<VkVertexInputAttributeDescription, 4> attribute_descriptions = {};
     attribute_descriptions[0].binding = 0;
     attribute_descriptions[0].location = 0;
     attribute_descriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT; // vec3 position
     attribute_descriptions[0].offset = offsetof(Vertex, position);
     attribute_descriptions[1].binding = 0;
     attribute_descriptions[1].location = 1;
-    //
-    //   ★ vec3 → vec3 で offset も同じなので、直さなくてもコンパイルもバリデーションも通る。
-    //     「通ってしまう」のが危険で、法線を色として使い続ける事故になる。
-    //     Vertex 側と一緒に必ず直すこと。
     attribute_descriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT; // vec3 normal
     attribute_descriptions[1].offset = offsetof(Vertex, normal);
     attribute_descriptions[2].binding = 0;
     attribute_descriptions[2].location = 2;
     attribute_descriptions[2].format = VK_FORMAT_R32G32_SFLOAT; // vec2 uv
     attribute_descriptions[2].offset = offsetof(Vertex, uv);
+    attribute_descriptions[3].binding = 0;
+    attribute_descriptions[3].location = 3;
+    attribute_descriptions[3].format = VK_FORMAT_R32G32B32A32_SFLOAT; // vec4 tangent
+    attribute_descriptions[3].offset = offsetof(Vertex, tangent);
 
     VkPipelineVertexInputStateCreateInfo vertex_input_info = {};
     vertex_input_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertex_input_info.vertexBindingDescriptionCount = 1;
     vertex_input_info.pVertexBindingDescriptions = &binding_description;
-    vertex_input_info.vertexAttributeDescriptionCount = 3;
-    vertex_input_info.pVertexAttributeDescriptions = attribute_descriptions;
+    vertex_input_info.vertexAttributeDescriptionCount = attribute_descriptions.size();
+    vertex_input_info.pVertexAttributeDescriptions = attribute_descriptions.data();
 
     // 入力アセンブリ状態の作成情報を設定する
     VkPipelineInputAssemblyStateCreateInfo input_assembly = {};

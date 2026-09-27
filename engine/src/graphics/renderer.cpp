@@ -110,7 +110,8 @@ namespace sq::graphics {
 
         // 既定テクスチャを最初に登録する（読み込み・変換に失敗したときに使う市松模様）。
         // 最初に load したものが TextureRegistry::default_texture() になる。
-        textures_->load("textures/default.png");
+        // 「色」として使うので VK_FORMAT_R8G8B8A8_SRGB を渡す。
+        textures_->load("textures/default.png", VK_FORMAT_R8G8B8A8_SRGB);
 
         // 続けて中立な 1×1 白テクスチャを登録する。
         textures_->create_white_texture();
@@ -119,13 +120,16 @@ namespace sq::graphics {
         //     読み込み失敗が市松模様で可視化されなくなる。
         //   ★ 用途の違いは texture_registry.hpp の create_white_texture() のコメントを参照。
 
+        // 続けて中立な 1×1 フラット法線テクスチャも登録する
+        textures_->create_flat_normal_texture();
+
         // マテリアルレジストリを生成する。
         materials_ = std::make_unique<MaterialRegistry>(
             device_->allocator(), device_->handle(), *textures_,
             textures_->bindless_set(), kMaxMaterials);
 
         // 続けて既定マテリアルを1件登録する（Material を持たない／無効IDのエンティティ用）。
-        materials_->add(MaterialData{}, textures_->default_texture());
+        materials_->add(MaterialData{}, { .albedo = textures_->default_texture() });
     }
 
     Renderer::~Renderer() {

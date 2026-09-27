@@ -24,9 +24,14 @@ public:
     // allocator: ステージングバッファ（HOST_VISIBLE, TRANSFER_SRC）とイメージ本体の
     //   メモリ（DEVICE_LOCAL, non-linear）の確保に使う（phase11 ③ / phase13 ④）。
     // physical_device: メモリタイプ選択に加え、リニアフィルタ blit の対応判定にも使う（phase13 ③）。
+    // format: 用途に応じて呼び出し側が明示する（phase15 ③-1 / D-6）。
+    //   baseColor / emissive → VK_FORMAT_R8G8B8A8_SRGB（色として linear へデコードする）
+    //   normal / metallicRoughness / occlusion → VK_FORMAT_R8G8B8A8_UNORM（数値として読む）
+    //   ★ 既定引数は付けないこと。「書き忘れ」が sRGB として黙って通ると、
+    //     法線マップの取り違えをコンパイラが検出できなくなる。
     Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator& allocator,
             std::uint32_t graphics_queue_family, VkQueue graphics_queue,
-            const std::string& path);
+            const std::string& path, VkFormat format);
 
     // デコード済みピクセル列からテクスチャを作る（phase14 ③-4）。
     //
@@ -39,9 +44,11 @@ public:
     // pixels は RGBA8 で width * height * 4 バイト（★ ここでコピーされる。呼び出し後に解放してよい）。
     // ★ パス版の実装は「stb_image で読む」→「以降は共通」なので、
     //   共通部分をプライベートな関数に括り出して両方から呼ぶ形にすると重複が消える。
+    // format: パス版と同じ意味（phase15 ③-1 / D-6）。既定引数は付けない。
     Texture(VkPhysicalDevice physical_device, VkDevice device, GpuAllocator& allocator,
             std::uint32_t graphics_queue_family, VkQueue graphics_queue,
-            const unsigned char* pixels, std::uint32_t width, std::uint32_t height);
+            const unsigned char* pixels, std::uint32_t width, std::uint32_t height,
+            VkFormat format);
 
     ~Texture();  // view -> image -> memory の順で破棄する
 
@@ -66,10 +73,13 @@ private:
     //   バリデーションエラーとテクスチャの黒化を招いた。
     //
     // ★ 呼ぶ前に allocator_ と device_ をメンバへ代入しておくこと（この関数が両方を使う）。
+    // format: VkImageCreateInfo::format / VkImageViewCreateInfo::format / supports_linear_blit
+    //   の3箇所すべてに使う（phase15 ③-1）。どれか1つでもハードコードのまま残すと不整合になる。
     void create_from_pixels(VkPhysicalDevice physical_device,
                             std::uint32_t graphics_queue_family, VkQueue graphics_queue,
                             const unsigned char* pixels,
-                            std::uint32_t width, std::uint32_t height);
+                            std::uint32_t width, std::uint32_t height,
+                            VkFormat format);
 
     // old_layout -> new_layout のイメージメモリバリアを command_buffer に記録する。
     // phase13 ③: mip レベル範囲を指定できるようにした（生成中はレベルごとに遷移させるため）。

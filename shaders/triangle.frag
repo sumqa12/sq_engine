@@ -24,7 +24,7 @@ layout(std430, set = 0, binding = 2) readonly buffer LightBuffer {
 
 layout(set = 1, binding = 0) uniform sampler2D textures[];
 
-// マテリアル本体（phase14 ①）。C++ 側 graphics::MaterialData（48バイト）と対になる。
+// マテリアル本体（phase14 ①）。C++ 側 graphics::MaterialData と対になる。
 // ★ メンバの順・型を1つでもずらすと、全マテリアルの見た目が崩れる。
 struct MaterialData {
     vec4 base_color;
@@ -33,6 +33,10 @@ struct MaterialData {
     float roughness;
     float alpha_cutoff;
     uint albedo_index;
+    uint normal_index;
+    uint metallic_roughness_index;
+    uint occlusion_index;
+    uint emissive_index;
 };
 
 // set=1 = 「起動後は不変なアセット」（D-2）。テクスチャ配列と同居させる。
@@ -45,6 +49,8 @@ layout(location = 0) in vec3 frag_normal;
 layout(location = 1) in vec2 frag_uv;
 layout(location = 2) in flat uint frag_material_index;
 layout(location = 3) in vec3 frag_world_pos;
+layout(location = 4) in vec3 frag_tangent;
+layout(location = 5) in vec3 frag_bitangent;
 
 layout(location = 0) out vec4 out_color;
 
@@ -106,11 +112,22 @@ void main() {
     // テクスチャがない場合はCBufferMaterialの定数値で代用
     vec4 albedo_sample = texture(textures[nonuniformEXT(m.albedo_index)], frag_uv);
     vec3 albedo = albedo_sample.rgb * m.base_color.rgb; // テクスチャ × 定数色
-    float metallic = m.metallic;
-    float roughness = clamp(m.roughness, 0.03, 1.0); // 0に近いと分母が発散するためクランプ
+    // metallicRoughness / occlusion / emissive テクスチャを合成する。
+    vec2 mr = texture(textures[nonuniformEXT(m.metallic_roughness_index)], frag_uv).gb;
+    float metallic  = m.metallic  * mr.y;   // ★ B = metallic
+    float roughness = clamp(m.roughness * mr.x, 0.03, 1.0);   // ★ G = roughness（逆に読むと粗い金属と滑らかな誘電体が入れ替わる）
+    float ao = texture(textures[nonuniformEXT(m.occlusion_index)], frag_uv).r;
+    vec3 emissive_tex = texture(textures[nonuniformEXT(m.emissive_index)], frag_uv).rgb;
 
-    // 法線
-    vec3 N = normalize(frag_normal);
+    // 法線マップを適用する。ジオメトリ法線 frag_normal はTBN構築にのみ使う。
+    vec3 n_tex = texture(textures[nonuniformEXT(m.normal_index)], frag_uv).xyz * 2.0 - 1.0;
+    mat3 TBN = mat3(normalize(frag_tangent), normalize(frag_bitangent), normalize(frag_normal));
+    vec3 N = normalize(TBN * n_tex);
+    // ★ 凹凸が逆に見えるときに疑う順:
+    //   1. in_tangent.w の符号（vert 側 ③-4）
+    //   2. TBN の列の順序（T, B, N の順。転置して掛けていないか）
+    //   3. 法線マップを sRGB で読んでいないか（D-6 / ③-2。UNORM で読むこと）
+    //   4. glTF の UV 原点は左上。V の反転を二重にしていないか
 
     // 視線ベクトル（ピクセル → カメラ）
     vec3 V = normalize(camera.camera_position.xyz - frag_world_pos);
@@ -123,7 +140,7 @@ void main() {
     // F0: 垂直入射時の反射率
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
 
-    vec3 result = kAmbient * albedo;
+    vec3 result = kAmbient * albedo * ao;
 
     for (uint i = 0; i < camera.light_count.x; ++i) {
         LightData light = lights[i];
@@ -169,7 +186,7 @@ void main() {
         result += (diff + specular) * radiance * NdotL /* * shadow */;
     }
 
-    result += m.emissive.rgb;
+    result += m.emissive.rgb * emissive_tex;
     result = result / (result + vec3(1.0));
     out_color = vec4(result, albedo_sample.a * m.base_color.a);
 }

@@ -35,4 +35,22 @@ struct Material {
     bool transparent = false;
 };
 
+// MaterialRegistry::add / update に渡すテクスチャ一式（phase15 ③-3）。
+//
+// なぜ必要か:
+//   スロットが albedo の1枚だけだった間は MaterialRegistry::add(data, TextureId albedo) で
+//   足りていたが、法線・metallicRoughness・occlusion・emissive の4枚が増えたため、
+//   引数を1本ずつ並べるより構造体にまとめた方が呼び出し側が読みやすい。
+//
+// ★ 各スロットの既定値（kInvalidTextureId）は「このマテリアルはこの用途のテクスチャを
+//   持たない」という**正常**な状態を表す。MaterialRegistry::add 側で用途ごとの
+//   中立テクスチャ（white / flat_normal）へ解決する（default_texture（市松）にはしない）。
+struct MaterialTextures {
+    TextureId albedo{};
+    TextureId normal{};
+    TextureId metallic_roughness{};
+    TextureId occlusion{};
+    TextureId emissive{};
+};
+
 }  // namespace sq::scene

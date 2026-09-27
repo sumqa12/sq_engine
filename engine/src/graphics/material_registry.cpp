@@ -40,7 +40,7 @@ MaterialRegistry::~MaterialRegistry() {
     buffer_.reset();
 }
 
-scene::MaterialId MaterialRegistry::add(const MaterialData& data, const scene::TextureId albedo) {
+scene::MaterialId MaterialRegistry::add(const MaterialData& data, const scene::MaterialTextures& textures) {
     //   1. スロットを確保する（phase14 ②-2。3レジストリ共通の手順）:
     //        free_indices_ が空でなければ末尾から再利用、空なら slots_.emplace_back()
     //        上限チェック: slots_.size() >= max_materials_ かつ free_indices_ が空なら
@@ -61,21 +61,8 @@ scene::MaterialId MaterialRegistry::add(const MaterialData& data, const scene::T
         free_indices_.pop_back();
     }
 
-    //   2. albedo のフォールバック（phase13 まで収集フェーズにあった判定の移設先）:
-    MaterialData resolved = data;
-    //  ★ albedo_index は生の uint32 なので、TextureId へ包み直して照合する必要がある。
-    //   ここが「ハンドルを構造体にした」ことの副作用で、一番読み替えを忘れやすい箇所:
-    //    MaterialData は GPU レイアウトなので generation を持てず、index しか入らない。
-    //    → add() の引数を MaterialData + scene::TextureId albedo の2本立てにして、
-    //      世代照合を済ませてから resolved.albedo_index = albedo.index を入れる形が素直。
-    //      （MaterialData をそのまま受ける現在の形のままだと、
-    //        「index だけで contains できない」ので照合が成立しない）
-    if (textures_->contains(albedo)) {
-        resolved.albedo_index = albedo.index;
-    } else {
-        resolved.albedo_index = textures_->default_texture().index;
-    }
-
+    //   2. 5スロットぶんのフォールバック解決（phase15 ③-3）:
+    MaterialData resolved = resolve_textures(data, textures);
 
     //   3. GPU へ書く
     buffer_->write(index, resolved);
@@ -122,13 +109,53 @@ scene::MaterialId MaterialRegistry::default_material() const {
     return default_material_;
 }
 
-void MaterialRegistry::update(scene::MaterialId id, const MaterialData& data) {
+void MaterialRegistry::update(scene::MaterialId id, const MaterialData& data,
+                              const scene::MaterialTextures& textures) {
     // contains(id) でなければ何もしない
     // ★ GPU が読んでいる最中に書き換えると壊れる。このフェーズでは起動時専用。
     if (contains(id)) {
-        slots_[id.index].data = data;
-        buffer_->write(id.index, data);
+        const MaterialData resolved = resolve_textures(data, textures);
+        slots_[id.index].data = resolved;
+        buffer_->write(id.index, resolved);
     }
+}
+
+//   各スロットについて:
+//     1. textures_->contains(textures.<slot>) なら .index を使う
+//     2. そうでなければ上記の中立テクスチャの .index を使う
+//   ★ 「無効なハンドル」と「未登録のハンドル」はどちらも textures_->default_texture()
+//     （市松模様）にしないこと。テクスチャを持たないのは異常ではない（phase14 ③ の方針）。
+MaterialData MaterialRegistry::resolve_textures(const MaterialData& data,
+                                                const scene::MaterialTextures& textures) const {
+    MaterialData result = {
+        .base_color = data.base_color,
+        .emissive = data.emissive,
+        .metallic = data.metallic,
+        .roughness = data.roughness,
+        .alpha_cutoff = data.alpha_cutoff
+    };
+
+    result.albedo_index = textures_->contains(textures.albedo)
+        ? textures.albedo.index
+        : textures_->white_texture().index;
+
+    result.normal_index = textures_->contains(textures.normal)
+        ? textures.normal.index
+        : textures_->flat_normal_texture().index;
+
+    result.metallic_roughness_index = textures_->contains(textures.metallic_roughness)
+        ? textures.metallic_roughness.index
+        : textures_->white_texture().index;
+
+    result.occlusion_index = textures_->contains(textures.occlusion)
+        ? textures.occlusion.index
+        : textures_->white_texture().index;
+
+    result.emissive_index = textures_->contains(textures.emissive)
+        ? textures.emissive.index
+        : textures_->white_texture().index;
+
+    return result;
 }
 
 }  // namespace sq::graphics

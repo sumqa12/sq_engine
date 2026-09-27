@@ -753,6 +753,41 @@ layout(location = 5) out vec3 frag_bitangent;
 - metallicRoughness テクスチャを持つモデルで、部位ごとに金属感が変わること（一様ならチャンネルの取り違えを疑う）。
 - 組み込みジオメトリ（cube / plane）が接線追加後も正しく表示されること。
 
+### ③-8. 作業チェックリスト（コード内 TODO と対応）
+
+宣言と TODO コメントは投入済み。`TODO(③` で grep すると残りの実装箇所が一覧できる。
+
+| # | 作業 | 場所 | 状態 |
+|---|---|---|---|
+| 1 | `Texture` に `VkFormat` 引数（既定値なし） | [texture.hpp](../../engine/include/sq/graphics/texture.hpp) | 宣言済み |
+| 2 | `create_from_pixels` 内の3箇所を `format` に差し替え | [texture.cpp](../../engine/src/graphics/texture.cpp) `TODO(③-1 ... 1/3〜3/3)` | 未 |
+| 3 | `load` / `load_from_pixels` に `format`、`by_path_` を `{path, format}` キーへ | [texture_registry.hpp](../../engine/include/sq/graphics/texture_registry.hpp) / [.cpp](../../engine/src/graphics/texture_registry.cpp) | 宣言済み / 本体未 |
+| 4 | `create_flat_normal_texture()`（UNORM の (128,128,255,255)） | [texture_registry.cpp](../../engine/src/graphics/texture_registry.cpp) `TODO(③-2)` | 未 |
+| 5 | 既定アセット登録に flat normal を追加、`load` に SRGB を明示 | [renderer.cpp](../../engine/src/graphics/renderer.cpp) `TODO(③-1)` / `TODO(③-2)` | 未 |
+| 6 | `MaterialData` 48 → 64 バイト（4スロット追加・`alpha_cutoff` 既定 0.0） | [material_data.hpp](../../engine/include/sq/graphics/material_data.hpp) | 済 |
+| 7 | `MaterialTextures` 構造体 | [material.hpp](../../engine/include/sq/scene/material.hpp) | 済 |
+| 8 | `add` / `update` を `MaterialTextures` 受けに、`resolve_textures` を実装 | [material_registry.cpp](../../engine/src/graphics/material_registry.cpp) `TODO(③-3)` | 宣言済み / 本体未 |
+| 9 | `Vertex::tangent`（vec4） | [mesh.hpp](../../engine/include/sq/graphics/mesh.hpp) | 済 |
+| 10 | 頂点属性 location=3 の追加と `vertexAttributeDescriptionCount` 3→4 | [graphics_pipeline.cpp](../../engine/src/graphics/graphics_pipeline.cpp) `TODO(③-4)` | 未 |
+| 11 | cube / plane の頂点データに面ごとの接線 | [mesh_registry.cpp](../../engine/src/graphics/mesh_registry.cpp) `TODO(③-4 / D-7)` | 未（現状ビルド不可） |
+| 12 | 用途別フォーマット表 → `load_images` へ渡す | [gltf_loader.cpp](../../engine/src/assets/gltf_loader.cpp) `TODO(③-5 (A))` | 未 |
+| 13 | 追加テクスチャスロット4枚を `MaterialTextures` へ | 同上 `TODO(③-5 (B))` | 未 |
+| 14 | `alphaMode` による `alpha_cutoff` の分岐 | 同上 `TODO(③-5 (C))` | 未 |
+| 15 | NORMAL 欠損時の面法線生成（`compute_flat_normals`） | 同上 `TODO(③-5 (E))` | 未 |
+| 16 | TANGENT の読み出しと欠損時の生成（`generate_tangents`） | 同上 `TODO(③-4)` | 未 |
+| 17 | vert: TANGENT 入力・接空間の出力2本 | [triangle.vert](../../shaders/triangle.vert) `TODO(③-4)` / `TODO(③-6)` | 未 |
+| 18 | frag: `MaterialData` の4スロット追加（★ stride がずれる） | [triangle.frag](../../shaders/triangle.frag) `TODO(③-3)` | 未 |
+| 19 | frag: TBN で法線マップ適用、MR / AO / emissive の合成 | 同上 `TODO(③-6)` | 未 |
+| 20 | 検証（③-7） | — | 未 |
+
+> ★ 9 と 11 は**ペア**。`Vertex` に `tangent` が入った時点で `add_cube_mesh` / `add_plane_mesh` の
+> 位置指定初期化（`{pos, normal, uv}`）は 3 番目が `tangent` になるためコンパイルが通らない。
+> これは意図した「気付ける壊れ方」で、11 を済ませるまでビルドは通らない。
+> `add_sphere_mesh` は指定付き初期化なので影響を受けない（`tangent` は既定値のまま＝要修正）。
+>
+> ★ 2・3 を終える前に 18 を先に入れると、stride の食い違いでマテリアルの見た目が
+> 総崩れになる。**6 → 18 は同じコミットで揃えること**。
+
 ---
 
 ## 実装手順（この順で、各ステップ完了ごとに動作確認・コミット）

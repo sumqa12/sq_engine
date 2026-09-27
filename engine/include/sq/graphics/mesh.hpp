@@ -21,10 +21,22 @@ namespace sq::graphics {
     //   vec3 → vec3 で offset も同じなので、**直さなくてもコンパイルもバリデーションも通る**。
     //   気付かずに法線を色として使い続ける事故が起きやすい。
     //   シェーダ側の変数名（in_color → in_normal）も必ず直して、意味のずれを残さないこと。
+    // phase15 ③-4 / D-7: 接空間を頂点属性 TANGENT で持つ。
+    //   xyz = 接線、w = 従法線の符号(±1)。glTF の TANGENT アクセサと同じ形。
+    //
+    // なぜ w が要るのか:
+    //   従法線は B = cross(N, T) * w で求める。UV がミラーリングされている面では
+    //   従法線の向きが反転するため、その1ビットを符号として持ち運ぶ必要がある
+    //   （常に +1 にすると、左右対称なモデルの片側だけ凹凸が反転する）。
+    //
+    // ★ デフォルト値 {0,0,0,1} は「無効な接線」であって「正しい接線」ではない。
+    //   組み込みジオメトリ（cube/plane）は面ごとに正しい値を入れること（mesh_registry.cpp）。
+    //   glTF に TANGENT が無いモデルは gltf_loader.cpp 側で UV から生成する（③-4）。
     struct Vertex {
         glm::vec3 position;
         glm::vec3 normal;
-        glm::vec2 uv;  // テクスチャ座標（0..1）。graphics_pipelineのattribute location=2 と対応。
+        glm::vec4 tangent{0.0f, 0.0f, 0.0f, 1.0f};
+        glm::vec2 uv;  // テクスチャ座標（0..1）。graphics_pipelineのattribute location と対応。
     };
 
     // 頂点データをGPUメモリに保持するRAIIラッパー。

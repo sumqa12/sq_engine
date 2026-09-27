@@ -6,7 +6,8 @@
 
 namespace sq::graphics {
 
-// マテリアル1件のGPU側レイアウト（phase14 ① / D-1）。SSBO の配列要素になる。
+// マテリアル1件のGPU側レイアウト（phase14 ① / D-1、phase15 ③-3 で64バイトへ拡張）。
+// SSBO の配列要素になる。
 //
 // なぜ InstanceData から切り出すのか:
 //   phase13 までは base_color / texture_index を体ごとの InstanceData に埋めていた。
@@ -15,22 +16,30 @@ namespace sq::graphics {
 //   マテリアルの実体は1つでよいので、共有の配列へ追い出して添字だけを持たせる。
 //
 // ★ シェーダの std430 ブロックと**完全に一致**させること（InstanceData と同じ規則）。
-//   vec4 は16バイト境界に揃う。後半の float/uint は4個並べてちょうど16バイトになっており、
-//   これによって構造体全体が 48 バイト（16の倍数）に収まっている。
+//   vec4 は16バイト境界に揃う。uint 4本を並べてちょうど16バイトになっており、
+//   これによって構造体全体が 64 バイト（16の倍数）に収まっている。
 struct MaterialData {
     glm::vec4 base_color{1.0f};      // offset  0, 16  テクスチャに乗算する色（a は不透明度）
     glm::vec4 emissive{0.0f};        // offset 16, 16  自己発光（w は未使用。将来 strength）
     float metallic = 0.0f;           // offset 32,  4
     float roughness = 1.0f;          // offset 36,  4
-    float alpha_cutoff = 0.5f;       // offset 40,  4  （MASK モード用。将来使う）
-    std::uint32_t albedo_index = 0;  // offset 44,  4  bindless テクスチャ配列の添字
 
-    // 将来（phase15）: normal_index / metallic_roughness_index / occlusion_index / emissive_index
-    // ★ ここに uint を足すときは、合計が16の倍数になるようパディングを調整すること。
+    // ★ phase15 ②-2 で alpha_cutoff == 0 を「MASK 無効」の約束にしたため、
+    //   既定値を 0.5 → 0.0 に変えた（0.5 のままだと全マテリアルが MASK 扱いになる）。
+    float alpha_cutoff = 0.0f;       // offset 40,  4  （MASK モード用）
+
+    std::uint32_t albedo_index = 0;             // offset 44,  4  bindless テクスチャ配列の添字
+    std::uint32_t normal_index = 0;             // offset 48,  4  ← phase15 ③-3 で追加
+    std::uint32_t metallic_roughness_index = 0; // offset 52,  4  ← phase15 ③-3 で追加
+    std::uint32_t occlusion_index = 0;          // offset 56,  4  ← phase15 ③-3 で追加
+    std::uint32_t emissive_index = 0;           // offset 60,  4  ← phase15 ③-3 で追加
+
+    // ★ ここに項目を足すときは、合計が16の倍数になるようパディングを調整すること。
 };
 
-static_assert(sizeof(MaterialData) == 48, "std430 のレイアウトと一致させること");
+static_assert(sizeof(MaterialData) == 64, "std430 のレイアウトと一致させること");
 static_assert(offsetof(MaterialData, emissive) == 16, "シェーダ側のメンバ順と一致させること");
 static_assert(offsetof(MaterialData, albedo_index) == 44, "シェーダ側のメンバ順と一致させること");
+static_assert(offsetof(MaterialData, emissive_index) == 60, "シェーダ側のメンバ順と一致させること");
 
 }  // namespace sq::graphics

@@ -42,17 +42,21 @@ public:
 
     // マテリアルを登録し MaterialId を返す。
     //
-    // ★ data.albedo_index が未登録のテクスチャを指していれば、ここで
-    //   textures_->default_texture() に差し替える（phase13 まで収集フェーズでやっていた
-    //   フォールバックの移設先。マテリアルが添字を持つようになったため、
-    //   毎フレーム毎エンティティで判定する必要がなくなった）。
+    // ★ textures の各スロットが無効／未登録のテクスチャを指していれば、resolve_textures
+    //   （phase15 ③-3）が用途ごとの中立テクスチャへ解決する。用途ごとにフォールバック先が
+    //   違う点に注意（scene::MaterialTextures のコメント参照）:
+    //     albedo             → textures_->white_texture()
+    //     normal             → textures_->flat_normal_texture()
+    //     metallic_roughness → textures_->white_texture()
+    //     occlusion          → textures_->white_texture()
+    //     emissive           → textures_->white_texture()
     //
     // ★ 重複排除はしない（phase14 ① で決定）。同じ内容の MaterialData を2回渡せば
     //   2件登録される。TextureRegistry の by_path_ 相当を入れないのは、
     //   キーが「パス1本」ではなく MaterialData 全体になり、operator== とハッシュの
-    //   定義が要るわりに、1件48バイトなので重複してもメモリ的にはほぼ無害なため。
+    //   定義が要るわりに、1件64バイトなので重複してもメモリ的にはほぼ無害なため。
     //   ★ glTF（③）は model.materials を1回だけ走査するので、1ファイル内では重複しない。
-    scene::MaterialId add(const MaterialData& data, scene::TextureId albedo);
+    scene::MaterialId add(const MaterialData& data, const scene::MaterialTextures& textures);
 
     [[nodiscard]] bool contains(scene::MaterialId id) const;
 
@@ -72,9 +76,21 @@ public:
     // 登録済みの内容を1件だけ書き換える（デバッグ・エディタ用途）。
     // ★ GPU が読んでいる最中に書き換えると壊れる。呼ぶ側が vkDeviceWaitIdle するか、
     //   フレーム複製する必要がある。このフェーズでは「起動時のみ」の前提で使うこと。
-    void update(scene::MaterialId id, const MaterialData& data);
+    //
+    // ★ phase15 ③-3: add と同じ resolve_textures を通すこと。update だけ生の
+    //   MaterialData を受けて素通しにすると、add で効いていたフォールバックが
+    //   update 経由の書き換えでは効かない、という片手落ちが起きる。
+    void update(scene::MaterialId id, const MaterialData& data, const scene::MaterialTextures& textures);
 
 private:
+    // add / update が共有するテクスチャ解決処理（phase15 ③-3）。
+    // data の各 *_index を textures の対応スロットで上書きした MaterialData を返す。
+    //
+    // ★ 括り出す理由: phase14 で Texture::create_from_pixels を括り出したのと同じで、
+    //   ここを1本にしておかないと「add だけ直して update を直し忘れる」事故が起きる。
+    [[nodiscard]] MaterialData resolve_textures(const MaterialData& data,
+                                                const scene::MaterialTextures& textures) const;
+
     VkDevice device_ = VK_NULL_HANDLE;
     const TextureRegistry* textures_ = nullptr;  // 所有しない（Renderer が所有）
     VkDescriptorSet asset_set_ = VK_NULL_HANDLE; // 所有しない（プール破棄でまとめて解放される）

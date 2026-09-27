@@ -42,10 +42,10 @@ TextureRegistry::~TextureRegistry() {
     by_path_.clear();
 }
 
-scene::TextureId TextureRegistry::load(const std::string& path) {
+scene::TextureId TextureRegistry::load(const std::string& path, VkFormat format) {
     // （phase12 手順4）:
     //  1. 既にロード済みなら再利用する（同じ画像を何体が参照してもロードは1回）:
-    if (auto it = by_path_.find(path); it != by_path_.end()) { return it->second; }
+    if (auto it = by_path_.find({path, format}); it != by_path_.end()) { return it->second; }
 
     // スロット確保に置き換える。
     //   1. free_indices_ が空でなければ末尾から再利用、空なら slots_.emplace_back()
@@ -72,19 +72,20 @@ scene::TextureId TextureRegistry::load(const std::string& path) {
 
     //  3. テクスチャ本体を読み込む:
     auto texture = std::make_unique<Texture>(
-        physical_device_, device_, *allocator_, queue_family_, queue_, path);
+        physical_device_, device_, *allocator_, queue_family_, queue_, path, format);
 
     //  4. テクスチャの登録
     scene::TextureId id = register_texture(std::move(texture), index);
 
     //  5. パスの登録
-    by_path_.emplace(path, id);
+    by_path_.emplace(std::pair{path, format}, id);
 
     return id;
 }
 
 scene::TextureId TextureRegistry::load_from_pixels(const unsigned char* pixels,
-                                                   std::uint32_t width, std::uint32_t height) {
+                                                   std::uint32_t width, std::uint32_t height,
+                                                   VkFormat format) {
     //   load() と同じ流れ。違うのは
     //     - by_path_ の照会・登録をしない（パスが無い）
     //     - Texture をピクセル列版のコンストラクタで作る
@@ -108,7 +109,7 @@ scene::TextureId TextureRegistry::load_from_pixels(const unsigned char* pixels,
     //  2. テクスチャ本体を読み込む
     auto texture = std::make_unique<Texture>(
         physical_device_, device_, *allocator_, queue_family_, queue_,
-        pixels, width, height);
+        pixels, width, height, format);
 
     //  3. テクスチャの登録してidを返す
     return register_texture(std::move(texture), index);
@@ -164,8 +165,21 @@ scene::TextureId TextureRegistry::create_white_texture() {
         return white_texture_;
     }
     constexpr unsigned char kWhite[4] = { 255, 255, 255, 255 };
-    white_texture_ = load_from_pixels(kWhite, 1, 1);
+    // white は sRGB/UNORM のどちらで読んでも 1.0 なので、フォーマットは
+    //   どちらでもよいが、慣習として VK_FORMAT_R8G8B8A8_SRGB を渡す。
+    white_texture_ = load_from_pixels(kWhite, 1, 1, VK_FORMAT_R8G8B8A8_SRGB);
     return white_texture_;
+}
+
+scene::TextureId TextureRegistry::create_flat_normal_texture() {
+    if (contains(flat_normal_texture_)) {
+        return flat_normal_texture_;
+    }
+    constexpr unsigned char kFlatNormal[4] = { 128, 128, 255, 255 };
+
+    // フォーマットは必ずUNORM
+    flat_normal_texture_ = load_from_pixels(kFlatNormal, 1, 1, VK_FORMAT_R8G8B8A8_UNORM);
+    return flat_normal_texture_;
 }
 
 scene::TextureId TextureRegistry::default_texture() const {
@@ -174,6 +188,10 @@ scene::TextureId TextureRegistry::default_texture() const {
 
 scene::TextureId TextureRegistry::white_texture() const {
     return white_texture_;
+}
+
+scene::TextureId TextureRegistry::flat_normal_texture() const {
+    return flat_normal_texture_;
 }
 
 void TextureRegistry::unload(scene::TextureId id) {

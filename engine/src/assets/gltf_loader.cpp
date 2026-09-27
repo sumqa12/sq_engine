@@ -223,6 +223,116 @@ template <typename T>
     return result;
 }
 
+// -- 1.5. 接空間・法線の生成（phase15 ③-4 / ③-5 (E)）-------------------------
+
+// 面法線を頂点へ累積して正規化する（NORMAL が無い glTF 用。phase15 ③-5 (E)）。
+//
+// ★ 仕様上は「NORMAL が無ければフラットシェーディング」だが、頂点を共有したまま
+//   平均化すると厳密なフラットにはならない（このフェーズはそれでよいとする）。
+[[nodiscard]] std::vector<glm::vec3> compute_flat_normals(const std::vector<glm::vec3>& positions,
+                                                          const std::vector<std::uint32_t>& indices) {
+    std::vector<glm::vec3> result;
+    result.resize(positions.size());
+    for (int i = 0; i + 2 < indices.size(); i += 3) {
+        std::size_t idx0 = indices[i], idx1 = indices[i + 1], idx2 = indices[i + 2];
+        glm::vec3 p0 = positions[idx0];
+        glm::vec3 p1 = positions[idx1];
+        glm::vec3 p2 = positions[idx2];
+
+        glm::vec3 normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+
+        result[idx0] += normal;
+        result[idx1] += normal;
+        result[idx2] += normal;
+    }
+
+    for (auto& normal : result) {
+        normal = glm::normalize(normal);
+    }
+
+    return result;
+}
+
+// TANGENT が無い glTF 用に、UV から接線を生成する（phase15 ③-4 / D-7）。
+[[nodiscard]] std::vector<glm::vec4> generate_tangents(const std::vector<glm::vec3>& positions,
+                                                       const std::vector<glm::vec3>& normals,
+                                                       const std::vector<glm::vec2>& tex_coords,
+                                                       const std::vector<std::uint32_t>& indices) {
+    // 1. 各三角形ごとに接線と従法線を計算して蓄積
+    std::vector<glm::vec3> tan_accum;
+    std::vector<glm::vec3> bitan_accum;
+    tan_accum.resize(positions.size());
+    bitan_accum.resize(positions.size());
+    for (int i = 0; i + 2 < indices.size(); i += 3) {
+        std::size_t idx0 = indices[i], idx1 = indices[i + 1], idx2 = indices[i + 2];
+        glm::vec3 p0 = positions[idx0], p1 = positions[idx1], p2 = positions[idx2];
+        glm::vec2 uv0 = tex_coords[idx0], uv1 = tex_coords[idx1], uv2 = tex_coords[idx2];
+
+        // 位置ベクトルの差分
+        glm::vec3 edge1 = p1 - p0, edge2 = p2 - p0;
+
+        // UV座標の差分
+        glm::vec2 duv1 = uv1 - uv0, duv2 = uv2 - uv0;
+
+        // 行列式の逆数を計算
+        float det = duv1.x * duv2.y - duv2.x * duv1.y;
+
+        glm::vec3 tan;
+        glm::vec3 bitan;
+        if (glm::abs(det) < 1e-5) {
+            // UVが縮退しているならスキップ
+            continue;
+        } else {
+            float f = 1.0f / det;
+            tan = f * (duv2.y * edge1 - duv1.y * edge2);
+            bitan = f * (-duv2.x * edge1 + duv1.x * edge2);
+        }
+
+        // 頂点ごとに累積
+        tan_accum[idx0] += tan;
+        tan_accum[idx1] += tan;
+        tan_accum[idx2] += tan;
+
+        bitan_accum[idx0] += bitan;
+        bitan_accum[idx1] += bitan;
+        bitan_accum[idx2] += bitan;
+    }
+
+    // glTF規格に合わせた4次元接線ベクトルの作成 (X, Y, Z, W)
+    // Wは従法線（Bitangent）の向き（反転フラグ: 1.0 または -1.0）
+    std::vector<glm::vec4> result;
+    result.resize(positions.size());
+
+    // 2. グラム・シュミットの直交化とW成分の決定
+    for (int i = 0; i < positions.size(); ++i) {
+        glm::vec3 n = normals[i];
+        glm::vec3 t = tan_accum[i];
+        glm::vec3 b = bitan_accum[i];
+
+        // 長さがゼロに近い場合の安全処理
+        if (glm::length(t) < 1e-5) {
+            t = glm::abs(n[0]) < 0.9 ? glm::vec3{1.0, 0.0, 0.0} : glm::vec3{0.0, 1.0, 0.0};
+        }
+
+        // 法線に対して直交化: t = t - n * (n_dot_t)
+        glm::vec3 t_ortho = t - n * glm::dot(n, t);
+
+        // 規格化 (正規化)
+        if (float norm = glm::length(t_ortho); norm > 1e-5) {
+            t_ortho /= norm;
+        } else {
+            t_ortho = {1.0, 0.0, 0.0}; // フォールバック
+        }
+
+        // 向き（W成分）の計算。外積と元の従法線の方向を比較
+        float w = glm::dot(glm::cross(n, t_ortho), b) >= 0.0 ? 1.0f : -1.0f;
+
+        result[i] = {t_ortho, w};
+    }
+
+    return result;
+}
+
 // -- 2. 画像・テクスチャ ------------------------------------------------------
 
 // tinygltf::Image のピクセル列を RGBA8 に揃える。
@@ -260,27 +370,91 @@ template <typename T>
     return false;
 }
 
-// model.images をすべて登録し、「glTF内の image 添字 → TextureId」の対応表を返す。
-[[nodiscard]] std::vector<scene::TextureId> load_images(const tinygltf::Model& model,
-                                                        graphics::TextureRegistry& textures) {
+// image ごとの「どちらの用途で要求されたか」（両方 true になり得る）
+struct ImageUsage {
+    bool srgb  = false;
+    bool unorm = false;
+};
 
-    std::vector<scene::TextureId> result;
+//「image 添字 → 用途フォーマット」の表を作る。
+[[nodiscard]] std::vector<ImageUsage> determine_image_formats(const tinygltf::Model& model) {
+
+    std::vector<ImageUsage> result;
+    std::size_t image_size = model.images.size();
+    result.resize(image_size);
+    for (auto& material : model.materials) {
+        int idx0 = material.pbrMetallicRoughness.baseColorTexture.index;
+        int idx1 = material.emissiveTexture.index;
+        int idx2 = material.normalTexture.index;
+        int idx3 = material.pbrMetallicRoughness.metallicRoughnessTexture.index;
+        int idx4 = material.occlusionTexture.index;
+        int source;
+        if (idx0 != -1) {
+            source = model.textures[idx0].source;
+            if (source >= 0 && source < image_size) result[source].srgb = true;
+        }
+        if (idx1 != -1) {
+            source = model.textures[idx1].source;
+            if (source >= 0 && source < image_size) result[source].srgb = true;
+        }
+        if (idx2 != -1) {
+            source = model.textures[idx2].source;
+            if (source >= 0 && source < image_size) result[source].unorm = true;
+        }
+        if (idx3 != -1) {
+            source = model.textures[idx3].source;
+            if (source >= 0 && source < image_size) result[source].unorm = true;
+        }
+        if (idx4 != -1) {
+            source = model.textures[idx4].source;
+            if (source >= 0 && source < image_size) result[source].unorm = true;
+        }
+    }
+
+    return result;
+}
+
+// 用途別に2本の対応表を返す（どちらも model.images.size() 個。
+// 使われない用途の要素は無効ハンドルのまま＝ロードもしない）
+struct ImageTables {
+    std::vector<scene::TextureId> srgb;
+    std::vector<scene::TextureId> unorm;
+};
+
+// model.images をすべて登録し、「glTF内の image 添字 → TextureId」の対応表を返す。
+[[nodiscard]] ImageTables load_images(const tinygltf::Model& model,
+                                      graphics::TextureRegistry& textures,
+                                      const std::vector<ImageUsage>& usages) {
+
+    ImageTables result;
 
     //   1. サイズの確保
-    result.reserve(model.images.size());
+    result.srgb.resize(model.images.size());
+    result.unorm.resize(model.images.size());
 
     //   2. 各 image について to_rgba8 → TextureRegistry::load_from_pixels
-    for (auto& image : model.images) {
+    for (int i = 0; i < model.images.size(); i++) {
+        if (!usages[i].srgb && !usages[i].unorm) continue; // 未参照 → 読まない
+
+        auto& image = model.images[i];
         std::vector<unsigned char> pixels;
-        scene::TextureId id;
-        if (to_rgba8(image, pixels)) {
-            id = textures.load_from_pixels(pixels.data(), static_cast<std::uint32_t>(image.width), static_cast<std::uint32_t>(image.height));
-        } else {
-            // 失敗した場合、規定テクスチャを入れる（入れないとずれる）
+        if (!to_rgba8(image, pixels)) {
             spdlog::warn("load_images : rgba8への変換に失敗しました。");
-            id = textures.default_texture();
+            continue;
         }
-        result.push_back(id);
+
+        if (usages[i].srgb) {
+            result.srgb[i]  = textures.load_from_pixels(pixels.data(),
+                static_cast<std::uint32_t>(image.width), static_cast<std::uint32_t>(image.height),
+                VK_FORMAT_R8G8B8A8_SRGB
+            );
+        }
+        if (usages[i].unorm) {
+            result.unorm[i] = textures.load_from_pixels(pixels.data(),
+                static_cast<std::uint32_t>(image.width), static_cast<std::uint32_t>(image.height),
+                VK_FORMAT_R8G8B8A8_UNORM
+            );
+        }
     }
 
     return result;
@@ -333,7 +507,7 @@ struct LoadedMaterial {
 
 // model.materials をすべて登録し、「glTF内の material 添字 → 登録結果」の対応表を返す。
 [[nodiscard]] std::vector<LoadedMaterial> load_materials(const tinygltf::Model& model,
-                                                         const std::vector<scene::TextureId>& image_ids,
+                                                         const ImageTables& tables,
                                                          graphics::TextureRegistry& textures,
                                                          graphics::MaterialRegistry& materials) {
 
@@ -366,21 +540,37 @@ struct LoadedMaterial {
             static_cast<float>(material.emissiveFactor[2]),
             0
         );
+        // alphaMode で alpha_cutoff の意味を分ける（②-2 の約束: 0 なら MASK 無効）。
+        //   "BLEND"  → alpha_cutoff = 0.0（transparent = true。下の LoadedMaterial で設定）
+        //   "MASK"   → alpha_cutoff = material.alphaCutoff（既定 0.5）
+        //   "OPAQUE" → alpha_cutoff = 0.0
         graphics::MaterialData material_data = {
             .base_color = base_color,
             .emissive =  emissive,
             .metallic = static_cast<float>(material.pbrMetallicRoughness.metallicFactor),
             .roughness = static_cast<float>(material.pbrMetallicRoughness.roughnessFactor),
-            .alpha_cutoff = static_cast<float>(material.alphaCutoff),
+            .alpha_cutoff = material.alphaMode == "MASK" ? static_cast<float>(material.alphaCutoff) : 0.0f,
         };
 
         spdlog::info("base_color: {}, {}, {}, {}", base_color.r, base_color.g, base_color.b, base_color.a);
 
-        scene::TextureId texture = resolve_texture(model, image_ids,
-            material.pbrMetallicRoughness.baseColorTexture.index, textures);
+        scene::MaterialTextures material_textures = {
+            .albedo = resolve_texture(model, tables.srgb,
+                material.pbrMetallicRoughness.baseColorTexture.index, textures),
+            .normal = resolve_texture(model, tables.unorm,
+                material.normalTexture.index, textures),
+            .metallic_roughness = resolve_texture(model, tables.unorm,
+                material.pbrMetallicRoughness.metallicRoughnessTexture.index, textures),
+            .occlusion = resolve_texture(model, tables.unorm,
+                material.occlusionTexture.index, textures),
+            .emissive = resolve_texture(model, tables.srgb,
+                material.emissiveTexture.index, textures)
+        };
 
+        // ★ glTF の metallicRoughness は G=roughness, B=metallic。occlusion は R チャンネル
+        //   （ORM テクスチャなら metallicRoughness と同一画像を指すことが多い）。
         LoadedMaterial loaded_material = {
-            .id = materials.add(material_data, texture),
+            .id = materials.add(material_data, material_textures),
             .transparent = material.alphaMode == "BLEND"
         };
         result.push_back(loaded_material);
@@ -403,15 +593,13 @@ struct LoadedMaterial {
         return std::nullopt;
     }
 
-    //   2. 属性を読む。find で存在を確かめてから read_accessor へ:
-    //        POSITION   … 必須。無ければ warn + nullopt
-    //        NORMAL     … 無ければ {0,1,0} で埋める（phase15 のライティングまで見た目に出ない）
-    //        TEXCOORD_0 … 無ければ {0,0} で埋める
-    //      ★ 3つの配列は**長さが揃っている前提**。揃っていなければ壊れた glTF なので
-    //        warn + nullopt にする（短い方に合わせて読むと静かに壊れる）。
+    //   2. 属性を読む。
+    //   ★ 3つの配列は**長さが揃っている前提**。揃っていなければ壊れた glTF
+    //     warn + nullopt にする（短い方に合わせて読むと静かに壊れる）。
     std::vector<glm::vec3> positions;
     std::vector<glm::vec3> normals;
     std::vector<glm::vec2> tex_coords;
+    std::vector<glm::vec4> tangents;
     if (auto it = primitive.attributes.find("POSITION"); it == primitive.attributes.end()) {
         spdlog::warn("load_primitive : プリミティブにPOSITION属性がありません。");
         return std::nullopt;
@@ -419,11 +607,18 @@ struct LoadedMaterial {
         positions = read_accessor<glm::vec3>(model, it->second);
     }
 
+    //   インデックス
+    std::vector<uint32_t> indices;
+    if (primitive.indices < 0) {
+        indices.resize(positions.size());
+        std::iota(indices.begin(), indices.end(), 0u);
+    } else {
+        indices = read_indices(model, primitive.indices);
+    }
+
+    //   法線
     if (auto it = primitive.attributes.find("NORMAL"); it == primitive.attributes.end()) {
-        normals.reserve(positions.size());
-        for (std::size_t i = 0; i < positions.size(); ++i) {
-            normals.emplace_back(0, 1, 0);
-        }
+        normals = compute_flat_normals(positions, indices);
     } else {
         normals = read_accessor<glm::vec3>(model, it->second);
         if (positions.size() != normals.size()) {
@@ -432,6 +627,7 @@ struct LoadedMaterial {
         }
     }
 
+    //   テクスチャ座標
     if (auto it = primitive.attributes.find("TEXCOORD_0"); it == primitive.attributes.end()) {
         tex_coords.reserve(positions.size());
         for (std::size_t i = 0; i < positions.size(); ++i) {
@@ -445,28 +641,28 @@ struct LoadedMaterial {
         }
     }
 
+    //   TANGENT
+    if (auto it = primitive.attributes.find("TANGENT"); it == primitive.attributes.end()) {
+        tangents = generate_tangents(positions, normals, tex_coords, indices);
+    } else {
+        tangents = read_accessor<glm::vec4>(model, it->second);
+        if (positions.size() != tangents.size()) {
+            spdlog::warn("load_primitive : プリミティブのPOSISION属性とTANGENT属性の要素数が等しくありません");
+            return std::nullopt;
+        }
+    }
 
-    //   3. std::vector<Vertex> を組む（position / normal / uv を i 番目ずつ詰める）
+    //   3. std::vector<Vertex> を組む（position / normal / tangent / uv を i 番目ずつ詰める）
     std::vector<graphics::Vertex> vertices;
     vertices.reserve(positions.size());
     for (int i = 0; i < positions.size(); ++i) {
         graphics::Vertex vertex = {
             .position = positions[i],
             .normal = normals[i],
-            .uv = tex_coords[i],
+            .tangent = tangents[i],
+            .uv = tex_coords[i]
         };
         vertices.emplace_back(vertex);
-    }
-
-    //   4. read_indices でインデックスを読む
-    //      ★ インデックスアクセサが無い（primitive.indices < 0）モデルがある。
-    //        その場合は 0,1,2,... を生成する（非インデックス描画の代わり）。
-    std::vector<uint32_t> indices;
-    if (primitive.indices < 0) {
-        indices.resize(positions.size());
-        std::iota(indices.begin(), indices.end(), 0u);
-    } else {
-        indices = read_indices(model, primitive.indices);
     }
 
     //   5. 頂点数が 65536 を超えるか、インデックスの最大値が 65535 を超えるなら
@@ -574,9 +770,10 @@ LoadedModel load_gltf(const std::string& path,
     }
 
     // (2)(3) アセットを登録して対応表を作る
-    const std::vector<scene::TextureId> image_ids = load_images(model, textures);
+    const std::vector<ImageUsage> image_usages = determine_image_formats(model);
+    const ImageTables image_tables = load_images(model, textures, image_usages);
     const std::vector<LoadedMaterial> material_table =
-        load_materials(model, image_ids, textures, materials);
+        load_materials(model, image_tables, textures, materials);
 
     // (4) メッシュ。glTF の mesh 1件が複数プリミティブを持つので、
     //     「mesh 添字 → プリミティブの並び」の二次元の対応表になる。
