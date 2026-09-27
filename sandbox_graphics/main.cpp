@@ -395,26 +395,31 @@ int main() {
     // ---- phase14 ③: glTF モデルの読み込みと配置 ----
     // ★ assets/models/ の中身が、ビルド後に実行ファイルの隣の models/ へコピーされる
     //   （sandbox_graphics/CMakeLists.txt の POST_BUILD）。パスは実行時CWD基準。
-    std::vector<sq::assets::LoadedModel> models;
+    std::vector<std::pair<sq::assets::LoadedModel, float>> models;
     models.reserve(2);
-    models.emplace_back(sq::assets::load_gltf("models/Duck.glb",
+    models.emplace_back(
+        sq::assets::load_gltf("models/Duck.glb",
         renderer.meshes(), renderer.textures(), renderer.materials())
-    );
-    models.emplace_back(sq::assets::load_gltf("models/Box.glb",
+    , 2.0f);
+    models.emplace_back(
+        sq::assets::load_gltf("models/ABeautifulGame.glb",
         renderer.meshes(), renderer.textures(), renderer.materials())
-    );
+    , 10.0f);
+    models.emplace_back(
+        sq::assets::load_gltf("models/Box.glb",
+        renderer.meshes(), renderer.textures(), renderer.materials())
+    , 2.0f);
 
-    for (int j = 0; j < 1; ++j) {
-        for (int i = 0; i < models.size(); i++) {
-            // モデル全体をまとめて動かすための空の親を1つ作る（④ の階層の使いどころ）
-            auto& model = models[i];
-            const sq::ecs::Entity model_root = registry.create();
-            registry.add<Transform>(model_root, Transform(
-                glm::vec3(0.0f, i * 10, j * 10), glm::quat(1,0,0,0), glm::vec3(2)));
-            registry.add<WorldTransform>(model_root, WorldTransform{});
+    for (int i = 0; i < models.size(); i++) {
+        // モデル全体をまとめて動かすための空の親を1つ作る（④ の階層の使いどころ）
+        auto& model = models[i];
+        float f = i % 2 == 0 ? 5.0f : -5.0f;
+        const sq::ecs::Entity model_root = registry.create();
+        registry.add<Transform>(model_root, Transform(
+            glm::vec3(static_cast<float>(i) * f, 0, 0), glm::quat(1,0,0,0), glm::vec3(model.second)));
+        registry.add<WorldTransform>(model_root, WorldTransform{});
 
-            std::vector<sq::ecs::Entity> model_entities = sq::assets::spawn_model(registry, model, model_root);
-        }
+        std::vector<sq::ecs::Entity> model_entities = sq::assets::spawn_model(registry, model.first, model_root);
     }
     //   ★ 検証順序（③-6）。いま assets/models にあるのは Box.glb のみ:
     //     1. Box.glb（無地・バイナリ形式）→ 形が出るか・**裏返っていないか**  ← 現在ここ
