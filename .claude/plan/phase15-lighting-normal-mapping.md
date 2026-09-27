@@ -606,6 +606,12 @@ static_assert(sizeof(MaterialData) == 64, "std430 のレイアウトと一致さ
 //     テクスチャを持たないのは**正常**であって、異常通知の市松を出す場面ではない
 //     （phase14 ③ の white/default の使い分けと同じ話）。
 //
+// ★★ 最重要（③-9 バグA でここを踏んだ）: **この表を2箇所に置かないこと。**
+//    glTF ローダー側の resolve_texture が「テクスチャ無し」に対して白を返していたため、
+//    有効なハンドルが渡ってきて contains() が true になり、上の表の normal の枝が
+//    **一度も実行されなかった**。ローダー側は null ハンドル（scene::TextureId{}）を返し、
+//    中立値の決定はこの resolve_textures だけが行うこと。
+//
 // ★ MaterialRegistry::update は add と違ってフォールバック解決を通っていない。
 //   解決処理を private 関数（resolve_textures）へ括り出して**両方から呼ぶ**こと。
 //   phase14 で Texture::create_from_pixels を括り出したのと同じ理由で、
@@ -650,10 +656,20 @@ struct Vertex {
 //        edge1 = p1 - p0, edge2 = p2 - p0
 //        duv1  = uv1 - uv0, duv2 = uv2 - uv0
 //        det   = duv1.x * duv2.y - duv2.x * duv1.y
-//        ★ |det| が極小（UV が縮退した面）なら **スキップ**する。
-//          ここを弾かないと 1/det が発散し、NaN が頂点経由で周囲に伝播して
-//          「モデルの一部が消える」形で出る（原因が非常に追いにくい）。
-//        T = (edge1 * duv2.y - edge2 * duv1.y) / det
+//
+//        ★★ 訂正（③-9 バグB）: 当初ここに「|det| が極小ならスキップ」と書いたが、
+//          **絶対値の閾値で切ってはいけない**。det は「UV 空間での三角形の面積の2倍」で
+//          あって縮退の指標ではなく、UV の詰め方で決まるスケール依存量。
+//          実装が置いた 1e-5 は Duck.glb では分布の第29パーセンタイルにあたり、
+//          正常な三角形を 28.8% 捨てていた（詳細は ③-9）。
+//
+//        ★ 正しい形: 1/det の**除算そのものを廃する**。後段で頂点ごとに正規化するので
+//          必要なのは向きだけ。符号だけ残せば特異点が消え、閾値が不要になる。
+//            if (det == 0.0f) { continue; }
+//            float s = (det < 0.0f) ? -1.0f : 1.0f;
+//            T = s * (duv2.y * edge1 - duv1.y * edge2);
+//          さらに「UV 面積が小さい面ほど重みが大きい」という 1/det の悪い性質も消える。
+//        ★ 符号は落とさないこと（UV のミラーリングを表す。w の役割と同じ）。
 //      を3頂点すべてに累積する
 //   3. 頂点ごとに、法線に対してグラム・シュミット直交化して正規化:
 //        T = normalize(T - N * dot(N, T));
@@ -755,47 +771,142 @@ layout(location = 5) out vec3 frag_bitangent;
 
 ### ③-8. 作業チェックリスト（コード内 TODO と対応）
 
-宣言と TODO コメントは投入済み。`TODO(③` で grep すると残りの実装箇所が一覧できる。
+**全 20 項目 実装済み**（コミット `3d7a721`。`TODO(③` の残存はゼロ）。
+記録として残す。
 
 | # | 作業 | 場所 | 状態 |
 |---|---|---|---|
-| 1 | `Texture` に `VkFormat` 引数（既定値なし） | [texture.hpp](../../engine/include/sq/graphics/texture.hpp) | 宣言済み |
-| 2 | `create_from_pixels` 内の3箇所を `format` に差し替え | [texture.cpp](../../engine/src/graphics/texture.cpp) `TODO(③-1 ... 1/3〜3/3)` | 未 |
-| 3 | `load` / `load_from_pixels` に `format`、`by_path_` を `{path, format}` キーへ | [texture_registry.hpp](../../engine/include/sq/graphics/texture_registry.hpp) / [.cpp](../../engine/src/graphics/texture_registry.cpp) | 宣言済み / 本体未 |
-| 4 | `create_flat_normal_texture()`（UNORM の (128,128,255,255)） | [texture_registry.cpp](../../engine/src/graphics/texture_registry.cpp) `TODO(③-2)` | 未 |
-| 5 | 既定アセット登録に flat normal を追加、`load` に SRGB を明示 | [renderer.cpp](../../engine/src/graphics/renderer.cpp) `TODO(③-1)` / `TODO(③-2)` | 未 |
+| 1 | `Texture` に `VkFormat` 引数（既定値なし） | [texture.hpp](../../engine/include/sq/graphics/texture.hpp) | 済 |
+| 2 | `create_from_pixels` 内の3箇所を `format` に差し替え | [texture.cpp](../../engine/src/graphics/texture.cpp) | 済 |
+| 3 | `load` / `load_from_pixels` に `format`、`by_path_` を `{path, format}` キーへ | [texture_registry.hpp](../../engine/include/sq/graphics/texture_registry.hpp) / [.cpp](../../engine/src/graphics/texture_registry.cpp) | 済 |
+| 4 | `create_flat_normal_texture()`（UNORM の (128,128,255,255)） | [texture_registry.cpp](../../engine/src/graphics/texture_registry.cpp) | 済 |
+| 5 | 既定アセット登録に flat normal を追加、`load` に SRGB を明示 | [renderer.cpp](../../engine/src/graphics/renderer.cpp) | 済 |
 | 6 | `MaterialData` 48 → 64 バイト（4スロット追加・`alpha_cutoff` 既定 0.0） | [material_data.hpp](../../engine/include/sq/graphics/material_data.hpp) | 済 |
 | 7 | `MaterialTextures` 構造体 | [material.hpp](../../engine/include/sq/scene/material.hpp) | 済 |
-| 8 | `add` / `update` を `MaterialTextures` 受けに、`resolve_textures` を実装 | [material_registry.cpp](../../engine/src/graphics/material_registry.cpp) `TODO(③-3)` | 宣言済み / 本体未 |
+| 8 | `add` / `update` を `MaterialTextures` 受けに、`resolve_textures` を実装 | [material_registry.cpp](../../engine/src/graphics/material_registry.cpp) | 済 ★当初ここへ到達していなかった（③-9 バグA。修正済み） |
 | 9 | `Vertex::tangent`（vec4） | [mesh.hpp](../../engine/include/sq/graphics/mesh.hpp) | 済 |
-| 10 | 頂点属性 location=3 の追加と `vertexAttributeDescriptionCount` 3→4 | [graphics_pipeline.cpp](../../engine/src/graphics/graphics_pipeline.cpp) `TODO(③-4)` | 未 |
-| 11 | cube / plane の頂点データに面ごとの接線 | [mesh_registry.cpp](../../engine/src/graphics/mesh_registry.cpp) `TODO(③-4 / D-7)` | 未（現状ビルド不可） |
-| 12 | 用途別フォーマット表 → `load_images` へ渡す | [gltf_loader.cpp](../../engine/src/assets/gltf_loader.cpp) `TODO(③-5 (A))` | 未 |
-| 13 | 追加テクスチャスロット4枚を `MaterialTextures` へ | 同上 `TODO(③-5 (B))` | 未 |
-| 14 | `alphaMode` による `alpha_cutoff` の分岐 | 同上 `TODO(③-5 (C))` | 未 |
-| 15 | NORMAL 欠損時の面法線生成（`compute_flat_normals`） | 同上 `TODO(③-5 (E))` | 未 |
-| 16 | TANGENT の読み出しと欠損時の生成（`generate_tangents`） | 同上 `TODO(③-4)` | 未 |
-| 17 | vert: TANGENT 入力・接空間の出力2本 | [triangle.vert](../../shaders/triangle.vert) `TODO(③-4)` / `TODO(③-6)` | 未 |
-| 18 | frag: `MaterialData` の4スロット追加（★ stride がずれる） | [triangle.frag](../../shaders/triangle.frag) `TODO(③-3)` | 未 |
-| 19 | frag: TBN で法線マップ適用、MR / AO / emissive の合成 | 同上 `TODO(③-6)` | 未 |
-| 20 | 検証（③-7） | — | 未 |
+| 10 | 頂点属性 location=3 の追加と `vertexAttributeDescriptionCount` 3→4 | [graphics_pipeline.cpp](../../engine/src/graphics/graphics_pipeline.cpp) | 済 |
+| 11 | cube / plane の頂点データに面ごとの接線 | [mesh_registry.cpp](../../engine/src/graphics/mesh_registry.cpp) | 済 |
+| 12 | 用途別フォーマット表 → `load_images` へ渡す | [gltf_loader.cpp](../../engine/src/assets/gltf_loader.cpp) | 済 |
+| 13 | 追加テクスチャスロット4枚を `MaterialTextures` へ | 同上 | 済 |
+| 14 | `alphaMode` による `alpha_cutoff` の分岐 | 同上 | 済 |
+| 15 | NORMAL 欠損時の面法線生成（`compute_flat_normals`） | 同上 | 済 |
+| 16 | TANGENT の読み出しと欠損時の生成（`generate_tangents`） | 同上 | 済 ★当初の閾値に不具合（③-9 バグB。修正済み） |
+| 17 | vert: TANGENT 入力・接空間の出力2本 | [triangle.vert](../../shaders/triangle.vert) | 済 |
+| 18 | frag: `MaterialData` の4スロット追加（★ stride がずれる） | [triangle.frag](../../shaders/triangle.frag) | 済 |
+| 19 | frag: TBN で法線マップ適用、MR / AO / emissive の合成 | 同上 | 済 |
+| 20 | 検証（③-7） | — | 済（③-9 の2件を検出 → いずれも修正済み） |
 
-> ★ 9 と 11 は**ペア**。`Vertex` に `tangent` が入った時点で `add_cube_mesh` / `add_plane_mesh` の
+> ★ 9 と 11 は**ペア**だった。`Vertex` に `tangent` が入った時点で `add_cube_mesh` / `add_plane_mesh` の
 > 位置指定初期化（`{pos, normal, uv}`）は 3 番目が `tangent` になるためコンパイルが通らない。
-> これは意図した「気付ける壊れ方」で、11 を済ませるまでビルドは通らない。
-> `add_sphere_mesh` は指定付き初期化なので影響を受けない（`tangent` は既定値のまま＝要修正）。
+> これは意図した「気付ける壊れ方」。
 >
 > ★ 2・3 を終える前に 18 を先に入れると、stride の食い違いでマテリアルの見た目が
-> 総崩れになる。**6 → 18 は同じコミットで揃えること**。
+> 総崩れになる。**6 → 18 は同じコミットで揃える**。
+
+### ③-9. 検証で判明した2つのバグ（**修正済み**）
+
+**状態: バグA・バグB ともに修正完了。`Duck.glb` のパッチは消滅した。**
+
+`Duck.glb` だけが「面の辺に沿ったギザギザの色パッチ」を出し、`ABeautifulGame.glb`（チェス）は正常、
+`Box.glb` も正常に見える、という形で表面化した。2つのバグが Duck の条件でだけ噛み合っていた。
+
+| モデル | 法線マップ | TANGENT | 結果 |
+|---|---|---|---|
+| ABeautifulGame | 有り | 有り | 正常（どちらも踏まない） |
+| Box.glb | 無し | 無し（生成） | 正常に見える（バグAは踏むが一様に傾くだけ） |
+| Duck.glb | 無し | 無し（生成） | **破綻**（バグAが増幅器、バグBが原因） |
+
+#### バグA（修正済み） — 中立テクスチャのフォールバックが2層にあった
+
+> **修正内容**: [gltf_loader.cpp](../../engine/src/assets/gltf_loader.cpp) の `resolve_texture` で、
+> `texture_index < 0` のとき `return scene::TextureId{};`（null ハンドル）を返すようにした。
+> 用途ごとの中立値の決定は `MaterialRegistry::resolve_textures` の1箇所だけになった。
+
+`gltf_loader.cpp` の `resolve_texture` が、`texture_index < 0` のとき
+**スロットの用途に関係なく一律 `white_texture()`** を返していた。
+
+```
+white = (255,255,255) → n_tex = (1,1,1)*2-1 = (1,1,1)
+N = normalize(TBN * (1,1,1)) = normalize(T + B + Ngeo)   ← 法線が接線方向へ 54.7° 傾く
+```
+
+- ★ **③-3 で決めた `normal → flat_normal_texture()` は `MaterialRegistry::resolve_textures` に
+  正しく実装されていた。しかし到達しなかった。** `white_texture()` は有効なハンドルなので
+  `contains()` が `true` を返し、`flat_normal_texture()` の枝が死にコードになっていた。
+- ★ **教訓: 中立値の表を2箇所に置かないこと。** ローダー側は「テクスチャ無し」を
+  **null ハンドル**（`scene::TextureId{}` = `index == kInvalidIndex`）で返すだけにして、
+  用途ごとの中立値の決定は `MaterialRegistry::resolve_textures` に一本化する。
+  そちらは glTF 以外の経路（`main.cpp` が手で組むマテリアル）も通る。
+- ★ ③-2 では「法線マップを sRGB で読むと 128 が 0.22 になる最悪の壊れ方」を警告していたが、
+  実際に起きたのは**それより大きな取り違え**（128 ではなく 255）だった。
+
+#### バグB（修正済み） — `generate_tangents` の UV 縮退判定が「絶対値の閾値」だった
+
+> **修正内容**: [gltf_loader.cpp](../../engine/src/assets/gltf_loader.cpp) の `generate_tangents` で
+> `1/det` の除算を廃し、`det == 0.0f` のみスキップ・符号のみを累積する形にした（下記のコード片のとおり）。
+>
+> **修正後の実測（`Duck.glb`、同じデータで再計算）**:
+>
+> | | 破棄された三角形 | フォールバック接線の頂点 |
+> |---|---|---|
+> | 修正前 | 1211 / 4212 (28.8%) | 542 / 2399 (22.6%) |
+> | **修正後** | **0 / 4212 (0.0%)** | **0 / 2399 (0.0%)** |
+>
+> ★ バグAだけでも症状は見えなくなる（法線の傾きが 54.7° → 0.32° になるため）が、
+>   接線そのものが壊れている状態は残る。**法線マップを持つモデルに TANGENT が無い**
+>   ケースで牙を剥くので、Bも直しておく必要があった。
+
+③-4 に「`|det|` が極小（UV が縮退した面）なら**スキップ**する」と書いたのが不正確だった。
+`det` は **UV 空間での三角形の面積の2倍**であって、縮退の指標ではない。
+UV 面積は三角形数と UV の詰め方で決まる**スケール依存量**なので、絶対値で閾値を切ると
+「小さいだけの正常な面」を大量に捨てる。
+
+`Duck.glb` の実測（三角形 4212 / 頂点 2399）:
+
+```
+|det| 中央値 = 2.92e-05      ← 実装の閾値 1e-5 のわずか 3 倍
+|det| 最小値 = 6.97e-09      ← 真に縮退した面は 1枚も無い（ちょうど 0 は 0 枚）
+閾値 1e-5 は分布の第 29 パーセンタイル に位置する
+  → 1211 / 4212 枚 (28.8%) を誤って破棄
+  → 542 / 2399 頂点 (22.6%) がゼロ長フォールバックに落ち、
+     ジオメトリと無関係な (1,0,0) / (0,1,0) を接線として受け取っていた
+```
+
+`Box.glb` が無事なのは、立方体の UV が面まるごとの大きな矩形で `|det| ≈ 0.25` と桁違いに大きく、
+1枚も捨てられないため。
+
+- ★ **閾値を下げるのは対症療法**。閾値が絶対値である限り「正しい値」は存在せず、
+  UV スケールの違うモデルで必ず再発する。
+- ★ **正しい直し方は `1/det` の除算そのものを廃すること。** 後段で頂点ごとに正規化するので
+  必要なのは**向きだけ**。符号だけ残せば特異点が消え、閾値の議論自体が不要になる:
+  ```
+  if (det == 0.0f) { continue; }          // 弾くのは真の縮退だけ
+  float s = (det < 0.0f) ? -1.0f : 1.0f;
+  tan   = s * ( duv2.y * edge1 - duv1.y * edge2);
+  bitan = s * (-duv2.x * edge1 + duv1.x * edge2);
+  ```
+- ★ 同時に**バグB2**も消える: `1/det` は **UV 面積が小さい三角形ほど重みを大きくする**
+  （`det = 1.1e-5` なら重み9万倍）。方向が最も当てにならない細長いスリバー三角形が
+  累積結果を支配していた。符号だけにすると、重みが辺の長さ（≒三角形の3D面積）に比例する。
+- ★ 符号は絶対に落とさないこと。`det` の符号は UV のミラーリングを表しており、
+  捨てると左右対称モデルの片側だけ凹凸が反転する（`tangent.w` と同じ話）。
+
+> ★ **診断を早める仕掛け**: ゼロ長フォールバックに落ちた頂点数を数えて `spdlog::debug` で
+> 出しておくこと。今回これが出ていれば「542 頂点がフォールバック」と即座に分かり、
+> 画像からの推測が要らなかった。
 
 ---
 
 ## 実装手順（この順で、各ステップ完了ごとに動作確認・コミット）
 
-1. **⓪ 色空間** — スワップチェーンを SRGB へ → クリア色を linear へ → **元画像と画面の色が一致することを確認**
-2. **① Blinn-Phong** — `Light` / `LightData` / `LightBuffer` → ディスクリプタ set=0 binding=2 → `CameraUBO` 拡張 → 収集フェーズにライト収集 → vert の法線行列 → frag の Blinn-Phong → main.cpp にライト配置 → **陰影が動くことを確認**
-3. **② PBR** — frag の BRDF 差し替え → トーンマップ → マテリアルボールのシーン → **roughness / metallic の傾向を確認**（metallic=1 が黒いのは正常）
-4. **③ 法線マップ・追加スロット** — `Texture` のフォーマット引数化 → flat normal テクスチャ → `MaterialData` 64 バイト化 + `MaterialTextures` → `Vertex::tangent` とパイプライン → glTF ローダー拡張（用途別フォーマット・追加スロット・NORMAL 欠損対処・TANGENT 生成）→ frag の TBN → **NormalTangentTest / DamagedHelmet で確認**
+1. **⓪ 色空間**（済 / `b1c5194`） — スワップチェーンを SRGB へ → クリア色を linear へ → **元画像と画面の色が一致することを確認**
+2. **① Blinn-Phong**（済 / `c31ca66`） — `Light` / `LightData` / `LightBuffer` → ディスクリプタ set=0 binding=2 → `CameraUBO` 拡張 → 収集フェーズにライト収集 → vert の法線行列 → frag の Blinn-Phong → main.cpp にライト配置 → **陰影が動くことを確認**
+3. **② PBR**（済 / `2c3ac7d`） — frag の BRDF 差し替え → トーンマップ → マテリアルボールのシーン → **roughness / metallic の傾向を確認**（metallic=1 が黒いのは正常）
+4. **③ 法線マップ・追加スロット**（済 / `3d7a721`） — `Texture` のフォーマット引数化 → flat normal テクスチャ → `MaterialData` 64 バイト化 + `MaterialTextures` → `Vertex::tangent` とパイプライン → glTF ローダー拡張（用途別フォーマット・追加スロット・NORMAL 欠損対処・TANGENT 生成）→ frag の TBN → **NormalTangentTest / DamagedHelmet で確認**
+5. **③-9 の2バグ修正**（済） — バグA（法線の中立フォールバック）→ 絵を確認 → バグB（接線生成の閾値と除算）→ 絵を確認
+   - `Duck.glb` のギザギザのパッチが消えたことを確認。接線生成のフォールバック頂点は 542 → 0。
+   - ★ A でパッチが消えても **B は必ず直す**（法線マップ持ち＋TANGENT 無しのモデルで牙を剥くため）。今回は両方とも修正済み。
 
 > **③ が難所**。中でも (a) テクスチャのフォーマット取り違え（落ちない・警告も出ない）、(b) 接空間の符号と掛け順、(c) MR テクスチャのチャンネル、の3つは**どれも「それらしく間違った絵」が出る**。2 まで終えた状態でコミットして区切ってから着手すること。
 >
@@ -823,7 +934,7 @@ layout(location = 5) out vec3 frag_bitangent;
 ## さらに先の将来課題（plan17以降）
 
 - **法線行列の事前計算** — `InstanceData` に積む（Phase 15 ①-6 で頂点ごとの `inverse()` を許容した部分）。80 → 128 バイトになるので、帯域と計算量のトレードオフを測ってから決める。
-- **球メッシュ / プリミティブの拡充**（Phase 15 ②-3 の TODO）。
+- **プリミティブの拡充**（球は `add_sphere_mesh` として実装済み。カプセル・円柱など）。
 - **スポットライト**と、ライトのカリング（Forward+ / Clustered）。現状は全ピクセル × 全ライトの総当たり。
 - **専用トランスファーキュー**（キューファミリ跨ぎの所有権移譲）。
 - **`GpuAllocator` → VMA 差し替え**（Phase 11 ③ で確保点を1箇所に閉じてある）。

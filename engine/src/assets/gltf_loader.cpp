@@ -233,7 +233,7 @@ template <typename T>
                                                           const std::vector<std::uint32_t>& indices) {
     std::vector<glm::vec3> result;
     result.resize(positions.size());
-    for (int i = 0; i + 2 < indices.size(); i += 3) {
+    for (std::size_t i = 0; i + 2 < indices.size(); i += 3) {
         std::size_t idx0 = indices[i], idx1 = indices[i + 1], idx2 = indices[i + 2];
         glm::vec3 p0 = positions[idx0];
         glm::vec3 p1 = positions[idx1];
@@ -263,7 +263,7 @@ template <typename T>
     std::vector<glm::vec3> bitan_accum;
     tan_accum.resize(positions.size());
     bitan_accum.resize(positions.size());
-    for (int i = 0; i + 2 < indices.size(); i += 3) {
+    for (std::size_t i = 0; i + 2 < indices.size(); i += 3) {
         std::size_t idx0 = indices[i], idx1 = indices[i + 1], idx2 = indices[i + 2];
         glm::vec3 p0 = positions[idx0], p1 = positions[idx1], p2 = positions[idx2];
         glm::vec2 uv0 = tex_coords[idx0], uv1 = tex_coords[idx1], uv2 = tex_coords[idx2];
@@ -274,19 +274,31 @@ template <typename T>
         // UV座標の差分
         glm::vec2 duv1 = uv1 - uv0, duv2 = uv2 - uv0;
 
-        // 行列式の逆数を計算
+        // UV 空間での三角形の面積の2倍（符号つき）
         float det = duv1.x * duv2.y - duv2.x * duv1.y;
 
+        //   det は「UV 空間での三角形の面積の2倍」であって、縮退しているかの指標ではない。
+        //   UV 面積は三角形数と UV の詰め方で決まる**スケール依存量**なので、
+        //   絶対値で閾値を切ると「小さいだけの正常な面」を大量に捨てる。
+        //
+        //   ★ 閾値を 1e-12 へ下げるだけでは対症療法。閾値が絶対値である限り
+        //     「正しい値」は存在せず、UV スケールの違うモデルで必ず再発する。
+        //
+        //   ★ 1/det を掛けないこと。後段で頂点ごとに正規化するので、必要なのは**向きだけ**。
+        //     除算は (a) det→0 の特異点を作り、(b) UV 面積が小さい＝方向が最も当てにならない
+        //     スリバー三角形を最大の重みで採用する（det=1.1e-5 なら重み 9 万倍）。
+        //     符号だけ残せば両方が同時に消え、重みが辺の長さ（≒三角形の3D面積）に比例する
         glm::vec3 tan;
         glm::vec3 bitan;
-        if (glm::abs(det) < 1e-5) {
-            // UVが縮退しているならスキップ
-            continue;
-        } else {
-            float f = 1.0f / det;
-            tan = f * (duv2.y * edge1 - duv1.y * edge2);
-            bitan = f * (-duv2.x * edge1 + duv1.x * edge2);
-        }
+        if (det == 0.0f) { continue; }          // 弾くのは真の縮退だけ
+        float s = det < 0.0f ? -1.0f : 1.0f;
+        tan   = s * ( duv2.y * edge1 - duv1.y * edge2);
+        bitan = s * (-duv2.x * edge1 + duv1.x * edge2);
+        //   ★ 符号は絶対に落とさないこと。det の符号は UV のミラーリングを表しており、
+        //     捨てると左右対称モデルの片側だけ凹凸が反転する（tangent.w と同じ話）。
+        //
+        //   ★ なぜ除算が要らないのかを理解するのがこの修正の要点:
+        //     「正規化が後段にあるから」。Lengyel 法の頑健版としてよく使われる形。
 
         // 頂点ごとに累積
         tan_accum[idx0] += tan;
@@ -304,13 +316,15 @@ template <typename T>
     result.resize(positions.size());
 
     // 2. グラム・シュミットの直交化とW成分の決定
-    for (int i = 0; i < positions.size(); ++i) {
+    std::size_t fallback_count = 0;
+    for (std::size_t i = 0; i < positions.size(); ++i) {
         glm::vec3 n = normals[i];
         glm::vec3 t = tan_accum[i];
         glm::vec3 b = bitan_accum[i];
 
         // 長さがゼロに近い場合の安全処理
         if (glm::length(t) < 1e-5) {
+            fallback_count++;
             t = glm::abs(n[0]) < 0.9 ? glm::vec3{1.0, 0.0, 0.0} : glm::vec3{0.0, 1.0, 0.0};
         }
 
@@ -328,6 +342,12 @@ template <typename T>
         float w = glm::dot(glm::cross(n, t_ortho), b) >= 0.0 ? 1.0f : -1.0f;
 
         result[i] = {t_ortho, w};
+    }
+
+    if (fallback_count == 0) {
+        spdlog::info("接線のフォールバックはありません。");
+    } else {
+        spdlog::debug("接線のフォールバック数: {}", fallback_count);
     }
 
     return result;
@@ -433,7 +453,7 @@ struct ImageTables {
     result.unorm.resize(model.images.size());
 
     //   2. 各 image について to_rgba8 → TextureRegistry::load_from_pixels
-    for (int i = 0; i < model.images.size(); i++) {
+    for (std::size_t i = 0; i < model.images.size(); i++) {
         if (!usages[i].srgb && !usages[i].unorm) continue; // 未参照 → 読まない
 
         auto& image = model.images[i];
@@ -471,14 +491,39 @@ struct ImageTables {
                                                const graphics::TextureRegistry& textures) {
 
     // 手順:
-    //   1. texture_index < 0 は「このマテリアルはテクスチャを持たない」。
-    //      ★ 異常ではないので、**中立な白**を返す（phase14 ③）。
-    //        glTF の仕様では baseColorTexture が無いマテリアルの基本色は
-    //        baseColorFactor そのもの。白を乗算すれば恒等変換になり仕様と一致する。
+    //   1. texture_index < 0 は「このマテリアルはこのスロットのテクスチャを持たない」。
+    //      ★ 異常ではないので警告は出さない。
     //        ここで市松模様の default_texture() を返すと、無地のモデル（Box.glb など）に
     //        模様が掛かってしまい、「テクスチャ無し」と「読み込み失敗」も区別できなくなる。
+    //
+    // ここで中立テクスチャを決めないこと。null ハンドルを返す。
+    //   現状は5スロット共通で white_texture() を返しているが、白が中立なのは
+    //   baseColor / metallicRoughness / occlusion / emissive（どれも乗算の恒等元）だけで、
+    //   **normal スロットでは中立ではない**:
+    //
+    //       white = (255,255,255) → n_tex = (1,1,1)*2-1 = (1,1,1)
+    //       N = normalize(TBN * (1,1,1)) = normalize(T + B + Ngeo)
+    //         → ジオメトリ法線が接線方向へ **54.7°** 傾く
+    //
+    //   正しい中立値は flat_normal_texture() の (128,128,255) で、
+    //   これなら n_tex ≈ (0.004, 0.004, 1.0) ＝傾き 0.32°（実質ゼロ）。
+    //
+    //   ★ MaterialRegistry::resolve_textures には既に用途ごとの正しい表があるのに、
+    //     white_texture() が**有効なハンドル**なので contains() が true を返してしまい、
+    //     flat_normal_texture() の枝が死にコードになっていた。
+    //     フォールバックが2層にあり、手前の層が間違っていたという形。
+    //
+    //   ★ 中立値の決定は MaterialRegistry::resolve_textures に一本化する。
+    //     そちらは glTF 以外の経路（main.cpp が手で組むマテリアル）も通るので、
+    //     ローダー側に表を置くと「glTF 経由だけ正しい」という非対称が残る。
+    //
+    //   ★ scene::TextureId{} は index = kInvalidIndex (~0u) なので、
+    //     TextureRegistry::contains() の第1条件 `id.index < slots_.size()` で
+    //     確実に false になる。null 用の値を別に用意する必要は無い。
+    //
+    //   → return scene::TextureId{};
     if (texture_index < 0) {
-        return textures.white_texture();
+        return scene::TextureId{};
     }
 
     //   2. source < 0 または image_ids の範囲外 → **こちらは異常**なので既定テクスチャ（市松模様）。
@@ -643,6 +688,10 @@ struct LoadedMaterial {
 
     //   TANGENT
     if (auto it = primitive.attributes.find("TANGENT"); it == primitive.attributes.end()) {
+        // ★ 書式指定子 {} に対応する引数が無かったので頂点数を渡す形にした
+        //   （引数無しの {} は fmt の実行時 format_error になりうる）。
+        spdlog::info("load_primitive : プリミティブにTANGENT属性が無いので生成しました。頂点数 {}",
+                     positions.size());
         tangents = generate_tangents(positions, normals, tex_coords, indices);
     } else {
         tangents = read_accessor<glm::vec4>(model, it->second);
@@ -655,7 +704,7 @@ struct LoadedMaterial {
     //   3. std::vector<Vertex> を組む（position / normal / tangent / uv を i 番目ずつ詰める）
     std::vector<graphics::Vertex> vertices;
     vertices.reserve(positions.size());
-    for (int i = 0; i < positions.size(); ++i) {
+    for (std::size_t i = 0; i < positions.size(); ++i) {
         graphics::Vertex vertex = {
             .position = positions[i],
             .normal = normals[i],
@@ -807,7 +856,7 @@ LoadedModel load_gltf(const std::string& path,
     //     b. ★ 親リンクを逆向きに埋める: glTF は node.children に**子の添字**を持つので、
     //        全ノードを走査して result.nodes[child].parent = i を立てる。
     //        （親を持たなかったノードは kNoParent のまま = ルート）
-    for (int i = 0; i < model.nodes.size(); i++) {
+    for (std::size_t i = 0; i < model.nodes.size(); i++) {
         auto& node = model.nodes[i];
         for (auto child : node.children) {
             result.nodes[child].parent = i;
