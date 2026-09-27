@@ -105,6 +105,7 @@ private:
     void recreate_swapchain();
     // ディスクリプタ一式（パイプライン作成の前にレイアウトが必要）。
     // phase12 手順3: set=0（カメラUBO）と set=1（マテリアル）の2つのレイアウトを作る。
+    // phase16 ⓪-4: set=2（ライティング環境）を足して3つになった。
     void create_descriptor_set_layout();
     void create_uniform_buffers();        // camera_ubos_をkFramesInFlight個作成
     void create_instance_buffers();
@@ -152,9 +153,33 @@ private:
 
     VkDescriptorSetLayout camera_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout material_set_layout_ = VK_NULL_HANDLE;
+
+    // set=2「ライティング環境」のレイアウト（phase16 ⓪-4 / D-1）。
+    //   binding=0  シャドウマップ           COMBINED_IMAGE_SAMPLER  FRAGMENT  （①）
+    //   binding=1  irradiance キューブ      COMBINED_IMAGE_SAMPLER  FRAGMENT  （②）
+    //   binding=2  prefiltered キューブ     COMBINED_IMAGE_SAMPLER  FRAGMENT  （②）
+    //   binding=3  BRDF LUT                 COMBINED_IMAGE_SAMPLER  FRAGMENT  （②）
+    //
+    // なぜ set=1（bindless テクスチャ配列）に入れないか。理由は3つあり、どれも単独で決定的:
+    //   1. キューブマップは sampler2D[] に混ぜられない（samplerCube は別の型）
+    //   2. シャドウマップは比較サンプラ（compareEnable = VK_TRUE）が要る。
+    //      set=1 の配列は全要素が sampler_（compareEnable = VK_FALSE）を共有している
+    //   3. シャドウマップはフレームごとに実体が変わる（D-2）。set=1 は
+    //      「起動後は不変」という前提で全体に1個しか作っていない
+    //
+    // ★ UPDATE_AFTER_BIND も PARTIALLY_BOUND も**付けない**。
+    //   4 binding すべてを、バインドするより前に書き終える約束にする。
+    VkDescriptorSetLayout environment_set_layout_ = VK_NULL_HANDLE;
+
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
     std::vector<std::unique_ptr<UniformBuffer>> camera_ubos_;
     std::vector<VkDescriptorSet> descriptor_sets_;  // set=0。プールから確保（個別破棄は不要）
+
+    // set=2（phase16 ⓪-4）。シャドウマップだけがフレームごとに変わるので、
+    // set=0 と同じく kFramesInFlight 個複製する（D-1 / D-2）。
+    // IBL の3枚はどのフレームのセットからも同じ実体を指す。
+    // ★ プールから確保するので個別破棄は不要。
+    std::vector<VkDescriptorSet> environment_sets_;
 
     // phase13 ②: per-instance データ（model / base_color / texture_index）の SSBO。
     // 「フレームごとに書き換わるもの」なのでカメラUBOと同じ set=0 に binding=1 として同居させる。

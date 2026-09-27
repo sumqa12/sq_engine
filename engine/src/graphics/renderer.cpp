@@ -73,7 +73,15 @@ namespace sq::graphics {
 
         // 14. パイプラインの作成（phase11 ①: 不透明用・半透明用の 2 本。SPV とレイアウトは共通）
         // phase12 手順3: index が set 番号に対応する（[0]=カメラ, [1]=マテリアル）。
-        const std::vector<VkDescriptorSetLayout> set_layouts = { camera_set_layout_, material_set_layout_ };
+        //
+        // ★ phase16 D-3: この配列を**すべてのパイプラインで共通に使うこと**
+        //   （① で足すシャドウ用、② で足すスカイボックス用も含む）。
+        //   set_layouts かプッシュ定数レンジが違うパイプライン同士は「レイアウト互換」で
+        //   なくなり、vkCmdBindPipeline した瞬間に**バインド済みのディスクリプタセットが
+        //   黙って外れる**。シャドウパスが set=2 を参照しなくても、レイアウトには含めておく。
+        // ★ レイアウトに含めるだけなら、そのセットをバインドしない限り何も起きない。
+        //   set=2 を実際にバインドし始めるのは ①-6 から。
+        const std::vector set_layouts = { camera_set_layout_, material_set_layout_, environment_set_layout_ };
 
         pipeline_opaque_ = std::make_unique<GraphicsPipeline>(device_->handle(), render_pass_->handle(), swapchain_->extent(),
                                             "shaders/triangle.vert.spv", "shaders/triangle.frag.spv",
@@ -155,15 +163,18 @@ namespace sq::graphics {
         // phase12 手順3: レイアウトは2つになった（セットはプール破棄でまとめて解放される）。
         vkDestroyDescriptorSetLayout(device_->handle(), camera_set_layout_, nullptr);
         vkDestroyDescriptorSetLayout(device_->handle(), material_set_layout_, nullptr);
+        vkDestroyDescriptorSetLayout(device_->handle(), environment_set_layout_, nullptr);
 
         sampler_.reset();
         camera_ubos_.clear();
         instance_buffers_.clear();
         light_buffers_.clear();
         descriptor_sets_.clear();
+        environment_sets_.clear();
         descriptor_pool_ = VK_NULL_HANDLE;
         camera_set_layout_ = VK_NULL_HANDLE;
         material_set_layout_ = VK_NULL_HANDLE;
+        environment_set_layout_ = VK_NULL_HANDLE;
 
         render_pass_.reset();
         swapchain_.reset();
@@ -631,6 +642,35 @@ namespace sq::graphics {
         if (vkCreateDescriptorSetLayout(device_->handle(), &material_layout_info, nullptr, &material_set_layout_) != VK_SUCCESS) {
             throw std::runtime_error("Renderer::create_descriptor_set_layout : マテリアル用ディスクリプタセットレイアウトの作成に失敗しました！");
         }
+
+        // set=2「ライティング環境」のレイアウトを作る（D-1）。
+        std::array<VkDescriptorSetLayoutBinding, 4> env_bindings{};
+        for (std::size_t i = 0; i < env_bindings.size(); i++) {
+            auto& binding = env_bindings[i];
+
+            //   binding 0..3 はすべて同じ形なので、ループで4つ作れる:
+            binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            binding.descriptorCount = 1;
+            binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+            binding.binding         = static_cast<uint32_t>(i);
+        }
+
+        VkDescriptorSetLayoutCreateInfo env_layout_info{};
+        env_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        env_layout_info.flags = 0;            // ★ set=1 と違い UPDATE_AFTER_BIND_POOL_BIT は付けない
+        env_layout_info.bindingCount = 4;
+        env_layout_info.pBindings = env_bindings.data();
+        env_layout_info.pNext = nullptr;      // ★ binding flags も要らない
+
+        //   → environment_set_layout_ へ格納。失敗時は throw（上2つと同じ形）。
+        if (vkCreateDescriptorSetLayout(device_->handle(), &env_layout_info, nullptr, &environment_set_layout_) != VK_SUCCESS) {
+            throw std::runtime_error("Renderer::create_descriptor_set_layout : 環境用ディスクリプタセットレイアウトの作成に失敗しました！");
+        }
+        // ★ PARTIALLY_BOUND を付けない以上、**4 binding すべてを書いてからでないと
+        //   バインドできない**。① の時点では binding=1..3（IBL）の実体がまだ無いので、
+        //   既定テクスチャ（白）の view で埋めておくこと（①-6 末尾の注記）。
+        //   「① の間だけ binding を1つに減らす」より、そちらの方が ② でレイアウトを
+        //   触り直さずに済む。
     }
 
     // UBOの作成
@@ -661,10 +701,10 @@ namespace sq::graphics {
         VkDescriptorPoolSize camera_pool_size;
         camera_pool_size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         camera_pool_size.descriptorCount = static_cast<uint32_t>(kFramesInFlight);
-        
+
         VkDescriptorPoolSize sampler_pool_size;
         sampler_pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        sampler_pool_size.descriptorCount = kMaxTextures;
+        sampler_pool_size.descriptorCount = static_cast<std::uint32_t>(kMaxTextures + kFramesInFlight * 4); // 内訳: set=1 の bindless 配列 kMaxTextures 枠 + set=2（4 binding）× kFramesInFlight 個
 
         //   STORAGE_BUFFER の枠を +1 する。
         //   set=0 の instance_buffers_ + light_buffers_（kFramesInFlight 個）に加えて、
@@ -685,11 +725,13 @@ namespace sq::graphics {
         descriptor_pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         // (phase13 ①-2): bindless 化に伴いプールを調整する。
         descriptor_pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-        descriptor_pool_info.maxSets = static_cast<uint32_t>(kFramesInFlight) + 1;
+        descriptor_pool_info.maxSets = static_cast<uint32_t>(kFramesInFlight) * 2 + 1;  // 内訳: set=0 が kFramesInFlight 個 + set=1 が1個 + set=2 が kFramesInFlight 個。
         descriptor_pool_info.poolSizeCount = static_cast<uint32_t>(descriptor_pools.size());
         descriptor_pool_info.pPoolSizes = descriptor_pools.data();
 
-        vkCreateDescriptorPool(device_->handle(), &descriptor_pool_info, nullptr, &descriptor_pool_);
+        if (vkCreateDescriptorPool(device_->handle(), &descriptor_pool_info, nullptr, &descriptor_pool_) != VK_SUCCESS) {
+            throw std::runtime_error("Renderer::create_descriptor_pool : 記述プールの作成に失敗しました。");
+        }
     }
 
     void Renderer::create_descriptor_sets() {
@@ -702,7 +744,9 @@ namespace sq::graphics {
             alloc_info.descriptorSetCount = 1;
             alloc_info.pSetLayouts = &camera_set_layout_;
 
-            vkAllocateDescriptorSets(device_->handle(), &alloc_info, &descriptor_sets_[i]);
+            if (vkAllocateDescriptorSets(device_->handle(), &alloc_info, &descriptor_sets_[i]) != VK_SUCCESS) {
+                throw std::runtime_error("Renderer::create_descriptor_sets : カメラ用ディスクリプタセットの確保に失敗しました。");
+            }
 
             VkDescriptorBufferInfo buffer_info{};
             buffer_info.buffer = camera_ubos_[i]->handle();
@@ -752,11 +796,41 @@ namespace sq::graphics {
             std::array writes = { ubo_write, instance_write, light_write };
             vkUpdateDescriptorSets(device_->handle(), writes.size(), writes.data(), 0, nullptr);
         }
+
+        // set=2: ライティング環境（フレームごとに1個）--
+        environment_sets_.resize(kFramesInFlight);
+        for (std::size_t i = 0; i < kFramesInFlight; ++i) {
+            //   VkDescriptorSetAllocateInfo で environment_set_layout_ から1個確保する
+            VkDescriptorSetAllocateInfo env_info{};
+            env_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            env_info.descriptorPool = descriptor_pool_;
+            env_info.descriptorSetCount = 1;
+            env_info.pSetLayouts = &environment_set_layout_;
+
+            if (vkAllocateDescriptorSets(device_->handle(), &env_info, &environment_sets_[i]) != VK_SUCCESS) {
+                throw std::runtime_error("Renderer::create_descriptor_sets : 環境用ディスクリプタセットの確保に失敗しました。");
+            }
+        }
+        // ★ **確保するだけで、中身はここでは書かない。**
+        //   binding=0（シャドウマップ）の実体は ①-2、binding=1..3（IBL）は ② で作る。
+        //   どちらもこの関数より後に生成されるので、ここで書きようがない。
+        //
+        // ★ そして ⓪ の段階では environment_sets_ を**バインドもしないこと**。
+        //   PARTIALLY_BOUND を付けていないので、一度も書いていないセットを
+        //   バインドした時点で不正になる。⓪ の完了条件は「絵が phase15 と同じ」なので、
+        //   set=2 は「枠だけ用意して触らない」が正しい状態。
+        //
+        // ★ 戻り値の確認も入れること（vkAllocateDescriptorSets が失敗すると
+        //   VK_NULL_HANDLE が返り、バインド時に落ちる）。既存の set=0 のループも同様。
     }
 
     // 全テクスチャで共有するサンプラーの生成
     void Renderer::create_sampler() {
         // サンプラーを生成する (phase8プラン 項目5)
+        // ★ phase16 ⓪-3 で SamplerConfig が入ったので、ここは「既定構築の config を
+        //   省略して渡している」状態。挙動は phase15 までと変わらない。
+        //   ① で比較サンプラ（shadow_sampler_）、② でキューブ用サンプラを
+        //   この関数に足していく。
         sampler_ = std::make_unique<Sampler>(physical_device_, device_->handle());
     }
 

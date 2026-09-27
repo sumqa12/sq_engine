@@ -14,11 +14,16 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
                                     const PipelineConfig& config)
     : device_(device) {
 
+    const bool has_frag = !frag_spv_path.empty();
+
     // シェーダーモジュールをロードする
     VkShaderModule vert_shader_module = load_shader_module(device_, vert_spv_path);
-    VkShaderModule frag_shader_module = load_shader_module(device_, frag_spv_path);
+    VkShaderModule frag_shader_module = VK_NULL_HANDLE;
+    if (has_frag) {
+        frag_shader_module = load_shader_module(device_, frag_spv_path);
+    }
 
-    if (vert_shader_module == VK_NULL_HANDLE || frag_shader_module == VK_NULL_HANDLE) {
+    if (vert_shader_module == VK_NULL_HANDLE || (has_frag && frag_shader_module == VK_NULL_HANDLE)) {
         throw std::runtime_error("シェーダーモジュールの読み込みに失敗しました。");
     }
 
@@ -61,10 +66,17 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
 
     VkPipelineVertexInputStateCreateInfo vertex_input_info = {};
     vertex_input_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertex_input_info.vertexBindingDescriptionCount = 1;
-    vertex_input_info.pVertexBindingDescriptions = &binding_description;
-    vertex_input_info.vertexAttributeDescriptionCount = attribute_descriptions.size();
-    vertex_input_info.pVertexAttributeDescriptions = attribute_descriptions.data();
+    if (config.has_vertex_input) {
+        vertex_input_info.vertexBindingDescriptionCount = 1;
+        vertex_input_info.pVertexBindingDescriptions = &binding_description;
+        vertex_input_info.vertexAttributeDescriptionCount = attribute_descriptions.size();
+        vertex_input_info.pVertexAttributeDescriptions = attribute_descriptions.data();
+    } else {
+        vertex_input_info.vertexBindingDescriptionCount = 0;
+        vertex_input_info.pVertexBindingDescriptions = nullptr;
+        vertex_input_info.vertexAttributeDescriptionCount = 0;
+        vertex_input_info.pVertexAttributeDescriptions = nullptr;
+    }
 
     // 入力アセンブリ状態の作成情報を設定する
     VkPipelineInputAssemblyStateCreateInfo input_assembly = {};
@@ -73,11 +85,20 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
     input_assembly.primitiveRestartEnable = VK_FALSE;
 
     // ビューポート／シザー状態の作成情報を設定する
-    VkDynamicState dynamic_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    //   ★ 値は記録時に vkCmdSetDepthBias で渡す（①-6 手順5）。
+    //     動的ステートに加えたのに呼び忘れると未定義動作になる。
+    std::vector<VkDynamicState> dynamic_states;
+    if (config.depth_bias_enable) {
+        dynamic_states.push_back(VK_DYNAMIC_STATE_VIEWPORT);
+        dynamic_states.push_back(VK_DYNAMIC_STATE_SCISSOR);
+        dynamic_states.push_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
+    } else {
+        dynamic_states = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    }
     VkPipelineDynamicStateCreateInfo dynamic_state_info = {};
     dynamic_state_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamic_state_info.dynamicStateCount = 2;
-    dynamic_state_info.pDynamicStates = dynamic_states;
+    dynamic_state_info.dynamicStateCount = static_cast<std::uint32_t>(dynamic_states.size());
+    dynamic_state_info.pDynamicStates = dynamic_states.data();
 
     VkPipelineViewportStateCreateInfo viewport_state_info = {};
     viewport_state_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -91,12 +112,14 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
     rasterization_state_info.rasterizerDiscardEnable = VK_FALSE;
     rasterization_state_info.polygonMode = VK_POLYGON_MODE_FILL;
     rasterization_state_info.lineWidth = 1.0f;
-    rasterization_state_info.cullMode = VK_CULL_MODE_BACK_BIT;
-    // VK_FRONT_FACE_COUNTER_CLOCKWISE に変える。
+    rasterization_state_info.cullMode = config.cull_mode;
     //   glTF の仕様は**反時計回り（CCW）が表**。現状の CLOCKWISE のままだと
     //   読み込んだモデルが裏返り、背面カリングで**面が全部消える**（透明になったように見える）。
     rasterization_state_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rasterization_state_info.depthBiasEnable = VK_FALSE;
+    //   ★ frontFace は変えないこと。表裏の定義（glTF は CCW が表）はモデル側の話で、
+    //     パスごとに変わるものではない。シャドウパスで「裏面を描く」のは
+    //     cullMode を FRONT にして表を捨てるという意味であって、frontFace の反転ではない。
+    rasterization_state_info.depthBiasEnable = config.depth_bias_enable ? VK_TRUE : VK_FALSE;
 
     VkPipelineMultisampleStateCreateInfo multisample_state_info = {};
     multisample_state_info.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -115,11 +138,18 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
     color_blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
     color_blend_attachment.alphaBlendOp        = VK_BLEND_OP_ADD;
 
+    //   ★ レンダーパスの subpass.colorAttachmentCount と一致していなければならない。
+    //     食い違うと vkCreateGraphicsPipelines がバリデーションエラーを出す。
     VkPipelineColorBlendStateCreateInfo color_blend_state_info = {};
     color_blend_state_info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     color_blend_state_info.logicOpEnable = VK_FALSE;
-    color_blend_state_info.attachmentCount = 1;
-    color_blend_state_info.pAttachments = &color_blend_attachment;
+    if (config.has_color_attachment) {
+        color_blend_state_info.attachmentCount = 1;
+        color_blend_state_info.pAttachments = &color_blend_attachment;
+    } else {
+        color_blend_state_info.attachmentCount = 0;
+        color_blend_state_info.pAttachments = nullptr;
+    }
 
     // 深度ステンシルステート
     VkPipelineDepthStencilStateCreateInfo depth_stencil_state_info = {};
@@ -127,7 +157,8 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
     depth_stencil_state_info.depthTestEnable = VK_TRUE;
     // phase11 ①: 深度書き込みを config で切り替える（不透明=TRUE / 半透明=FALSE）。
     depth_stencil_state_info.depthWriteEnable = config.depth_write_enable ? VK_TRUE : VK_FALSE;
-    depth_stencil_state_info.depthCompareOp = VK_COMPARE_OP_LESS;  // 小さい深度=手前が勝つ
+    // depthCompareOp <- config.depth_compare_op（スカイボックスで LESS_OR_EQUAL。②-9）
+    depth_stencil_state_info.depthCompareOp = config.depth_compare_op;  // 小さい深度=手前が勝つ
     depth_stencil_state_info.depthBoundsTestEnable = VK_FALSE;
     depth_stencil_state_info.stencilTestEnable = VK_FALSE;
 
@@ -152,7 +183,7 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
     pipeline_info.pDepthStencilState = &depth_stencil_state_info;
     pipeline_info.pDynamicState = &dynamic_state_info;
     pipeline_info.layout = layout_;
-    pipeline_info.stageCount = 2;
+    pipeline_info.stageCount = has_frag ? 2 : 1;
     pipeline_info.pStages = shader_stages;
     pipeline_info.renderPass = render_pass;
     pipeline_info.subpass = 0;
@@ -160,12 +191,11 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
 
     // 一時的なシェーダーモジュールを破棄する
     vkDestroyShaderModule(device_, vert_shader_module, nullptr);
-    vkDestroyShaderModule(device_, frag_shader_module, nullptr);
+    if (has_frag) {
+        vkDestroyShaderModule(device_, frag_shader_module, nullptr);
+    }
 
-    (void)render_pass;
     (void)viewport_extent;
-    (void)vert_spv_path;
-    (void)frag_spv_path;
 }
 
 GraphicsPipeline::~GraphicsPipeline() {
