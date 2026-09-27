@@ -395,8 +395,9 @@ int main() {
     // ---- phase14 ③: glTF モデルの読み込みと配置 ----
     // ★ assets/models/ の中身が、ビルド後に実行ファイルの隣の models/ へコピーされる
     //   （sandbox_graphics/CMakeLists.txt の POST_BUILD）。パスは実行時CWD基準。
+    int kModelCopyCount = 5;
     std::vector<std::pair<sq::assets::LoadedModel, float>> models;
-    models.reserve(2);
+    models.reserve(4);
     models.emplace_back(
         sq::assets::load_gltf("models/Duck.glb",
         renderer.meshes(), renderer.textures(), renderer.materials())
@@ -406,20 +407,27 @@ int main() {
         renderer.meshes(), renderer.textures(), renderer.materials())
     , 10.0f);
     models.emplace_back(
+        sq::assets::load_gltf("models/GlassHurricaneCandleHolder.glb",
+        renderer.meshes(), renderer.textures(), renderer.materials())
+    , 10.0f);
+    models.emplace_back(
         sq::assets::load_gltf("models/Box.glb",
         renderer.meshes(), renderer.textures(), renderer.materials())
     , 2.0f);
 
-    for (int i = 0; i < models.size(); i++) {
-        // モデル全体をまとめて動かすための空の親を1つ作る（④ の階層の使いどころ）
-        auto& model = models[i];
-        float f = i % 2 == 0 ? 5.0f : -5.0f;
-        const sq::ecs::Entity model_root = registry.create();
-        registry.add<Transform>(model_root, Transform(
-            glm::vec3(static_cast<float>(i) * f, 0, 0), glm::quat(1,0,0,0), glm::vec3(model.second)));
-        registry.add<WorldTransform>(model_root, WorldTransform{});
+    for (int i = 0; i < kModelCopyCount; ++i) {
+        for (int j = 0; j < models.size(); j++) {
+            // モデル全体をまとめて動かすための空の親を1つ作る（④ の階層の使いどころ）
+            auto& model = models[j];
+            float fi = i % 2 == 0 ? 5.0f : -5.0f;
+            float fj = j % 2 == 0 ? 5.0f : -5.0f;
+            const sq::ecs::Entity model_root = registry.create();
+            registry.add<Transform>(model_root, Transform(
+                glm::vec3(static_cast<float>(j) * fj, 0, static_cast<float>(i) * fi), glm::quat(1,0,0,0), glm::vec3(model.second)));
+            registry.add<WorldTransform>(model_root, WorldTransform{});
 
-        std::vector<sq::ecs::Entity> model_entities = sq::assets::spawn_model(registry, model.first, model_root);
+            std::vector<sq::ecs::Entity> model_entities = sq::assets::spawn_model(registry, model.first, model_root);
+        }
     }
     //   ★ 検証順序（③-6）。いま assets/models にあるのは Box.glb のみ:
     //     1. Box.glb（無地・バイナリ形式）→ 形が出るか・**裏返っていないか**  ← 現在ここ
@@ -481,10 +489,13 @@ int main() {
         //   位置の取り出し（matrix[3]）か減衰の式を疑う。
         // ★ intensity が方向光より1桁大きいのは 1/d² で急速に落ちるため
         //   （距離5で 1/25 になる）。方向光と同じ 2.0 ではまず見えない。
-        create_point_light(registry, glm::vec3(-6.0f, 2.0f, -6.0f), glm::vec3(1.0f, 0.2f, 0.2f), 40.0f, 15.0f);
-        create_point_light(registry, glm::vec3( 6.0f, 2.0f, -6.0f), glm::vec3(0.2f, 1.0f, 0.2f), 40.0f, 15.0f);
-        create_point_light(registry, glm::vec3(-6.0f, 2.0f,  6.0f), glm::vec3(0.2f, 0.4f, 1.0f), 40.0f, 15.0f);
-        create_point_light(registry, glm::vec3( 0.0f, 8.0f, 12.0f), glm::vec3(1.0f, 1.0f, 1.0f), 60.0f, 25.0f);
+        for (int i = 0; i < 5; i++) {
+            const auto f = static_cast<float>(i);
+            create_point_light(registry, glm::vec3(-6.0f * f, 2.0f, -6.0f * f), glm::vec3(1.0f, 0.2f, 0.2f), 40.0f, 15.0f);
+            create_point_light(registry, glm::vec3( 6.0f * f, 2.0f, -6.0f * f), glm::vec3(0.2f, 1.0f, 0.2f), 40.0f, 15.0f);
+            create_point_light(registry, glm::vec3(-6.0f * f, 2.0f,  6.0f * f), glm::vec3(0.2f, 0.4f, 1.0f), 40.0f, 15.0f);
+            create_point_light(registry, glm::vec3( 0.0f * f, 8.0f, 12.0f * f), glm::vec3(1.0f, 1.0f, 1.0f), 60.0f, 25.0f);
+        }
     }
 
     // ---- メインループ ----
