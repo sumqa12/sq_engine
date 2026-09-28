@@ -32,7 +32,6 @@ layout(std430, set = 0, binding = 1) readonly buffer InstanceBuffer {
 };
 
 void main() {
-    // TODO(①-7): 光源のクリップ空間へ変換する。
     gl_Position = camera.light_view_proj * instances[gl_InstanceIndex].model * camera.camera_position;
     //   ★ view_proj（カメラ）と取り違えると、シャドウマップにカメラから見た深度が書かれる。
     //   ★ gl_InstanceIndex には firstInstance（= シャドウキャスタ区間の先頭）が既に足されている。
