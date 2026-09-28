@@ -21,6 +21,7 @@
 #include "sq/graphics/physical_device.hpp"
 #include "sq/graphics/render_pass.hpp"
 #include "sq/graphics/sampler.hpp"
+#include "sq/graphics/shadow_map.hpp"
 #include "sq/graphics/swapchain.hpp"
 #include "sq/graphics/sync_objects.hpp"
 #include "sq/graphics/texture_registry.hpp"
@@ -121,16 +122,33 @@ private:
     //
     // ★ ①-1 は**絵が変わらないリファクタ**。①-2 以降（影の実装）とは別コミットにすること。
 
+    // 「影を落とすライトが無い」を表す値（CameraUBO::light_count.y に入る。D-4）。
+    // ★ シェーダ側は `i == camera.light_count.y` で比較するだけなので、
+    //   ライト数の上限（kMaxLights）と衝突しない値であればよい。
+    static constexpr std::uint32_t kNoShadowLight = ~0u;
+
     // 1フレームぶんの「CPU 側で決めた値」。collect_frame_data が作り、記録側が読む。
     // ★ メンバ変数にせず戻り値で渡す（フレームをまたいで残る状態にしないため）。
     struct FrameContext {
         glm::mat4 view_projection{ 1.0f };
         glm::vec3 camera_position{ 0.0f };  // 半透明ソートの距離基準 / カメラUBO の camera_position
 
-        // ①-3 で足すもの:
-        //   glm::mat4     light_view_projection{ 1.0f };
-        //   std::uint32_t shadow_light_index = ~0u;   // lights_ 内の添字。無ければ ~0u（D-4）
+        // phase16 ①-3: 影を落とすライトの情報（collect_lights が埋める）。
+        //   shadow_light_index == kNoShadowLight なら、このフレームは影を落とすライトが無い。
+        //   その場合 light_view_projection は意味を持たない（誰も読まない）。
+        glm::mat4     light_view_projection{ 1.0f };
+        std::uint32_t shadow_light_index = kNoShadowLight;  // lights_ 内の添字（D-4）
     };
+
+    // 方向光の光源空間行列（view-projection）を作る（phase16 ①-3）。
+    //   light_direction: 光の**進む**向き（LightData::direction_range.xyz と同じ。正規化済み）
+    //
+    // ★ v1 は「原点固定 + kShadowOrthoExtent の正射影」。カメラ追従はしない（シマリング対策が
+    //   要るため phase17 の CSM とセット）。
+    // ★ light_direction がほぼ ±Y のとき lookAt の up が縮退して NaN になる。
+    //   main.cpp の create_directional_light と同じ分岐（|y| > 0.99 なら up = Z）が要る。
+    //   NaN になると影ではなく**画面全体が真っ黒**になる。
+    [[nodiscard]] static glm::mat4 compute_light_view_projection(const glm::vec3& light_direction);
 
     // フレームのデータを作ってGPUへ転送する（記録はしない）。
     //   ★ 呼ぶ位置は「vkAcquireNextImageKHR が成功した後」。
@@ -180,6 +198,18 @@ private:
     void create_descriptor_sets();        // vkAllocateDescriptorSets + vkUpdateDescriptorSetsで各UBO/テクスチャと結びつける
     void create_sampler();                // 全テクスチャで共有する VkSampler を生成
 
+    // シャドウマップ一式（phase16 ①-2）。shadow_render_pass_ の後、パイプライン生成の後に呼ぶ。
+    //   shadow_maps_ を kFramesInFlight 個作る（D-2）。
+    // ★ recreate_swapchain からは**呼ばない**（解像度がウィンドウと無関係）。
+    void create_shadow_maps();
+
+    // set=2（environment_sets_）の中身を書く（phase16 ①-6）。
+    //   binding=0 : shadow_maps_[i] + shadow_sampler_（DEPTH_STENCIL_READ_ONLY_OPTIMAL）
+    //   binding=1..3 : ② までの仮置き。白テクスチャ + sampler_（SHADER_READ_ONLY_OPTIMAL）
+    // ★ create_shadow_maps() と白テクスチャの登録（textures_->create_white_texture()）の
+    //   **両方より後**に呼ぶこと。コンストラクタの最後が素直。
+    void write_environment_sets();
+
     static constexpr std::size_t kFramesInFlight = 2;
 
     std::unique_ptr<Window> window_;
@@ -195,6 +225,33 @@ private:
     // （depthWriteEnable はコア Vulkan では動的化できないため）。レイアウトは共通。
     std::unique_ptr<GraphicsPipeline> pipeline_opaque_;       // depthWrite=TRUE,  blend=OFF
     std::unique_ptr<GraphicsPipeline> pipeline_transparent_;  // depthWrite=FALSE, blend=ON
+
+    // ---- phase16 ①: シャドウマップ ----
+    //
+    // シャドウマップの一辺（①-2）。①-8 の調整では、解像度を上げるより先に
+    // kShadowOrthoExtent を狭める方が効く（40 → 20 でテクセル密度 4 倍）。
+    static constexpr std::uint32_t kShadowMapSize = 2048;
+
+    // 光源空間の正射影（①-3）。原点を中心に ±kShadowOrthoExtent の箱。
+    static constexpr float kShadowOrthoExtent = 40.0f;  // 正射影の半幅
+    static constexpr float kShadowNear        = 0.1f;
+    static constexpr float kShadowFar         = 200.0f;
+    // 原点からライトを引く距離。★ kShadowFar / 2 くらいにしておくこと。
+    //   近すぎるとシーンの手前側が near でクリップされ、「手前の物体の影だけ消える」。
+    static constexpr float kShadowDistance    = 100.0f;
+
+    // depth bias（①-8）。vkCmdSetDepthBias で毎フレーム渡す（動的ステート）。
+    // ★ 調整はまず両方 0 から。縞模様（アクネ）が出るのが正常で、出ないなら配管を疑う。
+    static constexpr float kDepthBiasConstant = 1.25f;
+    static constexpr float kDepthBiasSlope    = 1.75f;
+
+    // 深度専用のレンダーパス（RenderPassConfig{ .has_color = false,
+    //   .depth_final_layout = DEPTH_STENCIL_READ_ONLY_OPTIMAL, .depth_store_op = STORE }）。
+    // ★ render_pass_ と違い、recreate_swapchain で作り直さない。
+    std::unique_ptr<RenderPass> shadow_render_pass_;
+    // 深度専用パイプライン（頂点シェーダのみ。D-6）。set_layouts は本パスと共通（D-3）。
+    std::unique_ptr<GraphicsPipeline> pipeline_shadow_;
+
     std::unique_ptr<DepthImage> depth_image_;
     VkFormat depth_format_;
     std::vector<VkFramebuffer> framebuffers_;
@@ -247,6 +304,13 @@ private:
     // ★ プールから確保するので個別破棄は不要。
     std::vector<VkDescriptorSet> environment_sets_;
 
+    // シャドウマップ本体（phase16 ①-2）。kFramesInFlight 個（D-2）。
+    // ★ フレーム N のシャドウパスが書く相手を、GPU 上でまだ実行中のフレーム N-1 の
+    //   本パスが読んでいるかもしれない。カメラUBO・インスタンス SSBO と同じ理由で複製する。
+    // ★ environment_sets_[i] の binding=0 が shadow_maps_[i] の view を指す。
+    //   作り直すとその view が死ぬので、recreate_swapchain では触らないこと。
+    std::vector<std::unique_ptr<ShadowMap>> shadow_maps_;
+
     // phase13 ②: per-instance データ（model / base_color / texture_index）の SSBO。
     // 「フレームごとに書き換わるもの」なのでカメラUBOと同じ set=0 に binding=1 として同居させる。
     // ★ kFramesInFlight 個持つ（GPU が読んでいる最中に上書きしないため。D-5）。
@@ -265,6 +329,12 @@ private:
     // サンプラーは全テクスチャで共有する（スワップチェーン非依存）。
     std::unique_ptr<Sampler> sampler_;
 
+    // シャドウマップ用の比較サンプラ（phase16 ①-2 / ⓪-3）。
+    //   SamplerConfig{ .address_mode = CLAMP_TO_BORDER, .border_color = FLOAT_OPAQUE_WHITE,
+    //                  .anisotropy = false, .compare_enable = true, .compare_op = LESS_OR_EQUAL }
+    // ★ REPEAT のままだと影がシーン全体にタイル状に繰り返す。
+    std::unique_ptr<Sampler> shadow_sampler_;
+
     // phase12 手順4: 単一の共有テクスチャをやめ、TextureId で引くレジストリに置き換えた。
     // set=1 のディスクリプタセットはテクスチャ全体で1個
     std::unique_ptr<TextureRegistry> textures_;
@@ -280,6 +350,10 @@ private:
     // （clear() は capacity を保つ）。
     std::vector<DrawItem> opaque_items_;
     std::vector<DrawItem> transparent_items_;
+    // シャドウキャスタ（phase16 ①-5 / D-5）。ライトの視錐台でカリングした不透明物体。
+    // ★ 半透明は含めない（深度しか書かないので、ガラスが真っ黒な影を落とす）。
+    // ★ instances_ の第3区間（不透明 | 半透明 | シャドウキャスタ）に並ぶ。
+    std::vector<DrawItem> shadow_items_;
 
     std::size_t current_frame_ = 0;
 };

@@ -6,8 +6,10 @@ layout(location = 2) in vec2 in_uv;
 layout(location = 3) in vec4 in_tangent;   // xyz=接線, w=従法線の符号(±1)
 //   ★ location は graphics_pipeline.cpp の attribute_descriptions[3] と必ず揃える。
 
+// ★ phase16 ①-4: light_view_proj を追加（C++ 側 scene::CameraUBO と対。3箇所で揃える）。
 layout(set = 0, binding = 0) uniform CameraUBO {
     mat4 view_proj;
+    mat4 light_view_proj;
     vec4 camera_position;
     uvec4 light_count;
 } camera;

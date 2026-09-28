@@ -51,6 +51,17 @@ namespace sq::graphics {
         // 7. レンダーパスの作成
         render_pass_ = std::make_unique<RenderPass>(device_->handle(), swapchain_->image_format(), depth_format_);
 
+        // 深度専用のシャドウレンダーパスを作る。
+        shadow_render_pass_ = std::make_unique<RenderPass>(device_->handle(), swapchain_->image_format(), depth_format_,
+            RenderPassConfig{
+                .has_color = false,
+                .depth_final_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                .depth_store_op = VK_ATTACHMENT_STORE_OP_STORE
+            }
+        );
+        //   color_format は使われないので VK_FORMAT_UNDEFINED でよい。
+        //   ★ depth_store_op を STORE にし忘れると「影が出ない／ノイズになる」（①-11）。
+
         // 8. ディスクリプタセットレイアウトの作成（カメラUBO用、set=0）
         create_descriptor_set_layout();
 
@@ -84,28 +95,41 @@ namespace sq::graphics {
         const std::vector set_layouts = { camera_set_layout_, material_set_layout_, environment_set_layout_ };
 
         pipeline_opaque_ = std::make_unique<GraphicsPipeline>(device_->handle(), render_pass_->handle(), swapchain_->extent(),
-                                            "shaders/triangle.vert.spv", "shaders/triangle.frag.spv",
-                                            set_layouts,
-                                            PipelineConfig{ .depth_write_enable = true,  .blend_enable = false });
+            "shaders/triangle.vert.spv", "shaders/triangle.frag.spv",
+            set_layouts,
+            PipelineConfig{ .depth_write_enable = true,  .blend_enable = false });
 
         pipeline_transparent_ = std::make_unique<GraphicsPipeline>(device_->handle(), render_pass_->handle(), swapchain_->extent(),
-                                            "shaders/triangle.vert.spv", "shaders/triangle.frag.spv",
-                                            set_layouts,
-                                            PipelineConfig{ .depth_write_enable = false, .blend_enable = true });
+            "shaders/triangle.vert.spv", "shaders/triangle.frag.spv",
+            set_layouts,
+            PipelineConfig{ .depth_write_enable = false, .blend_enable = true });
 
-        // 15. フレームバッファの作成
+        pipeline_shadow_ = std::make_unique<GraphicsPipeline>(device_->handle(), shadow_render_pass_->handle(), swapchain_->extent(),
+            "shaders/shadow.vert.spv", "",
+            set_layouts,
+            PipelineConfig{
+                .depth_write_enable = true, .blend_enable = false,
+                .has_color_attachment = false, .depth_bias_enable = true,
+                .cull_mode = VK_CULL_MODE_FRONT_BIT
+            }
+        );
+
+        // 15. シャドウマップの作成
+        create_shadow_maps();
+
+        // 16. フレームバッファの作成
         create_framebuffers();
 
-        // 16. コマンドバッファの作成
+        // 17. コマンドバッファの作成
         command_buffers_ = std::make_unique<CommandBuffers>(device_->handle(), *queue_family_indices_.graphics_family, kFramesInFlight);
 
-        // 17. 同期オブジェクトの作成
+        // 18. 同期オブジェクトの作成
         sync_objects_ = std::make_unique<SyncObjects>(device_->handle(), kFramesInFlight, framebuffers_.size());
 
-        // 18. レジストリより 先に 遅延解放キューを作る。
+        // 19. レジストリより 先に 遅延解放キューを作る。
         deletions_ = std::make_unique<DeletionQueue>(static_cast<std::uint32_t>(kFramesInFlight));
 
-        // 19. アセットレジストリの生成（phase12 手順2・4）
+        // 20. アセットレジストリの生成（phase12 手順2・4）
         // 各レジストリのコンストラクタに *deletions_ を渡す。
         meshes_ = std::make_unique<MeshRegistry>(
             device_->allocator(), device_->handle(),
@@ -138,6 +162,10 @@ namespace sq::graphics {
 
         // 続けて既定マテリアルを1件登録する（Material を持たない／無効IDのエンティティ用）。
         materials_->add(MaterialData{}, { .albedo = textures_->default_texture() });
+
+        write_environment_sets();
+        //   ★ ここ（コンストラクタの最後）に置く理由: shadow_maps_ と白テクスチャの
+        //     **両方**が出揃っているのはこの時点だけ。
     }
 
     Renderer::~Renderer() {
@@ -158,6 +186,8 @@ namespace sq::graphics {
         command_buffers_.reset();
         pipeline_transparent_.reset();
         pipeline_opaque_.reset();
+        pipeline_shadow_.reset();
+        shadow_maps_.clear();
 
         vkDestroyDescriptorPool(device_->handle(), descriptor_pool_, nullptr);
         // phase12 手順3: レイアウトは2つになった（セットはプール破棄でまとめて解放される）。
@@ -166,6 +196,7 @@ namespace sq::graphics {
         vkDestroyDescriptorSetLayout(device_->handle(), environment_set_layout_, nullptr);
 
         sampler_.reset();
+        shadow_sampler_.reset();
         camera_ubos_.clear();
         instance_buffers_.clear();
         light_buffers_.clear();
@@ -177,6 +208,7 @@ namespace sq::graphics {
         environment_set_layout_ = VK_NULL_HANDLE;
 
         render_pass_.reset();
+        shadow_render_pass_.reset();
         swapchain_.reset();
         vkDestroySurfaceKHR(instance_->handle(), surface_, nullptr);
         depth_image_.reset();
@@ -325,7 +357,8 @@ namespace sq::graphics {
         scene::CameraUBO camera_ubo{};
         camera_ubo.view_projection = context.view_projection;
         camera_ubo.camera_position = glm::vec4(context.camera_position, 1.0f);
-        camera_ubo.light_count = glm::uvec4(static_cast<uint32_t>(lights_.size())); //TODO ①-3 glm::uvec4(lights_.size(), context.shadow_light_index, 0, 0)
+        camera_ubo.light_count = glm::uvec4(lights_.size(), context.shadow_light_index, 0, 0);
+        camera_ubo.light_view_projection = context.light_view_projection;
         camera_ubos_[current_frame_]->update(&camera_ubo, sizeof(camera_ubo));
 
         // 描画アイテムの収集
@@ -360,16 +393,13 @@ namespace sq::graphics {
 
     // ライトを収集して light_buffers_[current_frame_] へ転送する。
     void Renderer::collect_lights(const ecs::Registry& registry, FrameContext& context) {
-        // ★ ①-1 では context を読みも書きもしない（引数だけ先に用意しておく）。
-        // TODO(①-3): ここでシャドウキャスタライトを選ぶ。
-        //   - 最初に見つかった「Directional かつ cast_shadows」の lights_ 内の添字を
-        //     context.shadow_light_index に入れる（2つ目以降は warn を出して無視）
-        //   - light_view_projection もここで計算する
-        //   ★ kMaxLights のクランプで選んだライトが切り捨てられた場合は ~0u に戻すこと。
+        // シャドウキャスタライトが選択済みかどうか
+        bool is_selected = false;
+
         // 光源の収集
         lights_.clear();
         registry.view<scene::Light, scene::WorldTransform>().each(
-        [&](ecs::Entity e, scene::Light& light, scene::WorldTransform& wt) {
+        [&](ecs::Entity, scene::Light& light, scene::WorldTransform& wt) {
             // 強度 0 はスキップ
             if (light.intensity <= 0.0f) { return; }
 
@@ -382,6 +412,15 @@ namespace sq::graphics {
                 .color_intensity = glm::vec4(light.color, light.intensity)
             };
 
+            if (light.type == scene::LightType::Directional && light.cast_shadows) {
+                if (is_selected) {
+                    spdlog::warn("Renderer::collect_lights : 2つ目以降のシャドウキャスタライトがあります。無視します。");
+                } else {
+                    context.shadow_light_index = lights_.size();
+                    context.light_view_projection = compute_light_view_projection(direction);
+                }
+            }
+
             lights_.emplace_back(light_data);
         });
 
@@ -391,126 +430,144 @@ namespace sq::graphics {
             lights_.resize(kMaxLights);
         }
 
+        if (context.shadow_light_index >= lights_.size()) {
+            context.shadow_light_index = kNoShadowLight;
+        }
+
         // バッファの更新
         light_buffers_[current_frame_]->update(lights_.data(), lights_.size());
     }
 
     // 描画アイテムを収集・ソートする。
     void Renderer::collect_draw_items(const ecs::Registry& registry, const FrameContext& context) {
-        // TODO(①-5): 同じループの中で light_frustum による shadow_items_ の振り分けを足す。
-        //   ★ ループを2本にしないこと（境界球の計算を2回走らせない / 片方だけ直す事故の防止）。
         // 1. 収集（不透明・半透明に振り分ける）
-            // MeshHandle を持つエンティティのみが描画対象（カメラ等の非描画エンティティは除外される）。
-            //
-            // phase13 ⑤: この view-projection から視錐台を作り、収集の時点で画面外を落とす。
-            // カメラ解決後・収集前に1回だけ作ればよい（フレーム中は不変）。
-            const scene::Frustum frustum = scene::Frustum::from_view_projection(context.view_projection);
+        // MeshHandle を持つエンティティのみが描画対象（カメラ等の非描画エンティティは除外される）。
+        //
+        // phase13 ⑤: この view-projection から視錐台を作り、収集の時点で画面外を落とす。
+        // カメラ解決後・収集前に1回だけ作ればよい（フレーム中は不変）。
+        const bool has_shadow = context.shadow_light_index != kNoShadowLight;
+        const scene::Frustum light_frustum = scene::Frustum::from_view_projection(context.light_view_projection);
+        const scene::Frustum frustum = scene::Frustum::from_view_projection(context.view_projection);
 
-            opaque_items_.clear();
-            transparent_items_.clear();
+        opaque_items_.clear();
+        transparent_items_.clear();
+        shadow_items_.clear();
 
-            // view を <scene::Transform, scene::MeshHandle> から
-            //   <scene::WorldTransform, scene::MeshHandle> へ変える。
-            //   ワールド行列の合成は TransformSystem::update が draw_frame より前に済ませている。
-            registry.view<scene::WorldTransform, scene::MeshHandle>().each(
-                [&](ecs::Entity e, scene::WorldTransform& wt, scene::MeshHandle& mh) {
-                    // 未登録のメッシュを指すハンドルはスキップする
-                    if (!meshes_->contains(mh.id)) { return; }
+        // view を <scene::Transform, scene::MeshHandle> から
+        //   <scene::WorldTransform, scene::MeshHandle> へ変える。
+        //   ワールド行列の合成は TransformSystem::update が draw_frame より前に済ませている。
+        registry.view<scene::WorldTransform, scene::MeshHandle>().each(
+            [&](ecs::Entity e, scene::WorldTransform& wt, scene::MeshHandle& mh) {
+                // 未登録のメッシュを指すハンドルはスキップする
+                if (!meshes_->contains(mh.id)) { return; }
 
-                    // (phase13 ⑤-3): フラスタムカリング。ローカルの境界球をワールドへ移して判定する。
-                    const MeshRegistry::Entry& entry = meshes_->get(mh.id);
-                    const glm::mat4& model = wt.matrix;
+                // (phase13 ⑤-3): フラスタムカリング。ローカルの境界球をワールドへ移して判定する。
+                const MeshRegistry::Entry& entry = meshes_->get(mh.id);
+                const glm::mat4& model = wt.matrix;
 
-                    //   中心は model で変換する（平行移動を含めるため vec4 の w は 1）
-                    const auto world_center = glm::vec3(model * glm::vec4(entry.bounds.center, 1.0f));
+                //   中心は model で変換する（平行移動を含めるため vec4 の w は 1）
+                const auto world_center = glm::vec3(model * glm::vec4(entry.bounds.center, 1.0f));
 
-                    //   回転は球を変えない。非等方スケールは最大成分で保守的に見積もる
-                    // ★ t.scale の直参照をやめる。
-                    //   ワールド行列には**親のスケールも掛かっている**ので、自分のローカル
-                    //   スケールだけを見ると半径を過小評価する。ワールド行列の3本の基底
-                    //   ベクトルの長さから求め直すこと:
-                    const float sx = glm::length(glm::vec3(model[0]));
-                    const float sy = glm::length(glm::vec3(model[1]));
-                    const float sz = glm::length(glm::vec3(model[2]));
-                    //   ★ 直し忘れると、親でスケールした子が画面端で消える
-                    //     （phase13 ⑤ で踏んだのと同じ症状が、原因だけ変わって再発する）。
+                //   回転は球を変えない。非等方スケールは最大成分で保守的に見積もる
+                // ★ t.scale の直参照をやめる。
+                //   ワールド行列には**親のスケールも掛かっている**ので、自分のローカル
+                //   スケールだけを見ると半径を過小評価する。ワールド行列の3本の基底
+                //   ベクトルの長さから求め直すこと:
+                const float sx = glm::length(glm::vec3(model[0]));
+                const float sy = glm::length(glm::vec3(model[1]));
+                const float sz = glm::length(glm::vec3(model[2]));
+                //   ★ 直し忘れると、親でスケールした子が画面端で消える
+                //     （phase13 ⑤ で踏んだのと同じ症状が、原因だけ変わって再発する）。
 
-                    if (const float world_radius = entry.bounds.radius * std::max({ sx, sy, sz })
-                        ; !frustum.intersects(world_center, world_radius)) {
-                        return;
-                    }
+                // Material を1回だけ引く。持たないエンティティは既定マテリアル
+                // （既定テクスチャ・白・不透明）として扱う（後方互換）。
+                scene::Material material{};
+                if (registry.has<scene::Material>(e)) {
+                    material = registry.get<scene::Material>(e);
+                }
 
-                    // Material を1回だけ引く。持たないエンティティは既定マテリアル
-                    // （既定テクスチャ・白・不透明）として扱う（後方互換）。
-                    scene::Material material{};
-                    if (registry.has<scene::Material>(e)) {
-                        material = registry.get<scene::Material>(e);
-                    }
+                const float world_radius = entry.bounds.radius * std::max({ sx, sy, sz });
+                const bool in_camera = frustum.intersects(world_center, world_radius);
+                const bool in_light  = has_shadow && !material.transparent && light_frustum.intersects(world_center, world_radius);
+                if (!in_camera && !in_light) {
+                    return;
+                }
 
-                    // (phase14 ①): テクスチャのフォールバックはここから消える。
-                    const scene::MaterialId material_id = materials_->contains(material.id)
-                        ? material.id
-                        : materials_->default_material();
+                // マテリアルのフォールバック
+                const scene::MaterialId material_id = materials_->contains(material.id)
+                    ? material.id
+                    : materials_->default_material();
 
-                    // 描画用データを作る（phase14 ①: model と material_index だけになった）
-                    //
-                    // ★ 半透明ソートの距離基準もワールド位置にする。
-                    //   t.position はローカル座標なので、親が動くと距離が嘘になる
-                    const glm::vec3 d = glm::vec3(model[3]) - context.camera_position;
-                    const DrawItem item{
-                        .instance_data = InstanceData{ .model = model, .material_index = material_id.index },
-                        .mesh = mh.id,
-                        .distance_sq = glm::dot(d, d),  // 2乗距離（順序比較にしか使わないので sqrt 不要）
-                    };
+                // 描画用データを作る（phase14 ①: model と material_index だけになった）
+                //
+                // ★ 半透明ソートの距離基準もワールド位置にする。
+                //   t.position はローカル座標なので、親が動くと距離が嘘になる
+                const glm::vec3 d = glm::vec3(model[3]) - context.camera_position;
+                const DrawItem item{
+                    .instance_data = InstanceData{ .model = model, .material_index = material_id.index },
+                    .mesh = mh.id,
+                    .distance_sq = glm::dot(d, d),  // 2乗距離（順序比較にしか使わないので sqrt 不要）
+                };
 
+                if (in_camera) {
                     (material.transparent ? transparent_items_ : opaque_items_).push_back(item);
+                } else {
+                    shadow_items_.push_back(item);
                 }
-            );
+            }
+        );
 
-            // 2. meshでソート
-            // phase14 ②: MeshId が構造体になったので、比較は AssetHandle::operator<
-            //   （index 比較）が担う。ここの式自体は変えなくてよいが、
-            //   「何を比べているのか」が asset_handle.hpp 側に移ったことは意識しておくこと。
-            std::ranges::sort(opaque_items_,
-                [](const DrawItem& a, const DrawItem& b) {
-                    return a.mesh < b.mesh;
-                }
-            );
+        // 2. meshでソート
+        // phase14 ②: MeshId が構造体になったので、比較は AssetHandle::operator<
+        //   （index 比較）が担う。ここの式自体は変えなくてよいが、
+        //   「何を比べているのか」が asset_handle.hpp 側に移ったことは意識しておくこと。
+        std::ranges::sort(opaque_items_,
+            [](const DrawItem& a, const DrawItem& b) {
+                return a.mesh < b.mesh;
+            }
+        );
 
-            // 半透明: 遠い順（back-to-front）。
-            // ★ 正しさが順序に依存するため、テクスチャ・メッシュでまとめてはいけない（ソート順が絶対）。
-            std::ranges::sort(transparent_items_,
-                [](const DrawItem& a, const DrawItem& b) {
-                    return a.distance_sq > b.distance_sq;
-                }
-            );
+        // 半透明: 遠い順（back-to-front）。
+        // ★ 正しさが順序に依存するため、テクスチャ・メッシュでまとめてはいけない（ソート順が絶対）。
+        std::ranges::sort(transparent_items_,
+            [](const DrawItem& a, const DrawItem& b) {
+                return a.distance_sq > b.distance_sq;
+            }
+        );
     }
 
     // instances_ を組み立てて instance_buffers_[current_frame_] へ転送する。
     void Renderer::upload_instances() {
-        // TODO(①-5): 3区間目（shadow_items_）を末尾に足す。
-        //   クランプは shadow_items_ → transparent_items_ → opaque_items_ の順に捨てる。
         instances_.clear();
-        instances_.reserve(opaque_items_.size() + transparent_items_.size());
-        // 不透明 → 半透明 の順に詰める（★この順序が first_instance の基準になる）:
+        instances_.reserve(opaque_items_.size() + transparent_items_.size() + shadow_items_.size());
+        // 不透明 → 半透明 → シャドウアイテムの順に詰める（★この順序が first_instance の基準になる）:
         for (const DrawItem& item : opaque_items_) {
             instances_.push_back(item.instance_data);
         }
         for (const DrawItem& item : transparent_items_) {
             instances_.push_back(item.instance_data);
         }
+        for (const DrawItem& item : shadow_items_) {
+            instances_.push_back(item.instance_data);
+        }
 
         // 上限超えたら警告を出し、リサイズ
         if (instances_.size() > kMaxInstances) {
+            std::size_t exceeds = instances_.size() - kMaxInstances;
             spdlog::warn("警告: インスタンスの個数 {} は上限 {} を超過しています。切り詰めます。\n",
                    instances_.size(), kMaxInstances);
             instances_.resize(kMaxInstances);
+
             // 描画側も同じ位置で止める（転送されていない範囲を描かないため）
-            if (opaque_items_.size() > kMaxInstances) {
-                opaque_items_.resize(kMaxInstances);
-                transparent_items_.clear();
-            } else {
-                transparent_items_.resize(kMaxInstances - opaque_items_.size());
+            std::size_t size = shadow_items_.size();
+            shadow_items_.resize(glm::min(exceeds, std::size_t{0}));
+            exceeds -= size;
+            if (exceeds > 0) {
+                size = transparent_items_.size();
+                transparent_items_.resize(glm::min(exceeds, std::size_t{0}));
+            }
+            if (exceeds > 0) {
+                opaque_items_.resize(exceeds);
             }
         }
 
@@ -519,11 +576,54 @@ namespace sq::graphics {
 
     // シャドウパスを記録する。
     void Renderer::record_shadow_pass(VkCommandBuffer command_buffer, const FrameContext& context) {
-        // ①-1 では何もしない（呼び出し位置だけ確定させる）。
-        // TODO(①-6): shadow_render_pass_ の Begin → viewport/scissor（シャドウマップ解像度）
-        //   → vkCmdSetDepthBias → pipeline_shadow_ + set=0 のみバインド
-        //   → record_draw_items(shadow_items_) → End
-        //   ★ set=2 はここでバインドしないこと（書き込み中のイメージを指しているため）。
+        //   ★ 影を落とすライトが無いフレームでも、**レンダーパスの Begin / End だけは通す**こと。
+        //     シャドウマップのレイアウトを DEPTH_STENCIL_READ_ONLY_OPTIMAL にするのは
+        //     このパスの finalLayout だけなので、スキップすると初回フレームのレイアウトが
+        //     UNDEFINED のまま本パスが set=2 を読み、バリデーションが出る。
+        //     描画（手順 4〜7）だけを context.shadow_light_index で飛ばす。
+        VkClearValue clear{};
+        clear.depthStencil = {
+            .depth = 1.0f,
+            .stencil = 0
+        };
+        //      clearValueCount = 1   ★ カラーが無いので1つだけ
+        VkRenderPassBeginInfo render_pass_begin_info{};
+        render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        render_pass_begin_info.renderPass = shadow_render_pass_->handle();
+        render_pass_begin_info.framebuffer = shadow_maps_[current_frame_]->framebuffer();
+        render_pass_begin_info.renderArea =  {{0, 0}, shadow_maps_[current_frame_]->extent()};
+        render_pass_begin_info.clearValueCount = 1;
+        render_pass_begin_info.pClearValues = &clear;
+
+        // レンダーパスの開始
+        vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+
+        VkViewport viewport{};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width  = static_cast<float>(shadow_maps_[current_frame_]->extent().width);
+        viewport.height = static_cast<float>(shadow_maps_[current_frame_]->extent().height);
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+        VkRect2D scissor{{0, 0}, shadow_maps_[current_frame_]->extent()};
+        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+        if (context.shadow_light_index > 0) {
+            vkCmdSetDepthBias(command_buffer, kDepthBiasConstant, 0.0f, kDepthBiasSlope);
+
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_shadow_->handle());
+
+            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                pipeline_shadow_->layout(), 0, 1, &descriptor_sets_[current_frame_], 0, nullptr);
+            //  ★ set=1 / set=2 はバインドしない。set=2 binding=0 はいま書き込んでいる当のイメージ。
+
+            record_draw_items(command_buffer, *pipeline_shadow_, shadow_items_,
+                opaque_items_.size() + transparent_items_.size(), true);
+        }
+
+        vkCmdEndRenderPass(command_buffer);
     }
 
     // 本パスを記録する。
@@ -532,7 +632,6 @@ namespace sq::graphics {
         //   ①-6 でシャドウパスも set=0 をバインドするようになるが、レンダーパスを跨いでも
         //   バインドは残る（レイアウト互換なので）。それでも**ここで改めてバインドしておく**方が、
         //   パスの記録が互いに独立して読める。
-        // TODO(①-6): set=2（environment_sets_[current_frame_]）のバインドをset=1 のバインドの直後へ足す。
 
         std::array<VkClearValue, 2> clear_values{};
         clear_values[0].color = { {0.6f, 0.6f, 0.6f, 1.0f} };
@@ -569,7 +668,11 @@ namespace sq::graphics {
 
         VkDescriptorSet bindless = textures_->bindless_set();
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipeline_opaque_->layout(), 1, 1, &bindless, 0, nullptr);
+            pipeline_opaque_->layout(), 1, 1, &bindless, 0, nullptr);
+
+        VkDescriptorSet environment_set = environment_sets_[current_frame_];
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipeline_shadow_->layout(), 2, 1, &environment_set, 0, nullptr);
 
         // 記録（不透明パス → 半透明パス）
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_opaque_->handle());
@@ -894,6 +997,89 @@ namespace sq::graphics {
         //   ① で比較サンプラ（shadow_sampler_）、② でキューブ用サンプラを
         //   この関数に足していく。
         sampler_ = std::make_unique<Sampler>(physical_device_, device_->handle());
+
+        shadow_sampler_ = std::make_unique<Sampler>(physical_device_, device_->handle(),
+            SamplerConfig{
+                .filter = VK_FILTER_LINEAR,   // ★ LINEAR でハードウェア 2x2 PCF が効く
+               .address_mode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+               .border_color = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,  // ★ 白 = 深度 1.0 = 影なし
+               .anisotropy = false,
+               .compare_enable = true,
+               .compare_op = VK_COMPARE_OP_LESS_OR_EQUAL,
+               .max_lod = 0.0f
+            }
+        );
+    }
+
+    // 光源空間行列（phase16 ①-3）。
+    glm::mat4 Renderer::compute_light_view_projection(const glm::vec3& light_direction) {
+        constexpr glm::vec3 center{ 0.0f };     // v1 は原点固定
+        const glm::vec3 eye = center - light_direction * kShadowDistance;  // 光の来る側へ引く
+        const glm::vec3 up = glm::abs(light_direction.y) > 0.99 ? glm::vec3{0, 0, 1} : glm::vec3{0, 1, 0};
+        const auto view = glm::lookAt(eye, center, up);
+        auto proj = glm::ortho(-kShadowOrthoExtent, kShadowOrthoExtent, -kShadowOrthoExtent, kShadowOrthoExtent, kShadowNear, kShadowFar);
+        proj[1][1] *= -1;  // ★ カメラ（camera.cpp）と同じく Y を反転する
+        return proj * view;
+        // ★ glm::ortho は GLM_FORCE_DEPTH_ZERO_TO_ONE により z が [0,1]。追加の補正は要らない。
+        // ★ Y 反転が要る理由は「上下」ではなく**三角形の巻き順**。
+        //   - 影の位置の上下は、反転してもしなくても正しく出る。書き込み（シャドウパス）と
+        //     読み出し（triangle.frag の uv = ndc.xy * 0.5 + 0.5）が同じ行列を使うので、
+        //     どちらでも同じ向きになる。
+        //   - 一方、Y を反転するとスクリーン上の巻き順が逆になる。本パスは「反転あり + CCW が表」で
+        //     動いているので、シャドウパスだけ反転しないと表裏の判定が逆転し、
+        //     cull_mode = FRONT が実際には**背面カリング**として働く
+        //     （①-8 のアクネ対策が効かず、「FRONT にしても縞が減らない」になる）。
+    }
+
+    // シャドウマップを kFramesInFlight 枚作る（phase16 ①-2）。
+    void Renderer::create_shadow_maps() {
+        for (std::size_t i = 0; i < kFramesInFlight; ++i) {
+            shadow_maps_.push_back(std::make_unique<ShadowMap>(
+                device_->handle(), device_->allocator(),
+                shadow_render_pass_->handle(), kShadowMapSize, depth_format_));
+        }
+    }
+
+    // set=2 を書く（phase16 ①-6）。
+    void Renderer::write_environment_sets() {
+        VkImageView white_view = textures_->view(textures_->white_texture());
+
+        for (std::size_t i = 0; i < kFramesInFlight; ++i) {
+            std::array<VkDescriptorImageInfo, 4> infos{};
+            infos[0] = {
+                .sampler = shadow_sampler_->handle(),
+                .imageView = shadow_maps_[i]->view(),
+                .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+            };
+
+            // [1..3] { sampler_->handle(), white_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }
+            //     ★ ② までの仮置き。シェーダがまだ binding=1..3 を宣言していないので、
+            //       2D の view を入れておいても問題にならない。
+            //       ② で samplerCube を宣言した時点で、ここはキューブの view に**必ず**差し替えること
+            //       （2D の view を samplerCube で読むとバリデーションエラー）。
+            for (std::size_t j = 1; j < infos.size(); j++) {
+                infos[j] = {
+                    .sampler = sampler_->handle(),
+                    .imageView = white_view,
+                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                };
+            }
+
+            //     VkWriteDescriptorSet を binding ごとに4本（dstSet = environment_sets_[i]）
+            std::array<VkWriteDescriptorSet, 4> write_sets{};
+            for (std::size_t j = 0; j < infos.size(); j++) {
+                auto& set = write_sets[j];
+                set.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                set.dstSet = environment_sets_[i];
+                set.dstBinding = j;
+                set.dstArrayElement = 0;
+                set.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                set.descriptorCount = 1;
+                set.pImageInfo = &infos[j];
+            }
+
+            vkUpdateDescriptorSets(device_->handle(), write_sets.size(), write_sets.data(), 0, nullptr);
+        }
     }
 
     // メッシュの登録・参照（phase12 手順2）

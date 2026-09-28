@@ -194,6 +194,13 @@ scene::TextureId TextureRegistry::flat_normal_texture() const {
     return flat_normal_texture_;
 }
 
+VkImageView TextureRegistry::view(scene::TextureId id) const {
+    if (contains(id)) {
+        return slots_[id.index].entry.texture->view();
+    }
+    throw std::runtime_error("TextureRegistry::view : テクスチャが見つかりませんでした。");
+}
+
 void TextureRegistry::unload(scene::TextureId id) {
     //  1. 二重解放の防止
     if (!contains(id)) { return; }

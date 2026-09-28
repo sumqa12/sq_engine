@@ -28,6 +28,7 @@ add_library(sq_engine_lib STATIC
     src/scene/transform_system.cpp
     src/scene/frustum.cpp
     src/graphics/depth_image.cpp
+    src/graphics/shadow_map.cpp
     src/graphics/texture.cpp
     src/graphics/texture_registry.cpp
     src/graphics/sampler.cpp

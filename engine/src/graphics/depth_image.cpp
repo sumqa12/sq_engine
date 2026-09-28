@@ -23,7 +23,9 @@ namespace sq::graphics {
         image_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 
-        vkCreateImage(device_, &image_create_info, nullptr, &image_);
+        if (vkCreateImage(device_, &image_create_info, nullptr, &image_) != VK_SUCCESS) {
+            throw std::runtime_error("DepthImage::DepthImage : イメージの作成に失敗しました。");
+        };
 
         VkMemoryRequirements memory_requirements;
         vkGetImageMemoryRequirements(device_, image_, &memory_requirements);
@@ -31,9 +33,8 @@ namespace sq::graphics {
         // plan13
         allocation_ = allocator.allocate(memory_requirements,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            /*linear=*/false);   // ★ optimal tiling なので false)
-        if (VkResult result = vkBindImageMemory(device_, image_, allocation_.memory, allocation_.offset)
-            ; result != VK_SUCCESS) {
+            false);   // ★ optimal tiling なので false)
+        if (vkBindImageMemory(device_, image_, allocation_.memory, allocation_.offset) != VK_SUCCESS) {
             throw std::runtime_error("DepthImage::DepthImage : メモリの割り当てに失敗しました。");
         }
 
@@ -46,7 +47,7 @@ namespace sq::graphics {
         image_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
         image_view_create_info.image = image_;
         if (int result = vkCreateImageView(device_, &image_view_create_info, nullptr, &view_); result != VK_SUCCESS) {
-            throw std::runtime_error("深度バッファ用のイメージビュー作成に失敗しました。");
+            throw std::runtime_error("DepthImage::DepthImage : イメージビューの作成に失敗しました。");
         }
     }
 

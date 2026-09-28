@@ -110,6 +110,15 @@ public:
     // ★ create_flat_normal_texture() を呼ぶ前は無効ハンドルが返る。
     [[nodiscard]] scene::TextureId flat_normal_texture() const;
 
+    // 登録済みテクスチャの VkImageView を返す（phase16 ①-6）。
+    //
+    // bindless 配列の外（set=2）へ書くときに使う。①の時点では、まだ実体の無い
+    // set=2 binding=1..3（IBL）を白テクスチャで埋めるためにだけ呼ぶ。
+    // ★ contains(id) でなければ例外（死んだ view を返すとディスクリプタに書かれて未定義動作）。
+    // ★ 返した view の寿命はレジストリが握っている。unload すれば死ぬので、
+    //   既定アセット（white / default / flat_normal）以外には使わないこと。
+    [[nodiscard]] VkImageView view(scene::TextureId id) const;
+
     // テクスチャを解放する（phase14 ②-3）。
     //
     // MeshRegistry::unload の手順に加えて、bindless 配列の後始末が要る:

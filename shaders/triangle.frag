@@ -6,8 +6,11 @@
 
 const float kAmbient = 0.03;
 
+// ★ phase16 ①-4: light_view_proj を追加（C++ 側 scene::CameraUBO と対。3箇所で揃える）。
+//   light_count.y = 影を落とすライトの添字（無ければ 0xFFFFFFFF。D-4）
 layout(set = 0, binding = 0) uniform CameraUBO {
     mat4  view_proj;
+    mat4  light_view_proj;
     vec4  camera_position;
     uvec4 light_count;
 } camera;
@@ -44,6 +47,21 @@ struct MaterialData {
 layout(std430, set = 1, binding = 1) readonly buffer MaterialBuffer {
     MaterialData materials[];
 };
+
+// set=2「ライティング環境」（phase16 D-1）。binding=1..3（IBL）は ② で足す。
+//   ★ sampler2D ではなく sampler2DShadow。texture() の戻り値が
+//     「色」ではなく「比較結果 [0,1]」になり、引数が vec3（uv, 比較する深度）になる。
+//   ★ C++ 側のサンプラは compare_enable = true / CLAMP_TO_BORDER / 白ボーダー（⓪-3）。
+//   ★ 宣言しただけでは「静的に使用」されないので、set=2 をバインドしていなくても害は無い。
+//     sample_shadow の中で texture(shadow_map, ...) を書くのは、
+//     C++ 側で set=2 をバインドするようにしてから（①-6）。
+layout(set = 2, binding = 0) uniform sampler2DShadow shadow_map;
+
+// 法線オフセットの大きさ（①-8）。**NDC の z 空間での値**。
+//   kShadowFar - kShadowNear ≒ 200 なので、ワールドの 5cm は z 空間では 0.00025。
+//   桁を間違えると「影が全く出ない（大きすぎ）」か「縞模様（小さすぎ）」になる。
+const float kNormalBiasMax = 0.0005;
+const float kNormalBiasMin = 0.00005;
 
 layout(location = 0) in vec3 frag_normal;
 layout(location = 1) in vec2 frag_uv;
@@ -104,6 +122,30 @@ float G_Smith(float NdotV, float NdotL, float k)
 vec3 F_Schlick(float HdotV, vec3 F0)
 {
     return F0 + (1.0 - F0) * pow(1.0 - HdotV, 5.0);
+}
+
+// @brief world_pos のフラグメントが影の中にいるか（phase16 ①-7）
+// @param world_pos フラグメントのワールド座標
+// @param N         シェーディング法線（法線オフセットに使う）
+// @param L         ライトへ向かうベクトル
+// @return 1.0 = 照らされている、0.0 = 完全な影
+float sample_shadow(vec3 world_pos, vec3 N, vec3 L) {
+    // TODO(①-7):
+    //   1. 光源クリップ空間へ: lp = camera.light_view_proj * vec4(world_pos, 1.0); ndc = lp.xyz / lp.w
+    //      ★ 正射影なので w は常に 1。除算は phase17（透視）への備え。
+    //   2. uv = ndc.xy * 0.5 + 0.5;  z = ndc.z;
+    //      ★ z は再マップしない（GLM_FORCE_DEPTH_ZERO_TO_ONE で既に [0,1]）。
+    //        OpenGL 由来の `* 0.5 + 0.5` を z にも書くと影が完全に消える。
+    //      ★ uv.y も反転しない（シャドウパスと本パスで同じ向きのビューポート）。
+    //   3. z > 1.0 なら 1.0 を返す（ライトの far より遠い）。
+    //      uv の範囲外は CLAMP_TO_BORDER + 白ボーダーが 1.0 を返すので明示チェック不要。
+    //   4. bias = max(kNormalBiasMax * (1.0 - dot(N, L)), kNormalBiasMin);
+    //   5. 3x3 PCF: texel = 1.0 / vec2(textureSize(shadow_map, 0))
+    //        sum += texture(shadow_map, vec3(uv + vec2(x, y) * texel, z - bias));  （x, y = -1..1）
+    //        return sum / 9.0;
+    //
+    // ★ ①-8 の調整はまず bias = 0 から。縞模様（アクネ）が出るのが正常。
+    return 1.0;
 }
 
 void main() {
@@ -183,6 +225,11 @@ void main() {
         // ライト放射輝度
         vec3 radiance = light.color_intensity.rgb * light.color_intensity.w * attenuation;
 
+        // TODO(①-7): 影を落とすライト（i == camera.light_count.y）のときだけ係数を掛ける。
+        //   float shadow = 1.0;
+        //   if (i == camera.light_count.y) { shadow = sample_shadow(frag_world_pos, N, L); }
+        //   ★ N はシェーディング法線（法線マップ適用後）でよいが、アクネが消えないときは
+        //     ジオメトリ法線 normalize(frag_normal) で試すこと（法線マップの凹凸でオフセットがぶれる）。
         result += (diff + specular) * radiance * NdotL /* * shadow */;
     }
 
