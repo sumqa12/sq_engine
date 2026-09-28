@@ -1,1 +1,10 @@
 * text eol=lf
+*.glb  binary
+*.gltf text eol=lf
+*.bin  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.ktx2 binary
+*.hdr  binary
+*.spv  binary

@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
 
 #include "depth_image.hpp"
@@ -98,6 +99,71 @@ private:
                            const std::vector<DrawItem>& items,
                            std::uint32_t first_instance,
                            bool instanced);
+
+    // ---- phase16 ①-1: draw_frame の分解 ----
+    //
+    // draw_frame を「フレームのデータを作る」と「コマンドを記録する」の2段に分ける。
+    // シャドウパスは本パスの**前**に記録する必要があるので、データ収集を
+    // レンダーパスの外（= record ラムダより前）へ出しておく。
+    //
+    //   draw_frame
+    //     ├─ フェンス待機 / acquire / vkResetFences         （今までどおり）
+    //     ├─ collect_frame_data()                            ← レンダーパスの外
+    //     │    ├─ resolve_camera()
+    //     │    ├─ collect_lights()
+    //     │    ├─ カメラUBO の更新
+    //     │    ├─ collect_draw_items()
+    //     │    └─ upload_instances()
+    //     ├─ command_buffers_->record(...)
+    //     │    ├─ record_shadow_pass()                       ← ①-1 では空
+    //     │    └─ record_main_pass()
+    //     └─ submit / present                                （今までどおり）
+    //
+    // ★ ①-1 は**絵が変わらないリファクタ**。①-2 以降（影の実装）とは別コミットにすること。
+
+    // 1フレームぶんの「CPU 側で決めた値」。collect_frame_data が作り、記録側が読む。
+    // ★ メンバ変数にせず戻り値で渡す（フレームをまたいで残る状態にしないため）。
+    struct FrameContext {
+        glm::mat4 view_projection{ 1.0f };
+        glm::vec3 camera_position{ 0.0f };  // 半透明ソートの距離基準 / カメラUBO の camera_position
+
+        // ①-3 で足すもの:
+        //   glm::mat4     light_view_projection{ 1.0f };
+        //   std::uint32_t shadow_light_index = ~0u;   // lights_ 内の添字。無ければ ~0u（D-4）
+    };
+
+    // フレームのデータを作ってGPUへ転送する（記録はしない）。
+    //   ★ 呼ぶ位置は「vkAcquireNextImageKHR が成功した後」。
+    //     aspect を swapchain_->extent() から取るので、recreate_swapchain より前に
+    //     呼ぶと古い extent で計算してしまう。
+    //   ★ current_frame_ のバッファ（camera_ubos_ / light_buffers_ / instance_buffers_）へ
+    //     書き込むので、フェンス待機より後であること（今の record ラムダ内と同じ条件）。
+    [[nodiscard]] FrameContext collect_frame_data(const ecs::Registry& registry);
+
+    // アクティブカメラの3段フォールバック（phase10 D-2）で view_projection と位置を決める。
+    [[nodiscard]] FrameContext resolve_camera(const ecs::Registry& registry, float aspect_ratio) const;
+
+    // Light を lights_ に集め、上限でクランプして light_buffers_ へ転送する。
+    //   ①-3 でシャドウキャスタライトの選択もここに入る（context.shadow_light_index を埋める）。
+    void collect_lights(const ecs::Registry& registry, FrameContext& context);
+
+    // カメラ視錐台でカリングして opaque_items_ / transparent_items_ へ振り分け、ソートする。
+    //   ①-5 でライト視錐台による shadow_items_ の振り分けも**同じループ**に入る。
+    void collect_draw_items(const ecs::Registry& registry, const FrameContext& context);
+
+    // ソート済みの DrawItem から instances_ を組み立て、kMaxInstances でクランプして転送する。
+    //   ①-5 で3区間（不透明 | 半透明 | シャドウキャスタ）になる。
+    void upload_instances();
+
+    // シャドウパスの記録（①-6）。
+    //   ★ ①-1 の時点では**何も記録しない空の関数**のまま呼んでよい（絵は変わらない）。
+    //     呼び出し位置だけ先に確定させておく。
+    void record_shadow_pass(VkCommandBuffer command_buffer, const FrameContext& context);
+
+    // 本パスの記録: BeginRenderPass → viewport/scissor → set=0/1 のバインド
+    //   → 不透明 → 半透明 → EndRenderPass。
+    //   ②-9 でスカイボックスが「不透明の後・半透明の前」に入る。
+    void record_main_pass(VkCommandBuffer command_buffer, std::uint32_t image_index);
 
     void create_surface();
     void create_framebuffers();
