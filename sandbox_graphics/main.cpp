@@ -34,7 +34,8 @@ using namespace std::chrono;
 
 // phase12 手順2: メッシュ登録に MeshId が必要になったため、Renderer の生成を main へ移し、
 // エンティティ生成より前にアセットを登録できるようにした（renderer は main が所有する）。
-static void loop(sq::ecs::Registry &registry, sq::graphics::Renderer &renderer) {
+// sun: phase16 ①-9。時間で回す方向光（影の向きの検証用）。null なら回さない。
+static void loop(sq::ecs::Registry &registry, sq::graphics::Renderer &renderer, sq::ecs::Entity sun) {
     // InputManager を生成し、Renderer 経由でコールバックを配線する (phase9)
     sq::input::InputManager input;
     renderer.set_key_callback([&](int k, int a){ input.on_key(k, a != GLFW_RELEASE); });
@@ -58,6 +59,7 @@ static void loop(sq::ecs::Registry &registry, sq::graphics::Renderer &renderer) 
     steady_clock::time_point prev_f = steady_clock::now();
     steady_clock::time_point prev_u = steady_clock::now();
     constexpr float du = 1.0f / TARGET_UPS;
+    constexpr float kSunAngularSpeed = 0.2f;
 
     std::vector<sq::ecs::Entity> cameras;
     registry.view<Camera>().each([&](sq::ecs::Entity e, Camera) {
@@ -123,6 +125,18 @@ static void loop(sq::ecs::Registry &registry, sq::graphics::Renderer &renderer) 
             }
 
             scheduler.update(registry, input, input_map, du);  // du = 1/TARGET_UPS 秒
+
+            // 太陽を Y 軸まわりに回す（kSunAngularSpeed = 0.2 rad/s 程度）。
+            if (!sun.is_null()) {
+                auto& t = registry.get<Transform>(sun);
+                t.set_rotation(glm::angleAxis(kSunAngularSpeed * du, glm::vec3(0, 1, 0)) * t.rotation());
+            }
+            //   ★ 左から掛ける（ワールドの Y 軸まわり）。右から掛けるとライトのローカル軸まわりになり、
+            //     仰角ごと回って太陽が地平線の下へ潜る。
+            //   ★ 更新レート側（ここ）で回す。描画レート側で回すと FPS で回転速度が変わる。
+            //   ★ 確認: 影が「太陽と反対側へ」「物体の高さに比例した長さで」伸び、滑らかに回ること。
+            //     逆向きに伸びるなら light_dir の符号、長さが変なら正射影の範囲を疑う（①-9）。
+            (void)sun;
 
             input.new_frame(); // 入力の消費
 
@@ -199,10 +213,14 @@ static sq::ecs::Entity create_camera(sq::ecs::Registry& registry,
 //   黙って「原点・無回転のライト」として扱われる（落ちないので気付きにくい）。
 //
 // direction は「光が進む向き」。真上から差す光なら (0, -1, 0)。
+// cast_shadows: phase16 ①-9。影を落とすか（Light::cast_shadows へそのまま入れる）。
+//   ★ 既定引数にしないこと。「影を出したいライト」と「色を確認するライト」を
+//     呼び出し側で明示的に書き分けるための引数（D-4 で自動選択を採らなかった理由と同じ）。
 static sq::ecs::Entity create_directional_light(sq::ecs::Registry& registry,
                                                 const glm::vec3& direction,
                                                 const glm::vec3& color,
-                                                float intensity) {
+                                                float intensity,
+                                                bool cast_shadows) {
     const sq::ecs::Entity entity = registry.create();
 
     // -Z が direction を向く回転を作る。
@@ -230,6 +248,8 @@ static sq::ecs::Entity create_directional_light(sq::ecs::Registry& registry,
             .type = LightType::Directional,
             .color = color,
             .intensity = intensity,
+            .cast_shadows = cast_shadows
+            //   ★ 指示付き初期化子はメンバの宣言順に書くこと（range の後）。
         }
     );
 
@@ -466,12 +486,15 @@ int main() {
     //
     // ★ 確認の順序（①-8）: まず点光源だけで「陰影が出るか」「距離で減衰するか」を見て、
     //   通ってから方向光を足すと、向きの取り違え（-Z 前方）を切り分けやすい。
+    // phase16 ①-9: 影を落とす太陽。loop() へ渡して時間で回す。
+    sq::ecs::Entity sun{};
     {
         // 太陽。方向光なので位置は使われず、向きだけが効く。
-        create_directional_light(registry,
+        sun = create_directional_light(registry,
             glm::vec3(0.3f, -1.0f, 0.5f),  // 光が進む向き。下向き成分が大きいほど真上からの光になる
             glm::vec3(1.0f, 0.95f, 0.9f),    // ★ linear 値（⓪ の約束。sRGB の値をそのまま入れない）
-            2.0f);
+            2.0f,
+            true);                           // ★ phase16 ①-9: 影を落とす
 
         // 点光源。格子（kGridSide × kSpacing = 18 四方）の内側に散らし、
         // 距離減衰と range の打ち切りが見えるようにする。
@@ -490,7 +513,10 @@ int main() {
         }
     }
 
-    // ---- メインループ ----
+    // ★ 白テクスチャ（乗算の恒等元）を渡し、base_color だけが出る状態にする。
+    //   既定テクスチャ（市松模様）を使うと模様がハイライトに紛れて読めなくなる。
+    const TextureId white = renderer.textures().white_texture();
+
     // ---- phase15 ② の検証シーン: マテリアルボール ----
     //
     // roughness 6段 × metallic 2段 の計12体を並べ、Cook-Torrance の挙動を1画面で見る。
@@ -504,10 +530,6 @@ int main() {
         constexpr int   kRoughnessSteps = 6;      // 横方向の段数
         constexpr float kBallSpacing    = 3.0f;
         constexpr float kBallScale      = 2.0f;   // メッシュは半径 0.5 なので直径 1.0 → 2.0
-
-        // ★ 白テクスチャ（乗算の恒等元）を渡し、base_color だけが出る状態にする。
-        //   既定テクスチャ（市松模様）を使うと模様がハイライトに紛れて読めなくなる。
-        const TextureId white = renderer.textures().white_texture();
 
         for (int row = 0; row < 2; ++row) { // row 0 = 非金属, row 1 = 金属
             const auto metallic = static_cast<float>(row);
@@ -554,6 +576,53 @@ int main() {
         set_active_controllable_camera(registry, panel_camera);
     }
 
-    loop(registry, renderer);
+    // ---- phase16 ①-9 の検証シーン: 影を受ける床 ----
+    //
+    // ★ 床が無いと影の落ちる先が他のモデルしか無く、「影が出ていない」のか
+    //   「影を受ける面が見えていない」のか区別できない。
+    {
+        constexpr float kFloorY = -9.5f;
+
+        //   マテリアル
+        //      ★ 鏡面が強いと影のコントラストが読みにくい。無地の粗い誘電体にする。
+        const MaterialId floor_material = renderer.materials().add(
+            sq::graphics::MaterialData{
+                .base_color = {0.8, 0.8, 0.8, 1},
+                .metallic = 0.0,
+                .roughness = 0.9,
+            },{ .albedo = white }
+        );
+        //   エンティティ
+        //      ★ plane_mesh は XZ 平面・法線 +Y・一辺 1（mesh_registry.cpp）。
+        //      ★ kFloorY は格子（y = -9..+9）の下、-10.5 あたり。y = 0 に置くと格子を貫通する。
+        //   ★ 正射影の箱は原点中心 ±40（kShadowOrthoExtent）。床は ±50 なので、
+        //     縁の 10 ぶんには影が出ない。これは**仕様**（①-10）。
+        sq::ecs::Entity e = registry.create();
+        registry.add<Transform>(e, Transform(
+            glm::vec3(0, kFloorY, 0),
+            glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+            glm::vec3(100, 1, 100))
+        );
+        registry.add<WorldTransform>(e, WorldTransform{});
+        registry.add<MeshHandle>(e, MeshHandle{ plane_mesh });
+        registry.add<Material>(e, Material{ .id = floor_material, .transparent = false });
+        //
+        // ★ 検証の前に知っておくこと（①-8 との関係）:
+        //   - シャドウパスは cull_mode = FRONT。片面の板（plane_mesh）は三角形が1組しか無いので、
+        //     **ライトから見て表なら書かれず、裏なら書かれる**（向き次第で影が出たり出なかったりする）。
+        //       (a) 床は表（法線 +Y）が太陽を向いているので書かれない
+        //           （床が自分に影を落とすアクネも出ない）
+        //       (b) 格子の板は**ランダムに回転している**ので、裏を太陽に向けた板だけが影を落とす。
+        //           BACK にすると逆に表を向けた板だけが落とす。どちらのモードでも
+        //           「板の影が出る」ように見えるのはこのため（バグではない）。
+        //     ★ 確かめるには、格子の回転を一時的に単位 quat にして全部の板を +Y 向きに揃える。
+        //       FRONT なら板の影が全部消え、BACK なら全部出る。
+        //   - ①-8 の手順1「bias を 0 にすると縞が出るのが正常」は、FRONT カリングのままだと
+        //     **縞が出ないことがある**（表面の深度を書いていないので自己遮蔽が起きにくい）。
+        //     配管の確認としてアクネを見たいときは、一時的に cull_mode を BACK にしてから
+        //     bias を 0 にすること。縞が出れば配管は通っている。
+    }
+
+    loop(registry, renderer, sun);
     return 0;
 }

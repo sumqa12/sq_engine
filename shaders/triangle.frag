@@ -146,17 +146,17 @@ float sample_shadow(vec3 world_pos, vec3 N, vec3 L) {
     }
     //      uv の範囲外は CLAMP_TO_BORDER + 白ボーダーが 1.0 を返すので明示チェック不要。
 
+    // ★ ①-8 の調整はまず bias = 0 から。縞模様（アクネ）が出るのが正常。
     float bias = max(kNormalBiasMax * (1.0 - dot(N, L)), kNormalBiasMin);
 
     //   3x3 PCF
     vec2 texel = 1.0 / vec2(textureSize(shadow_map, 0));
     float sum = 0.0;
-    for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x) {
+    for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
         sum += texture(shadow_map, vec3(uv + vec2(x, y) * texel, z - bias));
     }
 
     return sum / 9.0;
-    // ★ ①-8 の調整はまず bias = 0 から。縞模様（アクネ）が出るのが正常。
 }
 
 void main() {
