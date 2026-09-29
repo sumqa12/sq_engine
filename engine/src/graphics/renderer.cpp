@@ -59,7 +59,6 @@ namespace sq::graphics {
                 .depth_store_op = VK_ATTACHMENT_STORE_OP_STORE
             }
         );
-        //   color_format は使われないので VK_FORMAT_UNDEFINED でよい。
         //   ★ depth_store_op を STORE にし忘れると「影が出ない／ノイズになる」（①-11）。
 
         // 8. ディスクリプタセットレイアウトの作成（カメラUBO用、set=0）
@@ -418,6 +417,7 @@ namespace sq::graphics {
                 } else {
                     context.shadow_light_index = lights_.size();
                     context.light_view_projection = compute_light_view_projection(direction);
+                    is_selected = true;
                 }
             }
 
@@ -511,7 +511,8 @@ namespace sq::graphics {
 
                 if (in_camera) {
                     (material.transparent ? transparent_items_ : opaque_items_).push_back(item);
-                } else {
+                }
+                if (in_light) {
                     shadow_items_.push_back(item);
                 }
             }
@@ -532,6 +533,13 @@ namespace sq::graphics {
         std::ranges::sort(transparent_items_,
             [](const DrawItem& a, const DrawItem& b) {
                 return a.distance_sq > b.distance_sq;
+            }
+        );
+
+        // シャドウアイテム: メッシュ順
+        std::ranges::sort(shadow_items_,
+        [](const DrawItem& a, const DrawItem& b) {
+                return a.mesh < b.mesh;
             }
         );
     }
@@ -559,15 +567,17 @@ namespace sq::graphics {
             instances_.resize(kMaxInstances);
 
             // 描画側も同じ位置で止める（転送されていない範囲を描かないため）
-            std::size_t size = shadow_items_.size();
-            shadow_items_.resize(glm::min(exceeds, std::size_t{0}));
-            exceeds -= size;
+            std::size_t n = glm::min(exceeds, shadow_items_.size());
+            shadow_items_.resize(shadow_items_.size() - n);
+            exceeds -= n;
             if (exceeds > 0) {
-                size = transparent_items_.size();
-                transparent_items_.resize(glm::min(exceeds, std::size_t{0}));
+                n = glm::min(exceeds, transparent_items_.size());
+                transparent_items_.resize(transparent_items_.size() - n);
+                exceeds -= n;
             }
             if (exceeds > 0) {
-                opaque_items_.resize(exceeds);
+                n = glm::min(exceeds, opaque_items_.size());
+                opaque_items_.resize(opaque_items_.size() - n);
             }
         }
 
@@ -610,7 +620,7 @@ namespace sq::graphics {
         VkRect2D scissor{{0, 0}, shadow_maps_[current_frame_]->extent()};
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
 
-        if (context.shadow_light_index > 0) {
+        if (context.shadow_light_index != kNoShadowLight) {
             vkCmdSetDepthBias(command_buffer, kDepthBiasConstant, 0.0f, kDepthBiasSlope);
 
             vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_shadow_->handle());
@@ -628,8 +638,7 @@ namespace sq::graphics {
 
     // 本パスを記録する。
     void Renderer::record_main_pass(VkCommandBuffer command_buffer, std::uint32_t image_index) {
-        // ★ ①-1 の時点ではシャドウパスが空なので、set=0 のバインドはここだけでよい。
-        //   ①-6 でシャドウパスも set=0 をバインドするようになるが、レンダーパスを跨いでも
+        //   シャドウパスも set=0 をバインドするが、レンダーパスを跨いでも
         //   バインドは残る（レイアウト互換なので）。それでも**ここで改めてバインドしておく**方が、
         //   パスの記録が互いに独立して読める。
 
@@ -672,7 +681,7 @@ namespace sq::graphics {
 
         VkDescriptorSet environment_set = environment_sets_[current_frame_];
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            pipeline_shadow_->layout(), 2, 1, &environment_set, 0, nullptr);
+            pipeline_opaque_->layout(), 2, 1, &environment_set, 0, nullptr);
 
         // 記録（不透明パス → 半透明パス）
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_opaque_->handle());

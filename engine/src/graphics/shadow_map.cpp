@@ -23,7 +23,7 @@ ShadowMap::ShadowMap(VkDevice device, GpuAllocator& allocator,
 
     if (vkCreateImage(device_, &image_create_info, nullptr, &image_) != VK_SUCCESS) {
         throw std::runtime_error("ShadowMap::ShadowMap : イメージの作成に失敗しました。");
-    };
+    }
 
     VkMemoryRequirements memory_requirements;
     vkGetImageMemoryRequirements(device_, image_, &memory_requirements);

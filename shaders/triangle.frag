@@ -130,22 +130,33 @@ vec3 F_Schlick(float HdotV, vec3 F0)
 // @param L         ライトへ向かうベクトル
 // @return 1.0 = 照らされている、0.0 = 完全な影
 float sample_shadow(vec3 world_pos, vec3 N, vec3 L) {
-    // TODO(①-7):
-    //   1. 光源クリップ空間へ: lp = camera.light_view_proj * vec4(world_pos, 1.0); ndc = lp.xyz / lp.w
+    //   光源クリップ空間へ
+    vec4 lp = camera.light_view_proj * vec4(world_pos, 1.0);
+    vec3 ndc = lp.xyz / lp.w;
     //      ★ 正射影なので w は常に 1。除算は phase17（透視）への備え。
-    //   2. uv = ndc.xy * 0.5 + 0.5;  z = ndc.z;
+
+    vec2 uv = ndc.xy * 0.5 + 0.5;
+    float z = ndc.z;
     //      ★ z は再マップしない（GLM_FORCE_DEPTH_ZERO_TO_ONE で既に [0,1]）。
     //        OpenGL 由来の `* 0.5 + 0.5` を z にも書くと影が完全に消える。
     //      ★ uv.y も反転しない（シャドウパスと本パスで同じ向きのビューポート）。
-    //   3. z > 1.0 なら 1.0 を返す（ライトの far より遠い）。
+
+    if (z > 1.0) {
+        return 1.0; // ライトの far より遠い
+    }
     //      uv の範囲外は CLAMP_TO_BORDER + 白ボーダーが 1.0 を返すので明示チェック不要。
-    //   4. bias = max(kNormalBiasMax * (1.0 - dot(N, L)), kNormalBiasMin);
-    //   5. 3x3 PCF: texel = 1.0 / vec2(textureSize(shadow_map, 0))
-    //        sum += texture(shadow_map, vec3(uv + vec2(x, y) * texel, z - bias));  （x, y = -1..1）
-    //        return sum / 9.0;
-    //
+
+    float bias = max(kNormalBiasMax * (1.0 - dot(N, L)), kNormalBiasMin);
+
+    //   3x3 PCF
+    vec2 texel = 1.0 / vec2(textureSize(shadow_map, 0));
+    float sum = 0.0;
+    for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x) {
+        sum += texture(shadow_map, vec3(uv + vec2(x, y) * texel, z - bias));
+    }
+
+    return sum / 9.0;
     // ★ ①-8 の調整はまず bias = 0 から。縞模様（アクネ）が出るのが正常。
-    return 1.0;
 }
 
 void main() {
@@ -225,12 +236,12 @@ void main() {
         // ライト放射輝度
         vec3 radiance = light.color_intensity.rgb * light.color_intensity.w * attenuation;
 
-        // TODO(①-7): 影を落とすライト（i == camera.light_count.y）のときだけ係数を掛ける。
-        //   float shadow = 1.0;
-        //   if (i == camera.light_count.y) { shadow = sample_shadow(frag_world_pos, N, L); }
+        // 影を落とすライト（i == camera.light_count.y）のときだけ係数を掛ける。
+        float shadow = 1.0;
+        if (i == camera.light_count.y) { shadow = sample_shadow(frag_world_pos, N, L); }
         //   ★ N はシェーディング法線（法線マップ適用後）でよいが、アクネが消えないときは
         //     ジオメトリ法線 normalize(frag_normal) で試すこと（法線マップの凹凸でオフセットがぶれる）。
-        result += (diff + specular) * radiance * NdotL /* * shadow */;
+        result += (diff + specular) * radiance * NdotL * shadow;
     }
 
     result += m.emissive.rgb * emissive_tex;

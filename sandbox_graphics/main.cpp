@@ -1,7 +1,6 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
-#include <future>
 #include <random>
 #include <GLFW/glfw3.h>
 
@@ -396,49 +395,31 @@ int main() {
     // ---- phase14 ③: glTF モデルの読み込みと配置 ----
     // ★ assets/models/ の中身が、ビルド後に実行ファイルの隣の models/ へコピーされる
     //   （sandbox_graphics/CMakeLists.txt の POST_BUILD）。パスは実行時CWD基準。
-    // 1. 各ロード処理を非同期（std::async）でバックグラウンド実行する
-    // std::launch::async を指定することで、強制的に別スレッドで実行させます
-    auto future_duck = std::async(std::launch::async, [&]() {
-        return sq::assets::load_gltf("models/Duck.glb", renderer.meshes(), renderer.textures(), renderer.materials());
-    });
-
-    auto future_chess = std::async(std::launch::async, [&]() {
-        return sq::assets::load_gltf("models/ABeautifulGame.glb", renderer.meshes(), renderer.textures(), renderer.materials());
-    });
-
-    auto future_candle = std::async(std::launch::async, [&]() {
-        return sq::assets::load_gltf("models/GlassHurricaneCandleHolder.glb", renderer.meshes(), renderer.textures(), renderer.materials());
-    });
-
-    auto future_box = std::async(std::launch::async, [&]() {
-        return sq::assets::load_gltf("models/Box.glb", renderer.meshes(), renderer.textures(), renderer.materials());
-    });
-
-    // 2. 結果を格納するvectorを用意
-    int kModelCopyCount = 5;
     std::vector<std::pair<sq::assets::LoadedModel, float>> models;
     models.reserve(4);
+    models.emplace_back(
+        sq::assets::load_gltf("models/Duck.glb",
+        renderer.meshes(), renderer.textures(), renderer.materials())
+    , 2.0f);
+    models.emplace_back(
+        sq::assets::load_gltf("models/ABeautifulGame.glb",
+        renderer.meshes(), renderer.textures(), renderer.materials())
+    , 10.0f);
+    models.emplace_back(
+        sq::assets::load_gltf("models/Box.glb",
+        renderer.meshes(), renderer.textures(), renderer.materials())
+    , 2.0f);
 
-    // 3. .get() を呼ぶことで、別スレッドの処理が終わるのを待ち、結果を回収する
-    // get() は、そのスレッドの処理が終わるまで自動的にブロック（同期）してくれます
-    models.emplace_back(future_duck.get(), 2.0f);
-    models.emplace_back(future_chess.get(), 10.0f);
-    models.emplace_back(future_candle.get(), 10.0f);
-    models.emplace_back(future_box.get(), 2.0f);
+    for (int i = 0; i < models.size(); i++) {
+        // モデル全体をまとめて動かすための空の親を1つ作る（④ の階層の使いどころ）
+        auto& model = models[i];
+        float f = i % 2 == 0 ? 5.0f : -5.0f;
+        const sq::ecs::Entity model_root = registry.create();
+        registry.add<Transform>(model_root, Transform(
+            glm::vec3(static_cast<float>(i) * f, 0, 0), glm::quat(1,0,0,0), glm::vec3(model.second)));
+        registry.add<WorldTransform>(model_root, WorldTransform{});
 
-    for (int i = 0; i < kModelCopyCount; ++i) {
-        for (int j = 0; j < models.size(); j++) {
-            // モデル全体をまとめて動かすための空の親を1つ作る（④ の階層の使いどころ）
-            auto& model = models[j];
-            float fi = i % 2 == 0 ? 5.0f : -5.0f;
-            float fj = j % 2 == 0 ? 5.0f : -5.0f;
-            const sq::ecs::Entity model_root = registry.create();
-            registry.add<Transform>(model_root, Transform(
-                glm::vec3(static_cast<float>(j) * fj, 0, static_cast<float>(i) * fi), glm::quat(1,0,0,0), glm::vec3(model.second)));
-            registry.add<WorldTransform>(model_root, WorldTransform{});
-
-            std::vector<sq::ecs::Entity> model_entities = sq::assets::spawn_model(registry, model.first, model_root);
-        }
+        std::vector<sq::ecs::Entity> model_entities = sq::assets::spawn_model(registry, model.first, model_root);
     }
     //   ★ 検証順序（③-6）。いま assets/models にあるのは Box.glb のみ:
     //     1. Box.glb（無地・バイナリ形式）→ 形が出るか・**裏返っていないか**  ← 現在ここ
