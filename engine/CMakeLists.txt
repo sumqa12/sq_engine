@@ -29,6 +29,12 @@ add_library(sq_engine_lib STATIC
     src/scene/frustum.cpp
     src/graphics/depth_image.cpp
     src/graphics/shadow_map.cpp
+    src/graphics/image_utils.cpp
+    src/graphics/shader_module.cpp
+    src/graphics/cubemap.cpp
+    src/graphics/hdr_texture.cpp
+    src/graphics/compute_pipeline.cpp
+    src/graphics/environment_map.cpp
     src/graphics/texture.cpp
     src/graphics/texture_registry.cpp
     src/graphics/sampler.cpp

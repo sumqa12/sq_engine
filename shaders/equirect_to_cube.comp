@@ -1,0 +1,63 @@
+#version 450
+
+// HDR の equirectangular -> キューブマップ（phase16 ②-4）。
+//
+// ディスパッチ: vkCmdDispatch(size / 8, size / 8, 6)
+//   gl_GlobalInvocationID.xy = 面内のテクセル、.z = 面番号（0..5）
+// ★ このファイルを足したら CMake を再実行すること（*.comp の GLOB は構成時にしか評価されない）。
+
+#define PI 3.14159265359
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D equirect;   // 入力（R32G32B32A32_SFLOAT の 2D）
+// ★ フォーマット修飾子（rgba16f）が必須。C++ 側の kCubeFormat と一致させること。
+// ★ C++ 側の書き込み用ビューは VIEW_TYPE_2D_ARRAY なので、GLSL 側は **image2DArray** で受けること
+//   （z = 面番号 = 配列の層）。imageCube（Dim = Cube）は VIEW_TYPE_CUBE のビューにしか合わない
+//   （仕様「Compatibility Between SPIR-V Image Dimensions and Vulkan ImageView Types」）。
+// ★ image2DArray では imageSize が ivec3（xy = 面の一辺、z = 層数 6）を返す。
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2DArray out_cube;
+
+// face（0..5）と面内の [-1,1] 座標 st から、キューブの表面上の方向ベクトルを作る。
+// 面の順序は Vulkan の規約: 0:+X, 1:-X, 2:+Y, 3:-Y, 4:+Z, 5:-Z
+//
+// ★ 各面で st.x / st.y がどの軸のどちら向きに対応するかは、Vulkan 仕様の
+//   「Cube Map Face Selection」の表（sc / tc / ma）を逆算して決める。
+//   ここを間違えると「空が上下逆」「左右が入れ替わる」「面の継ぎ目で景色がずれる」になる。
+//   スカイボックスで目視確認してから irradiance（手順6）に進むこと。
+// ★ st.y は画像の下向き（t 軸）であることに注意。+Y 面と -Y 面は特に取り違えやすい。
+vec3 cube_direction(uint face, vec2 st) {
+    // face ごとの switch で方向ベクトルを返す（正規化は呼び出し側でよい）。
+    vec3 result;
+
+    switch (face) {
+        case 0: result = vec3(1.0, -st.y, -st.x); break;
+        case 1: result = vec3(-1.0, -st.y, st.x); break;
+        case 2: result = vec3(st.x, 1.0, st.y); break;
+        case 3: result = vec3(st.x, -1.0, -st.y); break;
+        case 4: result = vec3(st.x, -st.y, 1.0); break;
+        case 5: result = vec3(-st.x, -st.y, -1.0); break;
+    }
+    return result;
+}
+
+void main() {
+    ivec2 size = imageSize(out_cube).xy;
+       if (gl_GlobalInvocationID.x >= size.x || gl_GlobalInvocationID.y >= size.y) return;
+    //     ★ size が 8 の倍数なら不要だが、入れておくと手順6で小さい mip を焼くときに効く
+
+    vec2 uv  = (vec2(gl_GlobalInvocationID.xy) + 0.5) / vec2(size);
+    vec2 st  = uv * 2.0 - 1.0;
+    vec3 dir = normalize(cube_direction(gl_GlobalInvocationID.z, st));
+
+    //   equirect の UV:
+    float u = atan(dir.z, dir.x) / (2 * PI) + 0.5;
+    float v = acos(clamp(dir.y, -1.0, 1.0)) / PI;
+    //     ★ v の向き（上下）は画像の原点の取り方で変わる。空が地面に来たら v = 1.0 - v。
+    //       スカイボックスを見れば一瞬で分かる（②-9 を先にやる理由）。
+    //
+    //   ★ texture() ではなく textureLod(equirect, vec2(u, v), 0.0) を使うこと。
+    //     コンピュートシェーダには微分（dFdx）が無いので、texture() の暗黙の LOD が定義されない。
+    vec3 color = textureLod(equirect, vec2(u, v), 0.0).rgb;
+    imageStore(out_cube, ivec3(gl_GlobalInvocationID), vec4(color, 1.0));
+}

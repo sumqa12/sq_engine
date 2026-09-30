@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <stdexcept>
+#include <spdlog/spdlog.h>
 
 #include "sq/graphics/buffer.hpp"  // Buffer::find_memory_type を再利用する（重複実装しない）
 

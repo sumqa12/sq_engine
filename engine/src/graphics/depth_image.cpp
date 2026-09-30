@@ -56,7 +56,9 @@ namespace sq::graphics {
 
         vkDestroyImageView(device_, view_, nullptr);
         vkDestroyImage(device_, image_, nullptr);
-        allocator_->free(allocation_);
+        if (allocator_ != nullptr) {
+            allocator_->free(allocation_);
+        }
 
         allocator_ = nullptr;
         device_ = VK_NULL_HANDLE;

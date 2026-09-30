@@ -109,26 +109,39 @@ namespace sq::graphics {
             PipelineConfig{
                 .depth_write_enable = true, .blend_enable = false,
                 .has_color_attachment = false, .depth_bias_enable = true,
-                .cull_mode = VK_CULL_MODE_FRONT_BIT
+                .cull_mode = VK_CULL_MODE_FRONT_BIT,
             }
         );
 
-        // 15. シャドウマップの作成
+        // シャドウマップの作成
         create_shadow_maps();
 
-        // 16. フレームバッファの作成
+        // スカイボックス用パイプライン（pipeline_skybox_）を作る。
+        pipeline_skybox_ = std::make_unique<GraphicsPipeline>(device_->handle(), render_pass_->handle(), swapchain_->extent(),
+            "shaders/skybox.vert.spv", "shaders/skybox.frag.spv",
+            set_layouts,
+            PipelineConfig{
+                .depth_write_enable = false,
+                .blend_enable = false,
+                .cull_mode = VK_CULL_MODE_NONE,
+                .depth_compare_op = VK_COMPARE_OP_LESS_OR_EQUAL,
+                .has_vertex_input = false
+            }
+        );
+
+        // 15. フレームバッファの作成
         create_framebuffers();
 
-        // 17. コマンドバッファの作成
+        // 16. コマンドバッファの作成
         command_buffers_ = std::make_unique<CommandBuffers>(device_->handle(), *queue_family_indices_.graphics_family, kFramesInFlight);
 
-        // 18. 同期オブジェクトの作成
+        // 17. 同期オブジェクトの作成
         sync_objects_ = std::make_unique<SyncObjects>(device_->handle(), kFramesInFlight, framebuffers_.size());
 
-        // 19. レジストリより 先に 遅延解放キューを作る。
+        // 18. レジストリより 先に 遅延解放キューを作る。
         deletions_ = std::make_unique<DeletionQueue>(static_cast<std::uint32_t>(kFramesInFlight));
 
-        // 20. アセットレジストリの生成（phase12 手順2・4）
+        // 19. アセットレジストリの生成（phase12 手順2・4）
         // 各レジストリのコンストラクタに *deletions_ を渡す。
         meshes_ = std::make_unique<MeshRegistry>(
             device_->allocator(), device_->handle(),
@@ -162,6 +175,15 @@ namespace sq::graphics {
         // 続けて既定マテリアルを1件登録する（Material を持たない／無効IDのエンティティ用）。
         materials_->add(MaterialData{}, { .albedo = textures_->default_texture() });
 
+        // 環境マップの前計算。
+        const auto start = std::chrono::steady_clock::now();
+        environment_ = std::make_unique<EnvironmentMap>(device_->handle(), device_->allocator(),
+            *queue_family_indices_.graphics_family, device_->graphics_queue(),
+            kEnvironmentMapPath, cube_sampler_->handle());
+        //   ★ write_environment_sets() より**前**（binding=2 に環境キューブの view を書くため）。
+        const auto end = std::chrono::steady_clock::now();
+        spdlog::info("Renderer::Renderer : 環境マップの前計算 [{}ms]", std::chrono::duration_cast<milliseconds>(end - start).count());
+
         write_environment_sets();
         //   ★ ここ（コンストラクタの最後）に置く理由: shadow_maps_ と白テクスチャの
         //     **両方**が出揃っているのはこの時点だけ。
@@ -187,6 +209,8 @@ namespace sq::graphics {
         pipeline_opaque_.reset();
         pipeline_shadow_.reset();
         shadow_maps_.clear();
+        pipeline_skybox_.reset();
+        environment_.reset();
 
         vkDestroyDescriptorPool(device_->handle(), descriptor_pool_, nullptr);
         // phase12 手順3: レイアウトは2つになった（セットはプール破棄でまとめて解放される）。
@@ -196,6 +220,7 @@ namespace sq::graphics {
 
         sampler_.reset();
         shadow_sampler_.reset();
+        cube_sampler_.reset();
         camera_ubos_.clear();
         instance_buffers_.clear();
         light_buffers_.clear();
@@ -687,7 +712,15 @@ namespace sq::graphics {
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_opaque_->handle());
         record_draw_items(command_buffer, *pipeline_opaque_, opaque_items_, 0, true);
 
-        // TODO(②-9): スカイボックスを入れる。
+        // スカイボックスを入れる。
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_skybox_->handle());
+        vkCmdDraw(command_buffer, 3, 1, 0, 0);   // ★ 頂点3つ・インデックス無し・頂点バッファのバインド不要
+        //   ★ ここ（不透明の後・半透明の前）に置く理由:
+        //     - 不透明より後: 既に深度が書かれた画素は LESS_OR_EQUAL で弾かれ、背景の frag が走らない
+        //     - 半透明より前: 半透明の向こうに背景が透けて見える必要がある
+        //   ★ set=0 / set=2 は上でバインド済み（レイアウト互換なのでパイプラインを替えても外れない）。
+        //   ★ クリアカラー（灰色 0.6）は、スカイボックスが正しく出れば一切見えなくなる。
+        //     灰色が見えたら skybox の深度比較（LESS のまま）か z = 1.0 を疑う。
 
         // 半透明は depthWrite=FALSE のパイプライン（phase11 ①）
         // ★ 半透明はインスタンス化しない（描画順が正しさそのもの。まとめると順序が壊れる。D-5）。
@@ -1010,12 +1043,23 @@ namespace sq::graphics {
         shadow_sampler_ = std::make_unique<Sampler>(physical_device_, device_->handle(),
             SamplerConfig{
                 .filter = VK_FILTER_LINEAR,   // ★ LINEAR でハードウェア 2x2 PCF が効く
-               .address_mode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-               .border_color = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,  // ★ 白 = 深度 1.0 = 影なし
-               .anisotropy = false,
-               .compare_enable = true,
-               .compare_op = VK_COMPARE_OP_LESS_OR_EQUAL,
-               .max_lod = 0.0f
+                .address_mode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+                .border_color = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,  // ★ 白 = 深度 1.0 = 影なし
+                .anisotropy = false,
+                .compare_enable = true,
+                .compare_op = VK_COMPARE_OP_LESS_OR_EQUAL,
+                .max_lod = 0.0f
+            }
+        );
+
+        // キューブマップ・BRDF LUT 用のサンプラ（cube_sampler_）を作る。
+        cube_sampler_ = std::make_unique<Sampler>(physical_device_, device_->handle(),
+            SamplerConfig{
+                .filter = VK_FILTER_LINEAR,
+                .address_mode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                .anisotropy = false,
+                .compare_enable = false,
+                .max_lod = VK_LOD_CLAMP_NONE
             }
         );
     }
@@ -1061,7 +1105,6 @@ namespace sq::graphics {
                 .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
             };
 
-            // [1..3] { sampler_->handle(), white_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }
             //     ★ ② までの仮置き。シェーダがまだ binding=1..3 を宣言していないので、
             //       2D の view を入れておいても問題にならない。
             //       ② で samplerCube を宣言した時点で、ここはキューブの view に**必ず**差し替えること
@@ -1073,6 +1116,16 @@ namespace sq::graphics {
                     .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 };
             }
+            // binding=2 だけ環境キューブに差し替える（このループの後で上書きすればよい）。
+            infos[2] = {
+                .sampler = cube_sampler_->handle(),
+                .imageView = environment_->environment_cube().sample_view(),
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            };
+            //   ★ skybox.frag が binding=2 を samplerCube として読むので、ここが 2D の白のままだと
+            //     「VIEW_TYPE_2D を samplerCube で読んだ」バリデーションエラーになる。
+            //   ★ binding=1 / 3 はまだ白の 2D のままでよい（どのシェーダも宣言していない）。
+            //     手順6で triangle.frag が binding=1..3 を宣言するときに全部差し替える。
 
             //     VkWriteDescriptorSet を binding ごとに4本（dstSet = environment_sets_[i]）
             std::array<VkWriteDescriptorSet, 4> write_sets{};

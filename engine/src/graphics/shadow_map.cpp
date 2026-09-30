@@ -69,7 +69,9 @@ ShadowMap::~ShadowMap() {
     vkDestroyFramebuffer(device_, framebuffer_, nullptr);
     vkDestroyImageView(device_, view_, nullptr);
     vkDestroyImage(device_, image_, nullptr);
-    allocator_->free(allocation_);
+    if (allocator_ != nullptr) {
+        allocator_->free(allocation_);
+    }
 
     allocator_ = nullptr;
     framebuffer_ = VK_NULL_HANDLE;

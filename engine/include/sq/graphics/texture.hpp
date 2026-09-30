@@ -81,24 +81,6 @@ private:
                             std::uint32_t width, std::uint32_t height,
                             VkFormat format);
 
-    // old_layout -> new_layout のイメージメモリバリアを command_buffer に記録する。
-    // phase13 ③: mip レベル範囲を指定できるようにした（生成中はレベルごとに遷移させるため）。
-    //   base_mip_level から level_count 枚ぶんが対象になる。
-    //
-    // 必要な遷移パターン（old_layout で分岐する）:
-    //   UNDEFINED            -> TRANSFER_DST_OPTIMAL     src: 0            / TOP_OF_PIPE
-    //                                                    dst: TRANSFER_WRITE / TRANSFER
-    //   TRANSFER_DST_OPTIMAL -> TRANSFER_SRC_OPTIMAL     src: TRANSFER_WRITE / TRANSFER   ★③で追加
-    //                                                    dst: TRANSFER_READ  / TRANSFER
-    //   TRANSFER_SRC_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL src: TRANSFER_READ  / TRANSFER   ★③で追加
-    //                                                    dst: SHADER_READ    / FRAGMENT_SHADER
-    //   TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL src: TRANSFER_WRITE / TRANSFER
-    //                                                    dst: SHADER_READ    / FRAGMENT_SHADER
-    // ★ old_layout だけでは TRANSFER_DST からの2遷移を区別できないので、new_layout も見て分岐すること。
-    static void transition_image_layout(VkCommandBuffer command_buffer, VkImage image,
-                                        VkImageLayout old_layout, VkImageLayout new_layout,
-                                        std::uint32_t base_mip_level, std::uint32_t level_count);
-
     // ミップマップを vkCmdBlitImage の連鎖で生成する（phase13 ③ / D-2）。
     // 呼ぶ前提: 全レベルが TRANSFER_DST_OPTIMAL で、レベル0だけピクセルが埋まっていること。
     // 抜けた後: 全レベルが SHADER_READ_ONLY_OPTIMAL になっていること。

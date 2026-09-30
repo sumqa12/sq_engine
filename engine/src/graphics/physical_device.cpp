@@ -39,17 +39,19 @@ namespace sq::graphics {
 
         QueueFamilyIndices indices;
         for (uint32_t i = 0; i < queue_family_count; ++i) {
-            if (queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            // GRAPHICS と COMPUTE の両方を持つファミリを要求する。
+            if (constexpr VkQueueFlags required = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT
+                ; (queue_families[i].queueFlags & required) == required) {
                 indices.graphics_family = i;
             }
+            //   ★ `& required` だけだと「どちらか一方」でも真になる。== required で両方を確認すること。
+            //   ★ 実質すべての GPU で同じファミリが両方を持つが、要求しておかないと「たまたま動いていた」状態になる。
         }
 
         VkBool32 present_support = VK_FALSE;
         vkGetPhysicalDeviceSurfaceSupportKHR(device, indices.graphics_family.value(), surface, &present_support);
         indices.present_family = present_support ? indices.graphics_family : std::nullopt;
 
-        (void)device;
-        (void)surface;
         return indices;
     }
 
@@ -87,8 +89,6 @@ namespace sq::graphics {
             }
         }
 
-        (void)device;
-        (void)surface;
         return swap_chain_flag;
     }
 

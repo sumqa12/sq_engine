@@ -8,9 +8,12 @@ set(SHADER_SOURCE_DIR ${CMAKE_SOURCE_DIR}/shaders)
 # ビルドツリー内の固定の場所に一旦コンパイル（OUTPUTはターゲット非依存にする）
 set(SHADER_BUILD_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders_spv)
 
+# phase16 ②-3: コンピュートシェーダ（*.comp）を追加。glslc は拡張子からステージを判定する。
+# ★ GLOB は構成時にしか評価されないので、シェーダを足したら CMake を再実行すること。
 file(GLOB SHADERS
         ${SHADER_SOURCE_DIR}/*.vert
-        ${SHADER_SOURCE_DIR}/*.frag)
+        ${SHADER_SOURCE_DIR}/*.frag
+        ${SHADER_SOURCE_DIR}/*.comp)
 
 foreach(source IN LISTS SHADERS)
     get_filename_component(FILENAME ${source} NAME)

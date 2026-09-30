@@ -15,6 +15,7 @@
 #include "sq/graphics/debug_messenger.hpp"
 #include "sq/graphics/deletion_queue.hpp"
 #include "sq/graphics/device.hpp"
+#include "sq/graphics/environment_map.hpp"
 #include "sq/graphics/graphics_pipeline.hpp"
 #include "sq/graphics/material_registry.hpp"
 #include "sq/graphics/mesh_registry.hpp"
@@ -252,6 +253,22 @@ private:
     // 深度専用パイプライン（頂点シェーダのみ。D-6）。set_layouts は本パスと共通（D-3）。
     std::unique_ptr<GraphicsPipeline> pipeline_shadow_;
 
+    // ---- phase16 ②: IBL ----
+    //
+    // 環境マップ（実行時CWD基準）。Poly Haven などの CC0 の .hdr を assets/textures/env/ に置く
+    // （assets/textures は丸ごと実行ファイルの隣へコピーされるので CMake の変更は不要）。
+    // ★ 見つからなければ灰色の一様キューブで続行する（HdrTexture の仕様）。
+    static constexpr auto kEnvironmentMapPath = "textures/env/puresky_2k.hdr";
+
+    // スカイボックス用パイプライン（②-9）。本パスの render_pass_ を使う。
+    //   PipelineConfig{ .depth_write_enable = false, .blend_enable = false,
+    //                   .cull_mode = VK_CULL_MODE_NONE,          ★ フルスクリーン三角形は巻き順を気にしない
+    //                   .depth_compare_op = VK_COMPARE_OP_LESS_OR_EQUAL,  ★ z = 1.0 で描くため
+    //                   .has_vertex_input = false }
+    //   set_layouts は本パスと共通（D-3）。
+    // ★ render_pass_ と同様、スワップチェーンに依存しない（ビューポートは動的）ので作り直さない。
+    std::unique_ptr<GraphicsPipeline> pipeline_skybox_;
+
     std::unique_ptr<DepthImage> depth_image_;
     VkFormat depth_format_;
     std::vector<VkFramebuffer> framebuffers_;
@@ -334,6 +351,19 @@ private:
     //                  .anisotropy = false, .compare_enable = true, .compare_op = LESS_OR_EQUAL }
     // ★ REPEAT のままだと影がシーン全体にタイル状に繰り返す。
     std::unique_ptr<Sampler> shadow_sampler_;
+
+    // キューブマップ・BRDF LUT 用のサンプラ（phase16 ②-9 / ⓪-3）。
+    //   SamplerConfig{ .address_mode = CLAMP_TO_EDGE, .anisotropy = false }
+    //   （filter = LINEAR / compare なし / max_lod = VK_LOD_CLAMP_NONE は既定のまま）
+    // ★ キューブは CLAMP_TO_EDGE にすること。REPEAT だと面の境界でバイリニアが
+    //   反対側の端を拾い、スカイボックスに継ぎ目の線が出る。
+    // ★ max_lod を 0 にしないこと。手順6の prefiltered は mip 0..4 を textureLod で読む。
+    // ★ EnvironmentMap の前計算で equirect を読むのにもこれを使う。
+    std::unique_ptr<Sampler> cube_sampler_;
+
+    // IBL の前計算とその成果物（phase16 ②）。
+    // ★ recreate_swapchain で作り直さないこと（set=2 に書いた view が死ぬ）。
+    std::unique_ptr<EnvironmentMap> environment_;
 
     // phase12 手順4: 単一の共有テクスチャをやめ、TextureId で引くレジストリに置き換えた。
     // set=1 のディスクリプタセットはテクスチャ全体で1個

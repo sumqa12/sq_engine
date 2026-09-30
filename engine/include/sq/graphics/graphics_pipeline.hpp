@@ -102,9 +102,6 @@ public:
     [[nodiscard]] VkPipelineLayout layout() const;
 
 private:
-    [[nodiscard]] static VkShaderModule load_shader_module(VkDevice device,
-                                                             const std::string& spv_path);
-
     VkDevice device_ = VK_NULL_HANDLE;
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;

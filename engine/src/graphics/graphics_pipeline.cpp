@@ -2,9 +2,9 @@
 
 #include <array>
 #include <filesystem>
-#include <fstream>
 
 #include "sq/graphics/mesh.hpp"
+#include "sq/graphics/shader_module.hpp"
 
 namespace sq::graphics {
 
@@ -212,36 +212,6 @@ VkPipeline GraphicsPipeline::handle() const {
 
 VkPipelineLayout GraphicsPipeline::layout() const {
     return layout_;
-}
-
-VkShaderModule GraphicsPipeline::load_shader_module(VkDevice device, const std::string& spv_path) {
-    // シェーダーファイルを読み込んで、シェーダーモジュールを作成する
-    uintmax_t spv_file_size = 0;
-    try {
-        std::filesystem::path p = spv_path;
-        spv_file_size = std::filesystem::file_size(p);
-        printf("File size: %ju bytes\n", spv_file_size);
-    } catch (const std::filesystem::filesystem_error& e) {
-        printf("File size: %s bytes\n", e.what());
-        printf("Path: %ls\n", e.path1().c_str());
-    }
-
-    std::ifstream spv_file(spv_path, std::ios::binary);
-
-    std::vector<char> spv(spv_file_size);
-    spv_file.read(spv.data(), static_cast<std::streamsize>(spv_file_size));
-
-    VkShaderModuleCreateInfo create_info{};
-    create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    create_info.codeSize = spv_file_size;
-    create_info.pCode = reinterpret_cast<const uint32_t*>(spv.data());
-
-    VkShaderModule shader_module = VK_NULL_HANDLE;
-    vkCreateShaderModule(device, &create_info, nullptr, &shader_module);
-
-    (void)device;
-    (void)spv_path;
-    return shader_module;
 }
 
 }  // namespace sq::graphics
