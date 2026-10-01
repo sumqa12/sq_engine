@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -176,13 +177,13 @@ namespace sq::graphics {
         materials_->add(MaterialData{}, { .albedo = textures_->default_texture() });
 
         // 環境マップの前計算。
-        const auto start = std::chrono::steady_clock::now();
+        const auto start = steady_clock::now();
         environment_ = std::make_unique<EnvironmentMap>(device_->handle(), device_->allocator(),
             *queue_family_indices_.graphics_family, device_->graphics_queue(),
             kEnvironmentMapPath, cube_sampler_->handle());
         //   ★ write_environment_sets() より**前**（binding=2 に環境キューブの view を書くため）。
-        const auto end = std::chrono::steady_clock::now();
-        spdlog::info("Renderer::Renderer : 環境マップの前計算 [{}ms]", std::chrono::duration_cast<milliseconds>(end - start).count());
+        const auto end = steady_clock::now();
+        spdlog::info("Renderer::Renderer : 環境マップの前計算 [{}ms]", duration_cast<milliseconds>(end - start).count());
 
         write_environment_sets();
         //   ★ ここ（コンストラクタの最後）に置く理由: shadow_maps_ と白テクスチャの

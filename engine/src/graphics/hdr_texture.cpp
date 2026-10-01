@@ -1,6 +1,7 @@
 #include "sq/graphics/hdr_texture.hpp"
 
 #include <stdexcept>
+#include <chrono>
 
 // ★ STB_IMAGE_IMPLEMENTATION はここでは定義しない（texture.cpp で1箇所だけ定義済み）。
 #include <stb_image.h>
@@ -11,7 +12,7 @@
 #include "sq/graphics/single_time_commands.hpp"
 
 namespace sq::graphics {
-
+using namespace std::chrono;
 HdrTexture::HdrTexture(VkDevice device, GpuAllocator& allocator,
                        std::uint32_t graphics_queue_family, VkQueue graphics_queue,
                        const std::string& path)
@@ -19,7 +20,10 @@ HdrTexture::HdrTexture(VkDevice device, GpuAllocator& allocator,
 
     //   1. 画像の読み込み
     int width, height, channels;
+    const auto start = steady_clock::now();
     float* pixels = stbi_loadf(path.c_str(), &width, &height, &channels, 4 /* RGBA */);
+    const auto end = steady_clock::now();
+    spdlog::info("HdrTexture::HdrTexture : 画像の読み込み(デコード) [{}ms]", duration_cast<milliseconds>(end - start).count());
 
     float gray[] = {0.5f, 0.5f, 0.5f, 1.0f}; // 1x1の灰色
     if (pixels == nullptr) {
