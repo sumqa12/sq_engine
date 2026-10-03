@@ -309,7 +309,7 @@ namespace sq::graphics {
         if (VkResult result =
             vkQueueSubmit(device_->graphics_queue(), 1, &submit_info, in_flight_fence);
             result != VK_SUCCESS) {
-            printf("Failed to submit draw command buffer!\n");
+            spdlog::warn("Renderer::draw_frame : 描画コマンドバッファの送信に失敗しました。");
         }
 
         // 4. 画像の提示
@@ -451,7 +451,7 @@ namespace sq::graphics {
         });
 
         if (lights_.size() > kMaxLights) {
-            spdlog::warn("警告: 光源の個数 {} は上限 {} を超過しています。切り詰めます。\n",
+            spdlog::warn("Renderer::collect_lights : 光源の個数 {} は上限 {} を超過しています。切り詰めます。\n",
                    lights_.size(), kMaxLights);
             lights_.resize(kMaxLights);
         }
@@ -588,7 +588,7 @@ namespace sq::graphics {
         // 上限超えたら警告を出し、リサイズ
         if (instances_.size() > kMaxInstances) {
             std::size_t exceeds = instances_.size() - kMaxInstances;
-            spdlog::warn("警告: インスタンスの個数 {} は上限 {} を超過しています。切り詰めます。\n",
+            spdlog::warn("Renderer::upload_instances : インスタンスの個数 {} は上限 {} を超過しています。切り詰めます。\n",
                    instances_.size(), kMaxInstances);
             instances_.resize(kMaxInstances);
 
@@ -1106,27 +1106,29 @@ namespace sq::graphics {
                 .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
             };
 
-            //     ★ ② までの仮置き。シェーダがまだ binding=1..3 を宣言していないので、
-            //       2D の view を入れておいても問題にならない。
-            //       ② で samplerCube を宣言した時点で、ここはキューブの view に**必ず**差し替えること
-            //       （2D の view を samplerCube で読むとバリデーションエラー）。
-            for (std::size_t j = 1; j < infos.size(); j++) {
-                infos[j] = {
-                    .sampler = sampler_->handle(),
-                    .imageView = white_view,
-                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                };
-            }
-            // binding=2 だけ環境キューブに差し替える（このループの後で上書きすればよい）。
-            infos[2] = {
+            // IBL の実体
+            infos[1] = {
                 .sampler = cube_sampler_->handle(),
-                .imageView = environment_->environment_cube().sample_view(),
+                .imageView = environment_->irradiance().sample_view(),
                 .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
             };
-            //   ★ skybox.frag が binding=2 を samplerCube として読むので、ここが 2D の白のままだと
-            //     「VIEW_TYPE_2D を samplerCube で読んだ」バリデーションエラーになる。
-            //   ★ binding=1 / 3 はまだ白の 2D のままでよい（どのシェーダも宣言していない）。
-            //     手順6で triangle.frag が binding=1..3 を宣言するときに全部差し替える。
+            infos[2] = {
+                .sampler = cube_sampler_->handle(),
+                .imageView = environment_->prefiltered().sample_view(),
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            };
+            infos[3] = {
+                .sampler = cube_sampler_->handle(),
+                .imageView = environment_->brdf_lut().view(),
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            };
+            //   ★ [2] を prefiltered に差し替えると、スカイボックス（binding=2 の mip 0 を読む）は
+            //     512 → 128 の解像度になって粗くなる。気になったら set=2 に binding=4 を足して
+            //     environment_cube() を入れ、skybox.frag をそちらに向ける
+            //     （レイアウトの binding 数 / プールの COMBINED_IMAGE_SAMPLER 枠 / この関数 の3箇所）。
+            //   ★ [3] の BRDF LUT も cube_sampler_（CLAMP_TO_EDGE）でよい。
+            //     REPEAT だと NdotV ≈ 1 や roughness ≈ 1 の端で反対側の値が混ざる。
+            //   ★ white_view はここで使わなくなるが、TextureRegistry::view() は ③ でも使えるので残してよい。
 
             //     VkWriteDescriptorSet を binding ごとに4本（dstSet = environment_sets_[i]）
             std::array<VkWriteDescriptorSet, 4> write_sets{};

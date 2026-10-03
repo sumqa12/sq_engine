@@ -19,9 +19,9 @@ namespace sq::graphics {
         for (const auto& device : devices) {
             VkPhysicalDeviceProperties device_properties;
             vkGetPhysicalDeviceProperties(device, &device_properties);
-            printf("Cheking device: %s\n", device_properties.deviceName);
+            spdlog::info("PhysicalDeviceSelector::select : Cheking device: {}", device_properties.deviceName);
             if (is_suitable(device, surface)) {
-                printf("Selected device: %s\n", device_properties.deviceName);
+                spdlog::info("PhysicalDeviceSelector::select : Selected device: {}", device_properties.deviceName);
                 return device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? device : devices[0];
             }
         }

@@ -5,6 +5,7 @@
 #include <vulkan/vulkan_extension_inspection.hpp>
 
 #include <vector>
+#include <spdlog/spdlog.h>
 
 namespace sq::graphics {
     Device::Device(VkPhysicalDevice physical_device, const QueueFamilyIndices& indices,
@@ -41,13 +42,13 @@ namespace sq::graphics {
 
     #ifdef VK_USE_PLATFORM_WIN32_KHR
         if (is_supported_full_screen_extension()) {
-            printf("フルスクリーン対応\n");
+            spdlog::info("Device::Device : フルスクリーン対応");
             device_extensions.push_back(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
             fullscreen_exclusive_supported_ = true;
         }
     #endif
 
-        printf("デバイス拡張機能数: %llu\n", device_extensions.size());
+        spdlog::info("Device::Device : デバイス拡張機能数: {}", device_extensions.size());
         device_create_info.ppEnabledExtensionNames = device_extensions.data();
         device_create_info.enabledExtensionCount = device_extensions.size();
         device_create_info.pNext = nullptr;
@@ -58,13 +59,22 @@ namespace sq::graphics {
         VkPhysicalDeviceFeatures features{};
         VkPhysicalDeviceFeatures supported_features{};
         vkGetPhysicalDeviceFeatures(physical_device_, &supported_features);
-        printf("Device : %s\n", supported_features.samplerAnisotropy ? "異方性フィルタリング 対応" : "異方性フィルタリング 非対応");
+        spdlog::info("Device::Device : {}", supported_features.samplerAnisotropy ? "異方性フィルタリング 対応" : "異方性フィルタリング 非対応");
         features.samplerAnisotropy = supported_features.samplerAnisotropy;
+
+        // BRDF LUT（R16G16_SFLOAT / rg16f）のために拡張ストレージ書式を有効化する。
+        if (!is_supported_storage_image_extended_formats(physical_device_)) {
+            throw std::runtime_error("Device::Device : 拡張ストレージ書式に対応していません。");
+        }
+        features.shaderStorageImageExtendedFormats = VK_TRUE;
+        //   ★ samplerAnisotropy と違い「非対応なら無効のまま続行」にはできない。
+        //     brdf_lut.comp の rg16f は SPIR-V に焼き込まれているので、機能が無効だと
+        //     パイプライン作成時にバリデーションエラーになる（bindless と同じく throw で落とす）。
         device_create_info.pEnabledFeatures = &features;
 
         // (phase13 ①-1): descriptor indexing（bindless）を有効化する。
         if (!is_supported_descriptor_indexing(physical_device_)) {
-            throw std::runtime_error("Device : bindless（descriptor indexing）に非対応の環境です。");
+            throw std::runtime_error("Device::Device : bindless（descriptor indexing）に非対応の環境です。");
         }
         VkPhysicalDeviceVulkan12Features features12{};
         features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
@@ -145,6 +155,17 @@ namespace sq::graphics {
         return features12.runtimeDescriptorArray && features12.descriptorBindingPartiallyBound
             && features12.shaderSampledImageArrayNonUniformIndexing
             && features12.descriptorBindingSampledImageUpdateAfterBind;
+    }
+
+    bool Device::is_supported_storage_image_extended_formats(VkPhysicalDevice physical_device) {
+        VkPhysicalDeviceFeatures f;
+        vkGetPhysicalDeviceFeatures(physical_device, &f);
+
+        VkFormatProperties p;
+        vkGetPhysicalDeviceFormatProperties(physical_device, VK_FORMAT_R16G16_SFLOAT, &p);
+
+        return f.shaderStorageImageExtendedFormats
+            && (p.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0;
     }
 
     bool Device::is_fullscreen_exclusive_supported() const {

@@ -1,5 +1,7 @@
 #include "sq/graphics/vulkan_instance.hpp"
 
+#include <spdlog/spdlog.h>
+
 namespace sq::graphics {
 
 const char* VulkanInstance::kValidationLayerName = "VK_LAYER_KHRONOS_validation";
@@ -28,15 +30,15 @@ VulkanInstance::VulkanInstance(const std::string& app_name,
     extensions.push_back(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
 
     for (const auto& extension : extensions) {
-        printf("extension: %s\n", extension);
+        spdlog::info("extension: {}", extension);
     }
 
     // validationがenabledの場合、required_extensionsにVK_EXT_debug_utilsを追加する。
     if (validation_enabled_) {
-        printf("Validation layer is enabled: %s\n", kValidationLayerName);
+        spdlog::info("Validation layer is enabled: {}", kValidationLayerName);
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     } else {
-        printf("Validation layer is disabled.\n");
+        spdlog::info("Validation layer is disabled.");
     }
 
     required_extensions = extensions.data();

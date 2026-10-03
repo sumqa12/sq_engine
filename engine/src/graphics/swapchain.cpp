@@ -2,6 +2,7 @@
 
 #include <stdexcept>
 #include <spdlog/spdlog.h>
+#include <vulkan/vulkan.hpp>
 
 #ifdef _WIN32
     #include <windows.h>
@@ -203,11 +204,8 @@ namespace sq::graphics {
             image_views_.push_back(imageView);
         }
 
-        printf("Swapchain created: %u images, format: %d, extent: (%u, %u)\n",
-               static_cast<unsigned int>(images_.size()), image_format_, extent_.width, extent_.height);
-
-        (void)width;
-        (void)height;
+        spdlog::info("Swapchain::create Swapchain created: {} images, format: {}, extent: ({}, {})",
+               static_cast<unsigned int>(images_.size()), vk::to_string(static_cast<vk::Format>(image_format_)), extent_.width, extent_.height);
     }
 
 #ifdef _WIN32

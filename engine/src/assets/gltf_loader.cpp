@@ -597,8 +597,6 @@ struct LoadedMaterial {
             .alpha_cutoff = material.alphaMode == "MASK" ? static_cast<float>(material.alphaCutoff) : 0.0f,
         };
 
-        spdlog::info("base_color: {}, {}, {}, {}", base_color.r, base_color.g, base_color.b, base_color.a);
-
         scene::MaterialTextures material_textures = {
             .albedo = resolve_texture(model, tables.srgb,
                 material.pbrMetallicRoughness.baseColorTexture.index, textures),

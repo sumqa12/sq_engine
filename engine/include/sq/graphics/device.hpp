@@ -38,6 +38,17 @@ public:
     //   descriptorBindingSampledImageUpdateAfterBind バインド済みセットへ後から書き込める
     [[nodiscard]] static bool is_supported_descriptor_indexing(VkPhysicalDevice physical_device);
 
+    // R16G16_SFLOAT をコンピュートから書き込めるか（phase16 ②-7。BRDF LUT 用）。
+    // 次の**両方**が揃っていれば true:
+    //   1. VkPhysicalDeviceFeatures::shaderStorageImageExtendedFormats
+    //        GLSL の rg16f 書式修飾子（SPIR-V の StorageImageExtendedFormats ケーパビリティ）に要る。
+    //        ★ 「対応している」だけでは使えない。デバイス作成時に**有効化**すること。
+    //   2. vkGetPhysicalDeviceFormatProperties(R16G16_SFLOAT).optimalTilingFeatures に
+    //      VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT がある
+    //        イメージを STORAGE usage で作れるかどうか。1 とは独立に確認が要る。
+    // ★ 開発機が複数あるので、**両方の機で**通ることを確認すること。
+    [[nodiscard]] static bool is_supported_storage_image_extended_formats(VkPhysicalDevice physical_device);
+
     // GPUメモリのサブアロケータ（Buffer 生成時に渡す。phase11 ③）。
     [[nodiscard]] GpuAllocator& allocator();
 

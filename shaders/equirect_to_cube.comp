@@ -43,7 +43,7 @@ vec3 cube_direction(uint face, vec2 st) {
 
 void main() {
     ivec2 size = imageSize(out_cube).xy;
-       if (gl_GlobalInvocationID.x >= size.x || gl_GlobalInvocationID.y >= size.y) return;
+    if (gl_GlobalInvocationID.x >= size.x || gl_GlobalInvocationID.y >= size.y) return;
     //     ★ size が 8 の倍数なら不要だが、入れておくと手順6で小さい mip を焼くときに効く
 
     vec2 uv  = (vec2(gl_GlobalInvocationID.xy) + 0.5) / vec2(size);

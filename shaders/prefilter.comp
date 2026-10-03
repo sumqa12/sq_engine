@@ -1,0 +1,109 @@
+#version 450
+
+// prefiltered specular map（phase16 ②-6）。鏡面反射の環境光を roughness ごとに前計算する。
+//
+// mip ごとにディスパッチする（5回）。出力ビュー（storage_view(mip)）とプッシュ定数が mip ごとに違う。
+//   dispatch: ((size + 7) / 8, (size + 7) / 8, 6)   size = max(128 >> mip, 1)
+// ★ このファイルを足したら CMake を再実行すること（*.comp の GLOB）。
+
+#define PI 3.14159265359
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// 入力は元の環境キューブ（512）。
+layout(set = 0, binding = 0) uniform samplerCube environment;
+// 出力はこの mip の書き込み用ビュー（2D_ARRAY。どの mip に書くかはビューが決める。D-8）。
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2DArray out_prefiltered;
+
+// C++ 側 vkCmdPushConstants(layout, COMPUTE, 0, sizeof(float), &roughness) と対。
+layout(push_constant) uniform PushConstants {
+    float roughness;   // = mip / (mips - 1)
+} pc;
+
+const uint kSampleCount = 1024u;
+
+// equirect_to_cube.comp と同じ（irradiance.comp の注記参照）。
+vec3 cube_direction(uint face, vec2 st) {
+    vec3 result;
+
+    switch (face) {
+        case 0: result = vec3(1.0, -st.y, -st.x); break;
+        case 1: result = vec3(-1.0, -st.y, st.x); break;
+        case 2: result = vec3(st.x, 1.0, st.y); break;
+        case 3: result = vec3(st.x, -1.0, -st.y); break;
+        case 4: result = vec3(st.x, -st.y, 1.0); break;
+        case 5: result = vec3(-st.x, -st.y, -1.0); break;
+    }
+    return result;
+}
+
+// Van der Corput 列（ビット反転）。hammersley の第2成分。
+float radical_inverse_vdc(uint bits) {
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10;   // / 0x100000000
+}
+
+// 低食い違い列（i 番目 / n 個）。乱数より少ないサンプルで積分が収束する。
+vec2 hammersley(uint i, uint n) {
+    return vec2(float(i) / float(n), radical_inverse_vdc(i));
+}
+
+// GGX の重点サンプリング。Xi（[0,1)²）から、N まわりのハーフベクトル H を作る。
+// ★ a = roughness * roughness（triangle.frag の D_GGX と同じ慣習）。
+//   roughness をそのまま使うと、粗さの段階が全体に「つるつる側」へずれる。
+vec3 importance_sample_ggx(vec2 Xi, vec3 N, float roughness) {
+    float a = roughness * roughness;
+    float phi       = 2.0 * PI * Xi.x;
+    float cos_theta = sqrt((1.0 - Xi.y) / (1.0 + (a * a - 1.0) * Xi.y));
+    float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
+    vec3 H = vec3(cos(phi) * sin_theta, sin(phi) * sin_theta, cos_theta);   // 接空間
+
+    // 接空間 -> ワールド（irradiance.comp と同じ up / right の作り方）
+    vec3 up        = abs(N.y) < 0.999 ? vec3(0, 1, 0) : vec3(0, 0, 1);
+    vec3 tangent   = normalize(cross(up, N));
+    vec3 bitangent = cross(N, tangent);
+
+    return normalize(tangent * H.x + bitangent * H.y + N * H.z);
+}
+
+void main() {
+    ivec2 size = imageSize(out_prefiltered).xy;
+    if (gl_GlobalInvocationID.x >= size.x || gl_GlobalInvocationID.y >= size.y) return;
+
+    vec2 st = (vec2(gl_GlobalInvocationID.xy) + 0.5) / vec2(size) * 2.0 - 1.0;
+    vec3 N = normalize(cube_direction(gl_GlobalInvocationID.z, st));
+    vec3 R = N; vec3 V = R;     // ★ 視線 = 法線 という近似（下の注記）
+
+    vec3 result;
+    vec3 color = vec3(0.0);
+    float weight = 0.0;
+    for (uint i = 0u; i < kSampleCount; ++i) {
+        vec2 Xi = hammersley(i, kSampleCount);
+        vec3 H = importance_sample_ggx(Xi, N, pc.roughness);
+        vec3 L = normalize(2.0 * dot(V, H) * H - V);
+        float NdotL = max(dot(N, L), 0.0);
+        if (NdotL > 0.0) {
+            color += textureLod(environment, L, 0.0).rgb * NdotL;
+            weight += NdotL;
+        }
+    }
+
+    result = color / weight;
+    //   ★ roughness == 0（mip 0）では H が常に N になり、全サンプルが同じ方向を読む。
+    //     結果は「元の環境そのもの」で正しい（1024 回読むのは無駄だが、mip 0 だけなので許容）。
+    //   ★ weight が 0 になることは理論上無い（H = N 付近のサンプルが必ず NdotL > 0）が、
+    //     念のため max(weight, 1e-4) で割ってもよい。
+
+    imageStore(out_prefiltered, ivec3(gl_GlobalInvocationID), vec4(result, 1.0));
+    // ★ 「視線 = 法線」の近似のせいで、斜めから見た伸びたハイライトは再現されない。
+    //   これは**近似の限界であってバグではない**（②-6）。
+    // ★ 既知の症状: 太陽のような極端に明るい点がある HDR（puresky は太陽を含む）だと、
+    //   粗い mip に**明るい斑点（fireflies）**が出ることがある。1024 サンプルでは
+    //   「たまたま太陽を引いたテクセル」と「引かなかったテクセル」の差が大きいため。
+    //   出たら、環境キューブにミップを持たせて PDF から読む LOD を決める
+    //   （「filtered importance sampling」）のが定番の対処。まずは出るかどうかを見てから判断する。
+}

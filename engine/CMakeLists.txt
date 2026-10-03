@@ -35,6 +35,7 @@ add_library(sq_engine_lib STATIC
     src/graphics/hdr_texture.cpp
     src/graphics/compute_pipeline.cpp
     src/graphics/environment_map.cpp
+    src/graphics/storage_texture.cpp
     src/graphics/texture.cpp
     src/graphics/texture_registry.cpp
     src/graphics/sampler.cpp

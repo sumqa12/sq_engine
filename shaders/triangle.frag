@@ -4,8 +4,6 @@
 #define PI 3.14159265359
 #define EP 1e-5
 
-const float kAmbient = 0.03;
-
 // ★ phase16 ①-4: light_view_proj を追加（C++ 側 scene::CameraUBO と対。3箇所で揃える）。
 //   light_count.y = 影を落とすライトの添字（無ければ 0xFFFFFFFF。D-4）
 layout(set = 0, binding = 0) uniform CameraUBO {
@@ -62,6 +60,21 @@ layout(set = 2, binding = 0) uniform sampler2DShadow shadow_map;
 //   桁を間違えると「影が全く出ない（大きすぎ）」か「縞模様（小さすぎ）」になる。
 const float kNormalBiasMax = 0.0005;
 const float kNormalBiasMin = 0.00005;
+
+// IBL（phase16 ②-8）。C++ 側 write_environment_sets() が書く。
+//   ★ 宣言するのは binding=1..3 に**キューブ / LUT の view を書いてから**にすること。
+//     手順5までは binding=1 / 3 が白の 2D なので、samplerCube の binding=1 を読むと
+//     「2D の view を samplerCube で読んだ」バリデーションエラーになる。
+//     （宣言だけなら静的に使用されないので害は無い。読み始めた瞬間に問題になる）
+layout(set = 2, binding = 1) uniform samplerCube irradiance_map;
+layout(set = 2, binding = 2) uniform samplerCube prefiltered_map;
+layout(set = 2, binding = 3) uniform sampler2D   brdf_lut;
+
+// prefiltered の最大 mip（= EnvironmentMap::kPrefilteredMips - 1）。
+// ★ C++ 側の mip 数と**必ず一致**させること。ずれると「roughness 1.0 だけ映り込みが鋭い」
+//   （mip 数より小さい）か「途中から映り込みが変わらなくなる」（大きい）になる。
+//   textureQueryLevels(prefiltered_map) - 1 で取れるが、定数の方が速い（②-8）。
+const float kMaxReflectionLod = 4.0;
 
 layout(location = 0) in vec3 frag_normal;
 layout(location = 1) in vec2 frag_uv;
@@ -122,6 +135,18 @@ float G_Smith(float NdotV, float NdotL, float k)
 vec3 F_Schlick(float HdotV, vec3 F0)
 {
     return F0 + (1.0 - F0) * pow(1.0 - HdotV, 5.0);
+}
+
+// @brief IBL 用のフレネル（phase16 ②-8）
+// @param NdotV     法線と視線の内積
+// @param F0        垂直入射時の反射率
+// @param roughness 粗さ
+// @return 視角と粗さに応じた反射率
+// @note  **F_Schlick とは別物**。粗い面ほど縁の反射を抑える。
+//        F_Schlick を流用すると roughness 1.0 の面の輪郭が不自然に白く光る（縁取りされたように見える）。
+//        直接照明は H（ハーフベクトル）を使うが、環境光には特定の H が無いので N·V で代用する。
+vec3 F_SchlickRoughness(float NdotV, vec3 F0, float roughness) {
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - NdotV, 5.0);
 }
 
 // @brief world_pos のフラグメントが影の中にいるか（phase16 ①-7）
@@ -193,7 +218,7 @@ void main() {
     // F0: 垂直入射時の反射率
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
 
-    vec3 result = kAmbient * albedo * ao;
+    vec3 result = vec3(0.0);
 
     for (uint i = 0; i < camera.light_count.x; ++i) {
         LightData light = lights[i];
@@ -244,7 +269,30 @@ void main() {
         result += (diff + specular) * radiance * NdotL * shadow;
     }
 
+    // IBL（環境光）を足す。
+    float NdotV_ibl = max(dot(N, V), 0.0);
+    vec3  F_ibl  = F_SchlickRoughness(NdotV_ibl, F0, roughness);
+    vec3  kD_ibl = (1.0 - F_ibl) * (1.0 - metallic);
+
+    // 拡散
+    vec3 irradiance  = texture(irradiance_map, N).rgb;
+    vec3 diffuse_ibl = kD_ibl * albedo * irradiance;
+    //     ★ / PI は書かない（irradiance.comp が PI を掛けて打ち消し済み）
+
+    // 鏡面
+    vec3 R = reflect(-V, N);
+    //  ★ -V（カメラ → 表面）を N で反射する。V のまま渡すと映り込みが裏返る（②-10）
+    vec3 prefiltered  = textureLod(prefiltered_map, R, roughness * kMaxReflectionLod).rgb;
+    vec2 ab           = texture(brdf_lut, vec2(NdotV_ibl, roughness)).rg;
+    vec3 specular_ibl = prefiltered * (F_ibl * ab.x + ab.y);
+
+       result += (diffuse_ibl + specular_ibl) * ao;
+    //   ★ ao は環境光にだけ掛ける（直接光のループには掛けない。phase15 の扱いのまま）。
+    //   ★ シャドウ係数は IBL には掛けない（影の中でも空からの光は届く）。
+    //     影の中が IBL で明るくなり、①で見た影が「薄く」なるのは**正しい変化**。
+
+    // ★ トーンマップ（下の result / (result + 1)）は今までどおり**最後**に置く。
     result += m.emissive.rgb * emissive_tex;
-    result = result / (result + vec3(1.0));
+    result = result / (result + 1.0);
     out_color = vec4(result, albedo_sample.a * m.base_color.a);
 }

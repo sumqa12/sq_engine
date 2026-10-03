@@ -4,6 +4,7 @@
 #include <fstream>
 #include <format>
 #include <vector>
+#include <spdlog/spdlog.h>
 
 namespace sq::graphics {
 
@@ -13,10 +14,10 @@ VkShaderModule load_shader_module(VkDevice device, const std::string& spv_path) 
     try {
         std::filesystem::path p = spv_path;
         spv_file_size = std::filesystem::file_size(p);
-        printf("File size: %ju bytes\n", spv_file_size);
+        spdlog::info("load_shader_module : File path: {}\n size: {} bytes", spv_path, spv_file_size);
     } catch (const std::filesystem::filesystem_error& e) {
-        printf("File size: %s bytes\n", e.what());
-        printf("Path: %ls\n", e.path1().c_str());
+        spdlog::error("load_shader_module : File size: {} bytes", spv_file_size);
+        spdlog::error("load_shader_module : File path: {}", spv_path);
         throw std::runtime_error(std::string(e.what()));
     }
 

@@ -1,0 +1,72 @@
+#version 450
+
+// irradiance map（phase16 ②-5）。拡散反射の環境光を前計算する。
+//
+// ディスパッチ: vkCmdDispatch(32 / 8, 32 / 8, 6)
+// ★ このファイルを足したら CMake を再実行すること（*.comp の GLOB）。
+
+#define PI 3.14159265359
+
+#define kSampleDelta 0.025
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// 入力は**元の環境キューブ**（512）。prefiltered ではない。
+layout(set = 0, binding = 0) uniform samplerCube environment;
+// ★ image2DArray で受ける（手順5で踏んだ。2D_ARRAY ビューに imageCube は合わない）。
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2DArray out_irradiance;
+
+// equirect_to_cube.comp と**同じ**関数。
+// ★ コピーするなら、片方だけ直す事故に注意（面の向きは仕様の表と照合済み）。
+//   避けたいなら shaders/include/ のような場所に .glsl として切り出し、#include する。
+//   glslc は #include を標準で処理する（GL_GOOGLE_include_directive）。
+//   ★ ただし sandbox_graphics/CMakeLists.txt の add_custom_command は DEPENDS が
+//     ${source} だけなので、**インクルード先を直しても再コンパイルされない**。
+//     切り出すなら DEPENDS にインクルード先も足すこと（GLOB の対象外の拡張子にしておけば、
+//     .glsl 自体が単体でコンパイルされることもない）。
+vec3 cube_direction(uint face, vec2 st) {
+    vec3 result;
+
+    switch (face) {
+        case 0: result = vec3(1.0, -st.y, -st.x); break;
+        case 1: result = vec3(-1.0, -st.y, st.x); break;
+        case 2: result = vec3(st.x, 1.0, st.y); break;
+        case 3: result = vec3(st.x, -1.0, -st.y); break;
+        case 4: result = vec3(st.x, -st.y, 1.0); break;
+        case 5: result = vec3(-st.x, -st.y, -1.0); break;
+    }
+    return result;
+}
+
+void main() {
+    ivec2 size = imageSize(out_irradiance).xy;
+    if (gl_GlobalInvocationID.x >= size.x || gl_GlobalInvocationID.y >= size.y) return;
+
+    vec2 st = (vec2(gl_GlobalInvocationID.xy) + 0.5) / vec2(size) * 2.0 - 1.0;
+    vec3 N  = normalize(cube_direction(gl_GlobalInvocationID.z, st));
+
+    //   N を軸とする接空間を作る:
+    vec3 up    = abs(N.y) < 0.999 ? vec3(0, 1, 0) : vec3(0, 0, 1);  // ★ 縮退の回避（①-3 と同じ話）
+    vec3 right = normalize(cross(up, N));
+    up         = cross(N, right);
+
+    //   半球を緯度（theta: 0..PI/2）・経度（phi: 0..2PI）で走査する（刻み kSampleDelta = 0.025）
+    vec3 irradiance = vec3(0.0);
+    uint sample_count = 0;
+    for (float theta = 0; theta < PI/2.0; theta += kSampleDelta) {
+        for (float phi = 0; phi < 2*PI; phi += kSampleDelta) {
+            vec3 tangent = vec3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta));
+            vec3 dir     = tangent.x * right + tangent.y * up + tangent.z * N;
+            irradiance  += textureLod(environment, dir, 0.0).rgb * cos(theta) * sin(theta);
+            ++sample_count;
+        }
+    }
+    irradiance = PI * irradiance / float(sample_count);
+    //   ★ cos(theta) はランバートの入射角、sin(theta) は立体角の重み。**両方要る**。
+    //     cos だけだと極（N の真上）が明るくなりすぎ、sin だけだと全体が平坦になる。
+    //   ★ textureLod（コンピュートに微分は無い。手順5と同じ）。
+    //   ★ 結果に PI を掛けるのは、triangle.frag 側で diffuse_ibl = kD * albedo * irradiance と
+    //     「/ PI を書かない」形と対になるため（ランバートの 1/PI をここで打ち消している）。
+    //
+    imageStore(out_irradiance, ivec3(gl_GlobalInvocationID), vec4(irradiance, 1.0));
+}

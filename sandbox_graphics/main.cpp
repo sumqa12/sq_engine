@@ -120,7 +120,7 @@ static void loop(sq::ecs::Registry &registry, sq::graphics::Renderer &renderer, 
                     next = 0;
                 }
 
-                printf("アクティブカメラ : %d\n", next);
+                spdlog::info("アクティブカメラ : {}", next);
                 set_active_controllable_camera(registry, cameras[next]);
             }
 
