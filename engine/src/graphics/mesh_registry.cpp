@@ -11,19 +11,9 @@ namespace sq::graphics {
 MeshRegistry::MeshRegistry(GpuAllocator& allocator, VkDevice device,
                            std::uint32_t queue_family, VkQueue queue,
                            DeletionQueue& deletions)
-    : allocator_(&allocator), device_(device), queue_family_(queue_family), queue_(queue),
+    : AssetRegistry(0), allocator_(&allocator), device_(device), queue_family_(queue_family), queue_(queue),
       deletions_(&deletions) {
     // 生成時は空。add() で登録していく。
-}
-
-MeshRegistry::~MeshRegistry() {
-    // slots_ の unique_ptr が VertexBuffer / IndexBuffer を破棄する（= GpuAllocator へ free）。
-    // 前提: このデストラクタは GpuAllocator（Device）より前に走ること（Renderer が破棄順序を担保）。
-    //
-    // ★ 遅延解放キューに積まれたまま残っている実体はここでは触らない。
-    //   Renderer が vkDeviceWaitIdle → DeletionQueue::flush_all() を先に済ませている前提。
-    slots_.clear();
-    free_indices_.clear();
 }
 
 scene::MeshId MeshRegistry::add(const std::vector<Vertex>& vertices,
@@ -42,7 +32,7 @@ scene::MeshId MeshRegistry::add(const std::vector<Vertex>& vertices,
     entry.bounds = compute_bounds(vertices);
 
     // push_back をスロット確保に置き換える。
-    return register_mesh(std::move(entry));
+    return emplace(std::move(entry));
 }
 
 scene::MeshId MeshRegistry::add(const std::vector<Vertex>& vertices,
@@ -60,7 +50,7 @@ scene::MeshId MeshRegistry::add(const std::vector<Vertex>& vertices,
     //   3. ローカル空間の境界球を計算して bounds に入れる。
     entry.bounds = compute_bounds(vertices);
 
-    return register_mesh(std::move(entry));
+    return emplace(std::move(entry));
 }
 
 scene::BoundingSphere MeshRegistry::compute_bounds(const std::vector<Vertex>& vertices) {
@@ -86,64 +76,8 @@ scene::BoundingSphere MeshRegistry::compute_bounds(const std::vector<Vertex>& ve
     return bounds;
 }
 
-scene::MeshId MeshRegistry::register_mesh(Entry entry) {
-    std::uint32_t index;
-    if (free_indices_.empty()) {
-        index = static_cast<std::uint32_t>(slots_.size());
-        slots_.emplace_back();
-    } else {
-        index = free_indices_.back(); // 解放済みスロットを再利用
-        free_indices_.pop_back();
-    }
-
-    Slot& slot = slots_[index];
-    slot.entry = std::move(entry);
-    slot.alive = true;
-    //   ★ MeshRegistry には登録数の上限が無い（テクスチャと違ってディスクリプタ枠を
-    //     消費しないため）。TextureRegistry / MaterialRegistry のような上限チェックは要らない。
-    return scene::MeshId{ { index, slot.generation } };
-}
-
-bool MeshRegistry::contains(scene::MeshId id) const {
-    // 世代照合込みの判定にする。
-    return id.index < slots_.size()
-        && slots_[id.index].alive
-        && slots_[id.index].generation == id.generation;
-    //
-    //   ★ 3条件すべてが要る。alive を落とすと「解放済みスロットを指す古いハンドル」が、
-    //     generation を落とすと「再利用されたスロットを指す古いハンドル」が素通りする。
-    //   ★ kInvalidMeshId は index == kInvalidIndex なので第1条件で弾ける。
-}
-
-const MeshRegistry::Entry& MeshRegistry::get(scene::MeshId id) const {
-    // contains(id) でなければ throw、そうでなければ slots_[id.index].entry を返す。
-    if (contains(id)) {
-        return slots_[id.index].entry;
-    }
-
-    throw std::runtime_error("MeshRegistry::get : メッシュが登録されていません。");
-}
-
 void MeshRegistry::unload(scene::MeshId id) {
-    //   1. 二重解放の防止
-    if (!contains(id)) { return; }
-
-    //   2. 実体を遅延解放キューへ移す。★ ここで直接 destroy してはいけない（D-5）
-    Slot& slot = slots_[id.index];
-    auto vertices = std::shared_ptr(std::move(slot.entry.vertices));
-    auto indices  = std::shared_ptr(std::move(slot.entry.indices));
-    deletions_->push([vertices, indices]() mutable {
-        vertices.reset();
-        indices.reset();
-    });
-    //      （unique_ptr のままムーブキャプチャすると std::function に入らない。
-    //        shared_ptr へ載せ替えるのが一番簡単な回避策）
-
-    slot.alive = false;
-    ++slot.generation;      // 以後、古いハンドルは弾かれる
-    free_indices_.push_back(id.index);
-    //   ★ generation のオーバーフローは実用上は起きない（uint32 = 42億回の解放が必要）。
-    //     気になるなら「上限に達したスロットは free_indices_ へ戻さない」で封じられる。
+    destroy(id);
 }
 
 // ----- 組み込みジオメトリ -----

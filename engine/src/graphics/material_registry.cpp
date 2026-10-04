@@ -3,10 +3,25 @@
 
 namespace sq::graphics {
 
+// TODO(phase16 手順7 / ③-3): AssetRegistry への載せ替え
+//   1. コンストラクタの初期化子リストの先頭に基底を足す: AssetRegistry(max_materials)
+//      max_materials_(max_materials) は消す（基底の capacity_ へ移した）。
+//      ★ MaterialBuffer の要素数には引き続き max_materials（引数）を使う。
+//   2. デストラクタの slots_.clear() / free_indices_.clear() を消す（buffer_.reset() は残す）。
+//   3. add():
+//        「上限チェック + スロット確保」の塊を if (full()) { spdlog::error(...); return default_material_; }
+//        だけにする。
+//        resolve_textures → emplace(MaterialEntry{ resolved }) → default_material_ の設定、の順。
+//        buffer_->write は on_registered() へ移す。
+//   4. contains の定義を消す（基底へ移した）。
+//   5. unload(): 既定マテリアルの判定だけ残して destroy(id) を呼ぶ。
+//   6. update(): slots_[id.index].data = resolved を get_mutable(id).data = resolved に置き換える。
+//   7. on_registered / on_destroy を定義する（on_destroy は空でよい）。
+
 MaterialRegistry::MaterialRegistry(GpuAllocator& allocator, VkDevice device,
                                    const TextureRegistry& textures,
                                    VkDescriptorSet asset_set, std::uint32_t max_materials)
-    : device_(device), textures_(&textures), asset_set_(asset_set), max_materials_(max_materials) {
+    : AssetRegistry(max_materials), device_(device), textures_(&textures), asset_set_(asset_set) {
 
     buffer_ = std::make_unique<MaterialBuffer>(allocator, device_, max_materials);
 
@@ -32,77 +47,35 @@ MaterialRegistry::MaterialRegistry(GpuAllocator& allocator, VkDevice device,
 }
 
 MaterialRegistry::~MaterialRegistry() {
-    // buffer_ の unique_ptr が MaterialBuffer（VkBuffer + Allocation）を破棄する。
-    // ディスクリプタセットは個別に解放しない（プール破棄でまとめて解放される）。
-    // 前提: このデストラクタは VkDevice の破棄より前に走ること（Renderer が破棄順序を担保）。
-    slots_.clear();
-    free_indices_.clear();
     buffer_.reset();
 }
 
 scene::MaterialId MaterialRegistry::add(const MaterialData& data, const scene::MaterialTextures& textures) {
-    //   1. スロットを確保する（phase14 ②-2。3レジストリ共通の手順）:
-    //        free_indices_ が空でなければ末尾から再利用、空なら slots_.emplace_back()
-    //        上限チェック: slots_.size() >= max_materials_ かつ free_indices_ が空なら
-    //        spdlog::error を出して default_material_ を返す。
-
-    //   1. スロットの上限チェックと確保
-    if (slots_.size() >= max_materials_ && free_indices_.empty()) {
-        spdlog::error("MaterialRegistry::add: Too many materials");
+    //   1. スロットの上限チェック
+    if (full()) {
+        spdlog::error("MaterialRegistry::add: 登録件数の上限に達しています。");
         return default_material_;
-    }
-
-    std::uint32_t index;
-    if (free_indices_.empty()) {
-        index = static_cast<std::uint32_t>(slots_.size());
-        slots_.emplace_back();
-    } else {
-        index = free_indices_.back(); // 解放済みスロットを再利用
-        free_indices_.pop_back();
     }
 
     //   2. 5スロットぶんのフォールバック解決（phase15 ③-3）:
     MaterialData resolved = resolve_textures(data, textures);
 
-    //   3. GPU へ書く
-    buffer_->write(index, resolved);
+    //   3. レジストリに登録
+    auto id = emplace(MaterialEntry{ resolved });
 
-    //   4. CPU側の控え
-    Slot& slot = slots_[index];
-    slot.data = resolved;
-    slot.alive = true;
-
-    //   5. ID を返す
-    auto id = scene::MaterialId{ { index, slot.generation } };
-
-    //   6. 最初の1件を既定マテリアルにする（TextureRegistry::default_texture と同じ流儀）
+    //   4. 最初の1件を既定マテリアルにする（TextureRegistry::default_texture と同じ流儀）
     if (default_material_.is_null()) { default_material_ = id; }
     return id;
 }
 
-bool MaterialRegistry::contains(scene::MaterialId id) const {
-    // MeshRegistry::contains と同じ3条件にする。
-    return id.index < slots_.size()
-        && slots_[id.index].alive
-        && slots_[id.index].generation == id.generation;
-}
-
 void MaterialRegistry::unload(scene::MaterialId id) {
-    //  1. 二重解放の防止
-    if (!contains(id)) { return; }
-
-    //   2. ★ 既定マテリアルは unload させない
+    //   ★ 既定マテリアルは unload させない
     if (id == default_material_) {
         spdlog::warn("MaterialRegistry::unload : 既定マテリアルは解放できません。");
         return;
     }
 
-    slots_[id.index].alive = false;
-    ++slots_[id.index].generation;
-    free_indices_.push_back(id.index);
-    // ★ 遅延解放は不要（GPUリソースではなく配列の枠を返すだけ）。
-    //   ただし GPU 上の古い MaterialData は残る。まだ古いIDを握った体が居ても
-    //   contains() で弾かれて既定マテリアルに落ちるので、実害は無い。
+    destroy(id);
 }
 
 scene::MaterialId MaterialRegistry::default_material() const {
@@ -115,7 +88,7 @@ void MaterialRegistry::update(scene::MaterialId id, const MaterialData& data,
     // ★ GPU が読んでいる最中に書き換えると壊れる。このフェーズでは起動時専用。
     if (contains(id)) {
         const MaterialData resolved = resolve_textures(data, textures);
-        slots_[id.index].data = resolved;
+        get_mutable(id).data = resolved;
         buffer_->write(id.index, resolved);
     }
 }

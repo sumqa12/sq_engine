@@ -4,16 +4,25 @@
 #include <memory>
 #include <string>
 #include <utility>
-#include <vector>
 
 #include <vulkan/vulkan.h>
 
+#include "sq/graphics/asset_registry.hpp"
 #include "sq/graphics/deletion_queue.hpp"
 #include "sq/graphics/gpu_allocator.hpp"
 #include "sq/graphics/texture.hpp"
 #include "sq/scene/material.hpp"
 
 namespace sq::graphics {
+
+// 1枚のテクスチャの実体（phase16 ③-3）。
+//
+// ★ TextureRegistry::Entry から名前空間スコープへ出した（MeshEntry と同じ理由）。
+// ★ unique_ptr を1本持つだけの構造体だが、型を挟んでおくと手順8以降で
+//   付帯情報（by_path_ の逆引きキーなど）を足すときに基底の型引数を変えずに済む。
+struct TextureEntry {
+    std::unique_ptr<Texture> texture;
+};
 
 // TextureId → GPU実体（共有配列の添え字）のキャッシュ（phase12 D-3）。
 // 同じ画像を何体のエンティティが参照してもロードは1回で済む（パスで重複を排除する）。
@@ -23,7 +32,11 @@ namespace sq::graphics {
 //
 // phase14 ②: スロット + 世代番号の管理に変えた（D-5）。TextureId は { index, generation } で、
 // **bindless 配列の添字になるのは index だけ**（generation は CPU 側の検証用）。
-class TextureRegistry {
+//
+// phase16 ③-3: スロット管理を AssetRegistry へ括り出した。基底へは capacity = max_textures を渡す。
+// ここに残るのは「画像を読む」「bindless 配列へ書く（on_registered）」
+// 「bindless を埋め直して by_path_ から消し、遅延キューへ積む（on_destroy）」の3つ。
+class TextureRegistry final : public AssetRegistry<scene::TextureId, TextureEntry> {
 public:
     // descriptor_pool / material_set_layout / sampler は Renderer が所有し、ここでは破棄しない。
     // material_set_layout は set=1 用のレイアウト
@@ -35,13 +48,10 @@ public:
                     VkDescriptorSetLayout material_set_layout,
                     VkSampler sampler, std::uint32_t max_textures,
                     DeletionQueue& deletions);
-    ~TextureRegistry();
+    ~TextureRegistry() override;
 
     TextureRegistry(const TextureRegistry&) = delete;
     TextureRegistry& operator=(const TextureRegistry&) = delete;
-
-    // load/load_from_pixelsの共通部分
-    scene::TextureId register_texture(std::unique_ptr<Texture> texture, std::uint32_t index);
 
     // path の画像を読み込んで登録し TextureId を返す。
     // 同じ path が既に登録済みならロードせず既存のIDを返す（by_path_ で判定）。
@@ -71,8 +81,8 @@ public:
     // フレーム先頭で1回バインドすれば以後ドロー中に触る必要がない。
     [[nodiscard]] VkDescriptorSet bindless_set() const;
 
-    // ★ phase14 ②: 添字の範囲だけでなく generation の一致も見る。
-    [[nodiscard]] bool contains(scene::TextureId id) const;
+    // ★ phase16 ③-3: contains() は基底（AssetRegistry）へ移した。
+    //   texture_registry.cpp の TextureRegistry::contains の定義は削除すること。
 
     // 1×1 の白テクスチャを生成して登録する（phase14 ③）。起動時に1回だけ呼ぶ。
     //
@@ -121,6 +131,9 @@ public:
 
     // テクスチャを解放する（phase14 ②-3）。
     //
+    // phase16 ③-3: 「既定テクスチャは解放させない」判定だけをここに残し、
+    //   残りは基底の destroy(id) に任せる。以下の後始末は on_destroy() へ移る。
+    //
     // MeshRegistry::unload の手順に加えて、bindless 配列の後始末が要る:
     //   5. 該当要素を**既定テクスチャの view で上書きする**
     //      ★ 「空にする」ではなく「有効な view で埋め直す」こと。
@@ -132,17 +145,69 @@ public:
     //     遅延が要るのは VkImage / VkImageView の破棄の方。
     void unload(scene::TextureId id);
 
-private:
-    struct Entry {
-        std::unique_ptr<Texture> texture;
+protected:
+    // 登録時のフック（phase16 ③-3）。既存の register_texture の手順4をそのまま移す:
+    //   bindless_set_ の binding=0, dstArrayElement = id.index へ entry.texture->view() を書く。
+    void on_registered(scene::TextureId id, const TextureEntry& entry) override {
+        VkDescriptorImageInfo image_info{};
+        image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        image_info.imageView = entry.texture->view();
+        image_info.sampler = sampler_;
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = bindless_set_;
+        write.dstBinding = 0;
+        write.dstArrayElement = id.index;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo = &image_info;
+        vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
     };
 
-    // 1スロット = 「1つのテクスチャを置ける枠」。bindless 配列の1要素と1対1に対応する。
-    struct Slot {
-        Entry entry;
-        std::uint32_t generation = 0;
-        bool alive = false;
+    // 解放時のフック（phase16 ③-3）。既存の unload() の手順3〜5をそのまま移す:
+    //   1. bindless の id.index 番目を既定テクスチャの view で上書きする
+    //      （get(default_texture_).texture->view()。この時点では id も既定もまだ生きている）
+    //   2. entry.texture を shared_ptr へ載せ替えて deletions_->push(...)
+    //   3. by_path_ から値が id のエントリを消す
+    //      ★ 消し忘れると次の load が死んだハンドルを返す。
+    //        手順8でここが一番効いてくる（参照カウントで自動的に解放されるようになると、
+    //        「いつ消えたか」を呼び出し側が意識しなくなるため）。
+    void on_destroy(scene::TextureId id, TextureEntry&& entry) override {
+        VkDescriptorImageInfo info = {
+            .sampler = sampler_,
+            .imageView = get(default_texture_).texture->view(),
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        };
+        VkWriteDescriptorSet write = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = bindless_set_, .dstBinding = 0,
+            .dstArrayElement = id.index, .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &info
+        };
+        vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+        //   ★ このディスクリプタ更新は遅延しなくてよい（UPDATE_AFTER_BIND_BIT があるため）。
+        //     遅延が要るのは VkImage / VkImageView の破棄の方。
+
+        //   実体を遅延解放キューへ移す:
+        auto tex = std::shared_ptr(std::move(entry.texture));
+        deletions_->push([tex]() mutable { tex.reset(); });
+
+        //   by_path_ から該当エントリを消す（★ 消し忘れると次の load が死んだIDを返す）
+        std::erase_if(by_path_, [id] (const auto& pair) {
+            return pair.second == id;
+        });
     };
+
+private:
+    // load / load_from_pixels の共通部分（phase16 ③-3 で引数から index を外した）。
+    //   1. emplace(TextureEntry{ std::move(texture) }) でスロットへ収める
+    //      （bindless への書き込みは emplace の中から on_registered が呼ばれて行われる）
+    //   2. default_texture_ が未設定なら、払い出した id を既定にする（最初の1枚を既定にする）
+    //
+    // ★ 上限チェック（full()）は**呼び出し側で Texture を作る前に**済ませておくこと。
+    //   ここへ来た時点で満杯なら emplace が例外を投げる。
+    // ★ 旧版は public だったが、外から呼ばれていないので private へ移した。
+    [[nodiscard]] scene::TextureId register_texture(std::unique_ptr<Texture> texture);
 
     VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
@@ -159,8 +224,8 @@ private:
 
     DeletionQueue* deletions_ = nullptr;  // 所有しない（Renderer が所有）
 
-    std::vector<Slot> slots_;                  // 添字が TextureId::index（= bindless 配列の添字）
-    std::vector<std::uint32_t> free_indices_;  // 解放済みスロットの再利用リスト
+    // ★ phase16 ③-3: slots_ / free_indices_ は基底（AssetRegistry）へ移した。
+    //   スロットの添字 = TextureId::index = bindless 配列の添字、という対応は変わらない。
 
     // 同一パス・同一フォーマットの再ロード防止。
     // ★ phase15 ③-1 / D-6: キーを {path, format} にした。同じ画像を sRGB と UNORM の
@@ -173,7 +238,7 @@ private:
     scene::TextureId default_texture_ = scene::kInvalidTextureId;
     scene::TextureId white_texture_ = scene::kInvalidTextureId;   // phase14 ③（中立フォールバック）
     scene::TextureId flat_normal_texture_ = scene::kInvalidTextureId;  // phase15 ③-2（中立フォールバック）
-    std::uint32_t max_textures_ = 0;  // 登録できるテクスチャ数の上限（プールの容量）
+    // ★ phase16 ③-3: max_textures_ は基底の capacity_ へ移した（full() で判定する）。
 };
 
 }  // namespace sq::graphics
