@@ -1,8 +1,6 @@
 #pragma once
 
 #include <array>
-#include <cstddef>
-#include <functional>
 #include <span>
 
 #include "sq/input/action.hpp"

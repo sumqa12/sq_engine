@@ -83,14 +83,7 @@ protected:
     //   （unique_ptr のままムーブキャプチャすると std::function に入らない。
     //     deletion_queue.hpp の注記 (a) の方法）
     // ★ ここで直接 destroy してはいけない（GPU がまだ読んでいる可能性がある。phase14 D-5）。
-    void on_destroy(scene::MeshId id, MeshEntry&& entry) override {
-        auto vertices = std::shared_ptr(std::move(entry.vertices));
-        auto indices  = std::shared_ptr(std::move(entry.indices));
-        deletions_->push([vertices, indices]() mutable {
-            vertices.reset();
-            indices.reset();
-        });
-    };
+    void on_destroy(scene::MeshId id, MeshEntry&& entry) override;
 
 private:
 

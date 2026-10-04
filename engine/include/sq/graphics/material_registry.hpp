@@ -48,7 +48,7 @@ public:
     MaterialRegistry(GpuAllocator& allocator, VkDevice device,
                      const TextureRegistry& textures,
                      VkDescriptorSet asset_set, std::uint32_t max_materials);
-    ~MaterialRegistry();
+    ~MaterialRegistry() override;
 
     MaterialRegistry(const MaterialRegistry&) = delete;
     MaterialRegistry& operator=(const MaterialRegistry&) = delete;
@@ -105,16 +105,14 @@ protected:
     //   buffer_->write(id.index, entry.data)
     // ★ add() 側では buffer_->write を呼ばないこと（二重に書くだけで害は無いが、
     //   「GPU へ書く場所」が2箇所になる。phase15 ③-9 バグA と同じ教訓）。
-    void on_registered(scene::MaterialId id, const MaterialEntry& entry) override {
-        buffer_->write(id.index, entry.data);
-    };
+    void on_registered(scene::MaterialId id, const MaterialEntry& entry) override;
 
     // 解放時のフック（phase16 ③-3）。手順7では**何もしない**（枠を空けるだけ）。
     //   GPU 上の古い MaterialData は残るが、古い ID は contains() で弾かれて
     //   既定マテリアルに落ちるので実害は無い（既存の unload() のコメントと同じ）。
     // ★ 手順8で MaterialEntry に TextureRef が入っても、ここに書き足すことは無い
     //   （基底の destroy() が entry を空にした時点で release が走る）。
-    void on_destroy(scene::MaterialId id, MaterialEntry&& entry) override {};
+    void on_destroy(scene::MaterialId id, MaterialEntry&& entry) override;
 
 private:
 

@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cstddef>
-
 namespace sq::input {
 
 // エンジンが提供する抽象操作（phase10プラン B-1）。

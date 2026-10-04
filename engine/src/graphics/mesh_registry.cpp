@@ -8,241 +8,250 @@
 
 namespace sq::graphics {
 
-MeshRegistry::MeshRegistry(GpuAllocator& allocator, VkDevice device,
-                           std::uint32_t queue_family, VkQueue queue,
-                           DeletionQueue& deletions)
-    : AssetRegistry(0), allocator_(&allocator), device_(device), queue_family_(queue_family), queue_(queue),
-      deletions_(&deletions) {
-    // 生成時は空。add() で登録していく。
-}
-
-scene::MeshId MeshRegistry::add(const std::vector<Vertex>& vertices,
-                                const std::vector<std::uint16_t>& indices) {
-    //   1. 空のメッシュ（vertices か indices が空）は弾く。
-    if (vertices.empty() || indices.empty()) {
-        throw std::runtime_error("MeshRegistry::add : 頂点またはインデックスが空です。");
+    MeshRegistry::MeshRegistry(GpuAllocator& allocator, VkDevice device,
+                               std::uint32_t queue_family, VkQueue queue,
+                               DeletionQueue& deletions)
+        : AssetRegistry(0), allocator_(&allocator), device_(device), queue_family_(queue_family), queue_(queue),
+          deletions_(&deletions) {
+        // 生成時は空。add() で登録していく。
     }
 
-    //   2. Entry を作って push する:
-    Entry entry;
-    entry.vertices = std::make_unique<VertexBuffer>(*allocator_, device_, queue_family_, queue_, vertices);
-    entry.indices  = std::make_unique<IndexBuffer>(*allocator_, device_, queue_family_, queue_, indices);
-
-    //   3. ローカル空間の境界球を計算して entry.bounds に入れる。
-    entry.bounds = compute_bounds(vertices);
-
-    // push_back をスロット確保に置き換える。
-    return emplace(std::move(entry));
-}
-
-scene::MeshId MeshRegistry::add(const std::vector<Vertex>& vertices,
-                                const std::vector<std::uint32_t>& indices) {
-    //   1. 空のメッシュ（vertices か indices が空）は弾く。
-    if (vertices.empty() || indices.empty()) {
-        throw std::runtime_error("MeshRegistry::add : 頂点またはインデックスが空です。");
-    }
-
-    //   2. Entry を作って push する。
-    Entry entry;
-    entry.vertices = std::make_unique<VertexBuffer>(*allocator_, device_, queue_family_, queue_, vertices);
-    entry.indices  = std::make_unique<IndexBuffer>(*allocator_, device_, queue_family_, queue_, indices);
-
-    //   3. ローカル空間の境界球を計算して bounds に入れる。
-    entry.bounds = compute_bounds(vertices);
-
-    return emplace(std::move(entry));
-}
-
-scene::BoundingSphere MeshRegistry::compute_bounds(const std::vector<Vertex>& vertices) {
-    //   1. 全頂点の position から AABB（各成分の最小・最大）を求める
-    scene::BoundingSphere bounds{};
-    glm::vec3 min = vertices[0].position;
-    glm::vec3 max = vertices[0].position;
-    for (const auto& vertex : vertices) {
-        min = glm::min(min, vertex.position);
-        max = glm::max(max, vertex.position);
-    }
-    //   2. 中心を求める
-    bounds.center = (min + max) * 0.5f;
-
-    //   3. entry.bounds.radius = 全頂点について max(length(v.position - center))
-    //      （AABB の対角長 / 2 でも正しいが、頂点から直接求めた方が球が締まる＝無駄な描画が減る）
-    float radius = 0;
-    for (const auto& vertex : vertices) {
-        float dist = glm::length(vertex.position - bounds.center);
-        radius = glm::max(radius, dist);
-    }
-    bounds.radius = radius;
-    return bounds;
-}
-
-void MeshRegistry::unload(scene::MeshId id) {
-    destroy(id);
-}
-
-// ----- 組み込みジオメトリ -----
-//
-// 巻き順を CCW へ統一する。
-//   graphics_pipeline.cpp の frontFace を COUNTER_CLOCKWISE に変えるのに合わせて、
-//   ここの**インデックス順を反転**させること（三角形ごとに 2 番目と 3 番目を入れ替える）。
-//   ★ 頂点配列ではなくインデックス配列を触る。頂点を並べ替えると UV も追随させる必要が出る。
-//
-// Vertex の color を normal に置き換えたので、
-//   下の頂点データの第2要素を「面ごとの法線」に書き換えること。
-//   （キューブは面ごとに独立した24頂点構成なので、面の法線をそのまま入れられる。
-//     この構成にしておいたのが phase8 の投資として効いてくる）
-//
-//     手前面（法線 -Z）: T = (-1, 0, 0)   ・ 奥面（法線 +Z）: T = (1, 0, 0)
-//     左面（法線 -X）  : T = (0, 0, 1)  ・ 右面（法線 +X）: T = (0, 0, -1)
-//     上面（法線 +Y）  : T = (0, 0, 1)   ・ 下面（法線 -Y）: T = (0, 0, 1)
-//   w は従法線の符号（±1）。上のUV割り当て（ミラーリング無し）であれば全面 w = -1 でよい。
-//   検証: NormalTangentTest.gltf 相当の見た目（陰影が正しい側に動く）になれば符号が合っている。
-
-scene::MeshId add_cube_mesh(MeshRegistry& registry) {
-    // テクスチャを貼るため、面ごとに独立した24頂点構成にする（phase8プラン 項目9 から移設）。
-    // 各面の4頂点に uv = {1,0}/{1,1}/{0,1}/{0,0} を割り当て、インデックスは面ごと6個×6面=36個。
-    // 左- 右+ 上- 下+ 手前- 奥+
-    const std::vector<Vertex> vertices = {
-        // 手前
-        {{-0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {-1, 0, 0, -1}, {1, 0}},
-        {{-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {-1, 0, 0, -1}, {1, 1}},
-        {{0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {-1, 0, 0, -1}, {0, 1}},
-        {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {-1, 0, 0, -1}, {0, 0}},
-
-        // 奥
-        {{0.5f, 0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {1, 0, 0, -1}, {1, 0}},
-        {{0.5f, -0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {1, 0, 0, -1}, {1, 1}},
-        {{-0.5f, -0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {1, 0, 0, -1}, {0, 1}},
-        {{-0.5f, 0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {1, 0, 0, -1}, {0, 0}},
-
-        // 左
-        {{-0.5f, 0.5f, 0.5f}, {-1.0f, 0.0f, 0.0f}, {0, 0, 1, -1}, {1, 0}},
-        {{-0.5f, -0.5f, 0.5f}, {-1.0f, 0.0f, 0.0f}, {0, 0, 1, -1}, {1, 1}},
-        {{-0.5f, -0.5f, -0.5f}, {-1.0f, 0.0f, 0.0f}, {0, 0, 1, -1}, {0, 1}},
-        {{-0.5f, 0.5f, -0.5f}, {-1.0f, 0.0f, 0.0f}, {0, 0, 1, -1}, {0, 0}},
-
-        // 右
-        {{0.5f, 0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0, -1, -1}, {1, 0}},
-        {{0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0, -1, -1}, {1, 1}},
-        {{0.5f, -0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0, -1, -1}, {0, 1}},
-        {{0.5f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0, -1, -1}, {0, 0}},
-
-        // 上
-        {{0.5f, 0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}, {0, 0, 1, -1}, {1, 0}},
-        {{-0.5f, 0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}, {0, 0, 1, -1}, {1, 1}},
-        {{-0.5f, 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0, 0, 1, -1}, {0, 1}},
-        {{0.5f, 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0, 0, 1, -1}, {0, 0}},
-
-        // 下
-        {{-0.5f, -0.5f, 0.5f}, {0.0f, -1.0f, 0.0f}, {0, 0, 1, -1}, {1, 0}},
-        {{0.5f, -0.5f, 0.5f}, {0.0f, -1.0f, 0.0f}, {0, 0, 1, -1}, {1, 1}},
-        {{0.5f, -0.5f, -0.5f}, {0.0f, -1.0f, 0.0f}, {0, 0, 1, -1}, {0, 1}},
-        {{-0.5f, -0.5f, -0.5f}, {0.0f, -1.0f, 0.0f}, {0, 0, 1, -1}, {0, 0}},
-    };
-
-    const std::vector<std::uint16_t> indices = {
-         0,  2,  1,  0,  3,  2, // 手前
-         4,  6,  5,  4,  7,  6, // 奥
-         8, 10,  9,  8, 11, 10, // 左
-        12, 14, 13, 12, 15, 14, // 右
-        16, 18, 17, 16, 19, 18, // 上
-        20, 22, 21, 20, 23, 22  // 下
-    };
-
-    return registry.add(vertices, indices);
-}
-
-scene::MeshId add_plane_mesh(MeshRegistry& registry) {
-    // XZ平面上の1x1の板。キューブとの見た目の差でメッシュ切り替えを確認するためのもの。
-    const std::vector<Vertex> vertices = {
-        {{-0.5f, 0.0f, 0.5f}, {0.0f, 1.0f, 0.0f}, {-1, 0, 0, -1}, {1, 0}},
-        {{-0.5f, 0.0f, -0.5f}, {0.0f, 1.0f, 0.0f}, {-1, 0, 0, -1}, {1, 1}},
-        {{0.5f, 0.0f, -0.5f}, {0.0f, 1.0f, 0.0f}, {-1, 0, 0, -1}, {0, 1}},
-        {{0.5f, 0.0f, 0.5f}, {0.0f, 1.0f, 0.0f}, {-1, 0, 0, -1}, {0, 0}},
-    };
-
-    const std::vector<std::uint16_t> indices = {
-        0, 2, 1, 0, 3, 2
-    };
-
-    return registry.add(vertices, indices);
-}
-
-
-scene::MeshId add_sphere_mesh(MeshRegistry& registry, int segments, int rings) {
-    // ★ 分割数が少なすぎると面が張れない。最低限を保証しておく。
-    segments = std::max(segments, 3);
-    rings    = std::max(rings, 2);
-
-    // 経度方向は「継ぎ目の頂点を重複させる」ため +1 列にする。
-    //   phi = 0 と phi = 2*PI は同じ位置だが u が 0 と 1 で異なるため、
-    //   頂点を共有すると継ぎ目で u が 1 → 0 へ巻き戻り、帯状の歪みが出る。
-    const int columns = segments + 1;
-
-    std::vector<Vertex> vertices;
-    vertices.reserve(static_cast<std::size_t>(rings + 1) * static_cast<std::size_t>(columns));
-
-    for (int ring = 0; ring <= rings; ++ring) {
-        const float v = static_cast<float>(ring) / static_cast<float>(rings);
-        const float theta = glm::pi<float>() * v;  // 0 = 北極, PI = 南極
-        const float sin_theta = std::sin(theta);
-        const float cos_theta = std::cos(theta);
-
-        for (int seg = 0; seg <= segments; ++seg) {
-            const float u = static_cast<float>(seg) / static_cast<float>(segments);
-            const float phi = glm::two_pi<float>() * u;
-            const float sin_phi = std::sin(phi);
-            const float cos_phi = std::cos(phi);
-
-            // 半径 0.5（cube の1辺 1.0 と大きさの感覚を揃える）。
-            const glm::vec3 position = 0.5f * glm::vec3(
-                sin_theta * cos_phi,
-                cos_theta,
-                sin_theta * sin_phi);
-
-            vertices.push_back(Vertex{
-                .position = position,
-                // ★ 球は「原点からの向き」がそのまま法線になる。極でも position は
-                //   (0, ±0.5, 0) で長さが 0 にならないので normalize は安全。
-                .normal   = glm::normalize(position),
-                // 接線は u（経度 phi）が増える向き = ∂P/∂phi を正規化したもの（phase15 ③-4）。
-                //   P = r * (sin(theta)cos(phi), cos(theta), sin(theta)sin(phi)) を phi で偏微分すると
-                //   r*sin(theta) * (-sin(phi), 0, cos(phi)) になり、係数を落とすと単位ベクトルが残る。
-                // ★ 極（sin(theta) = 0）では ∂P/∂phi の**長さ**が 0 になるが、向きである
-                //   (-sin(phi), 0, cos(phi)) は常に長さ 1 なので、極も特別扱いせずに済む
-                //   （ゼロ長の接線を入れると vert の normalize() が NaN を返し、面が消える）。
-                // ★ w = +1 は cross(N, T) が ∂P/∂v（v が増える = 南へ下がる向き）と
-                //   そのまま一致することから決まる。cube は UV の張り方の都合で w = -1 に
-                //   なっており、w は**メッシュごとに違って正常**（片方に合わせないこと）。
-                .tangent  = glm::vec4(-sin_phi, 0.0f, cos_phi, 1.0f),
-                .uv       = glm::vec2(u, v),
-            });
+    scene::MeshId MeshRegistry::add(const std::vector<Vertex>& vertices,
+                                    const std::vector<std::uint16_t>& indices) {
+        //   1. 空のメッシュ（vertices か indices が空）は弾く。
+        if (vertices.empty() || indices.empty()) {
+            throw std::runtime_error("MeshRegistry::add : 頂点またはインデックスが空です。");
         }
+
+        //   2. Entry を作って push する:
+        Entry entry;
+        entry.vertices = std::make_unique<VertexBuffer>(*allocator_, device_, queue_family_, queue_, vertices);
+        entry.indices  = std::make_unique<IndexBuffer>(*allocator_, device_, queue_family_, queue_, indices);
+
+        //   3. ローカル空間の境界球を計算して entry.bounds に入れる。
+        entry.bounds = compute_bounds(vertices);
+
+        // push_back をスロット確保に置き換える。
+        return emplace(std::move(entry));
     }
 
-    std::vector<std::uint16_t> indices;
-    indices.reserve(static_cast<std::size_t>(rings) * static_cast<std::size_t>(segments) * 6);
-
-    for (int ring = 0; ring < rings; ++ring) {
-        for (int seg = 0; seg < segments; ++seg) {
-            const auto a = static_cast<std::uint16_t>(ring * columns + seg);
-            const auto b = static_cast<std::uint16_t>(a + 1);        // 経度方向の隣（phi + d）
-            const auto c = static_cast<std::uint16_t>(a + columns);  // 緯度方向の隣（theta + d）
-            const auto d = static_cast<std::uint16_t>(c + 1);
-
-            // 外から見て反時計回りになる並び（frontFace = COUNTER_CLOCKWISE）。
-            //   赤道上の点で確かめると (b - a) × (c - a) が中心から外を向く:
-            //     b - a は +phi 方向、c - a は -y 方向（theta が増えると下がる）
-            //   ★ 逆順にすると球が裏返り、背面カリングで**丸ごと消える**。
-            // ★ 極（ring = 0 と ring = rings-1）では a と b（または c と d）が同じ位置に
-            //   重なって三角形が縮退するが、面積0はラスタライズされないので実害は無い。
-            //   極だけ三角形1枚にする最適化もあるが、条件分岐が増えるわりに得るものが少ない。
-            indices.push_back(a); indices.push_back(b); indices.push_back(c);
-            indices.push_back(b); indices.push_back(d); indices.push_back(c);
+    scene::MeshId MeshRegistry::add(const std::vector<Vertex>& vertices,
+                                    const std::vector<std::uint32_t>& indices) {
+        //   1. 空のメッシュ（vertices か indices が空）は弾く。
+        if (vertices.empty() || indices.empty()) {
+            throw std::runtime_error("MeshRegistry::add : 頂点またはインデックスが空です。");
         }
+
+        //   2. Entry を作って push する。
+        Entry entry;
+        entry.vertices = std::make_unique<VertexBuffer>(*allocator_, device_, queue_family_, queue_, vertices);
+        entry.indices  = std::make_unique<IndexBuffer>(*allocator_, device_, queue_family_, queue_, indices);
+
+        //   3. ローカル空間の境界球を計算して bounds に入れる。
+        entry.bounds = compute_bounds(vertices);
+
+        return emplace(std::move(entry));
     }
 
-    return registry.add(vertices, indices);
-}
+    scene::BoundingSphere MeshRegistry::compute_bounds(const std::vector<Vertex>& vertices) {
+        //   1. 全頂点の position から AABB（各成分の最小・最大）を求める
+        scene::BoundingSphere bounds{};
+        glm::vec3 min = vertices[0].position;
+        glm::vec3 max = vertices[0].position;
+        for (const auto& vertex : vertices) {
+            min = glm::min(min, vertex.position);
+            max = glm::max(max, vertex.position);
+        }
+        //   2. 中心を求める
+        bounds.center = (min + max) * 0.5f;
+
+        //   3. entry.bounds.radius = 全頂点について max(length(v.position - center))
+        //      （AABB の対角長 / 2 でも正しいが、頂点から直接求めた方が球が締まる＝無駄な描画が減る）
+        float radius = 0;
+        for (const auto& vertex : vertices) {
+            float dist = glm::length(vertex.position - bounds.center);
+            radius = glm::max(radius, dist);
+        }
+        bounds.radius = radius;
+        return bounds;
+    }
+
+    void MeshRegistry::unload(scene::MeshId id) {
+        destroy(id);
+    }
+
+    void MeshRegistry::on_destroy(scene::MeshId id, MeshEntry&& entry) {
+        auto vertices = std::shared_ptr(std::move(entry.vertices));
+        auto indices  = std::shared_ptr(std::move(entry.indices));
+        deletions_->push([vertices, indices]() mutable {
+            vertices.reset();
+            indices.reset();
+        });
+    };
+
+    // ----- 組み込みジオメトリ -----
+    //
+    // 巻き順を CCW へ統一する。
+    //   graphics_pipeline.cpp の frontFace を COUNTER_CLOCKWISE に変えるのに合わせて、
+    //   ここの**インデックス順を反転**させること（三角形ごとに 2 番目と 3 番目を入れ替える）。
+    //   ★ 頂点配列ではなくインデックス配列を触る。頂点を並べ替えると UV も追随させる必要が出る。
+    //
+    // Vertex の color を normal に置き換えたので、
+    //   下の頂点データの第2要素を「面ごとの法線」に書き換えること。
+    //   （キューブは面ごとに独立した24頂点構成なので、面の法線をそのまま入れられる。
+    //     この構成にしておいたのが phase8 の投資として効いてくる）
+    //
+    //     手前面（法線 -Z）: T = (-1, 0, 0)   ・ 奥面（法線 +Z）: T = (1, 0, 0)
+    //     左面（法線 -X）  : T = (0, 0, 1)  ・ 右面（法線 +X）: T = (0, 0, -1)
+    //     上面（法線 +Y）  : T = (0, 0, 1)   ・ 下面（法線 -Y）: T = (0, 0, 1)
+    //   w は従法線の符号（±1）。上のUV割り当て（ミラーリング無し）であれば全面 w = -1 でよい。
+    //   検証: NormalTangentTest.gltf 相当の見た目（陰影が正しい側に動く）になれば符号が合っている。
+
+    scene::MeshId add_cube_mesh(MeshRegistry& registry) {
+        // テクスチャを貼るため、面ごとに独立した24頂点構成にする（phase8プラン 項目9 から移設）。
+        // 各面の4頂点に uv = {1,0}/{1,1}/{0,1}/{0,0} を割り当て、インデックスは面ごと6個×6面=36個。
+        // 左- 右+ 上- 下+ 手前- 奥+
+        const std::vector<Vertex> vertices = {
+            // 手前
+            {{-0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {-1, 0, 0, -1}, {1, 0}},
+            {{-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {-1, 0, 0, -1}, {1, 1}},
+            {{0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {-1, 0, 0, -1}, {0, 1}},
+            {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {-1, 0, 0, -1}, {0, 0}},
+
+            // 奥
+            {{0.5f, 0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {1, 0, 0, -1}, {1, 0}},
+            {{0.5f, -0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {1, 0, 0, -1}, {1, 1}},
+            {{-0.5f, -0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {1, 0, 0, -1}, {0, 1}},
+            {{-0.5f, 0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {1, 0, 0, -1}, {0, 0}},
+
+            // 左
+            {{-0.5f, 0.5f, 0.5f}, {-1.0f, 0.0f, 0.0f}, {0, 0, 1, -1}, {1, 0}},
+            {{-0.5f, -0.5f, 0.5f}, {-1.0f, 0.0f, 0.0f}, {0, 0, 1, -1}, {1, 1}},
+            {{-0.5f, -0.5f, -0.5f}, {-1.0f, 0.0f, 0.0f}, {0, 0, 1, -1}, {0, 1}},
+            {{-0.5f, 0.5f, -0.5f}, {-1.0f, 0.0f, 0.0f}, {0, 0, 1, -1}, {0, 0}},
+
+            // 右
+            {{0.5f, 0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0, -1, -1}, {1, 0}},
+            {{0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0, -1, -1}, {1, 1}},
+            {{0.5f, -0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0, -1, -1}, {0, 1}},
+            {{0.5f, 0.5f, 0.5f}, {1.0f, 0.0f, 0.0f}, {0, 0, -1, -1}, {0, 0}},
+
+            // 上
+            {{0.5f, 0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}, {0, 0, 1, -1}, {1, 0}},
+            {{-0.5f, 0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}, {0, 0, 1, -1}, {1, 1}},
+            {{-0.5f, 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0, 0, 1, -1}, {0, 1}},
+            {{0.5f, 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0, 0, 1, -1}, {0, 0}},
+
+            // 下
+            {{-0.5f, -0.5f, 0.5f}, {0.0f, -1.0f, 0.0f}, {0, 0, 1, -1}, {1, 0}},
+            {{0.5f, -0.5f, 0.5f}, {0.0f, -1.0f, 0.0f}, {0, 0, 1, -1}, {1, 1}},
+            {{0.5f, -0.5f, -0.5f}, {0.0f, -1.0f, 0.0f}, {0, 0, 1, -1}, {0, 1}},
+            {{-0.5f, -0.5f, -0.5f}, {0.0f, -1.0f, 0.0f}, {0, 0, 1, -1}, {0, 0}},
+        };
+
+        const std::vector<std::uint16_t> indices = {
+             0,  2,  1,  0,  3,  2, // 手前
+             4,  6,  5,  4,  7,  6, // 奥
+             8, 10,  9,  8, 11, 10, // 左
+            12, 14, 13, 12, 15, 14, // 右
+            16, 18, 17, 16, 19, 18, // 上
+            20, 22, 21, 20, 23, 22  // 下
+        };
+
+        return registry.add(vertices, indices);
+    }
+
+    scene::MeshId add_plane_mesh(MeshRegistry& registry) {
+        // XZ平面上の1x1の板。キューブとの見た目の差でメッシュ切り替えを確認するためのもの。
+        const std::vector<Vertex> vertices = {
+            {{-0.5f, 0.0f, 0.5f}, {0.0f, 1.0f, 0.0f}, {-1, 0, 0, -1}, {1, 0}},
+            {{-0.5f, 0.0f, -0.5f}, {0.0f, 1.0f, 0.0f}, {-1, 0, 0, -1}, {1, 1}},
+            {{0.5f, 0.0f, -0.5f}, {0.0f, 1.0f, 0.0f}, {-1, 0, 0, -1}, {0, 1}},
+            {{0.5f, 0.0f, 0.5f}, {0.0f, 1.0f, 0.0f}, {-1, 0, 0, -1}, {0, 0}},
+        };
+
+        const std::vector<std::uint16_t> indices = {
+            0, 2, 1, 0, 3, 2
+        };
+
+        return registry.add(vertices, indices);
+    }
+
+
+    scene::MeshId add_sphere_mesh(MeshRegistry& registry, int segments, int rings) {
+        // ★ 分割数が少なすぎると面が張れない。最低限を保証しておく。
+        segments = std::max(segments, 3);
+        rings    = std::max(rings, 2);
+
+        // 経度方向は「継ぎ目の頂点を重複させる」ため +1 列にする。
+        //   phi = 0 と phi = 2*PI は同じ位置だが u が 0 と 1 で異なるため、
+        //   頂点を共有すると継ぎ目で u が 1 → 0 へ巻き戻り、帯状の歪みが出る。
+        const int columns = segments + 1;
+
+        std::vector<Vertex> vertices;
+        vertices.reserve(static_cast<std::size_t>(rings + 1) * static_cast<std::size_t>(columns));
+
+        for (int ring = 0; ring <= rings; ++ring) {
+            const float v = static_cast<float>(ring) / static_cast<float>(rings);
+            const float theta = glm::pi<float>() * v;  // 0 = 北極, PI = 南極
+            const float sin_theta = std::sin(theta);
+            const float cos_theta = std::cos(theta);
+
+            for (int seg = 0; seg <= segments; ++seg) {
+                const float u = static_cast<float>(seg) / static_cast<float>(segments);
+                const float phi = glm::two_pi<float>() * u;
+                const float sin_phi = std::sin(phi);
+                const float cos_phi = std::cos(phi);
+
+                // 半径 0.5（cube の1辺 1.0 と大きさの感覚を揃える）。
+                const glm::vec3 position = 0.5f * glm::vec3(
+                    sin_theta * cos_phi,
+                    cos_theta,
+                    sin_theta * sin_phi);
+
+                vertices.push_back(Vertex{
+                    .position = position,
+                    // ★ 球は「原点からの向き」がそのまま法線になる。極でも position は
+                    //   (0, ±0.5, 0) で長さが 0 にならないので normalize は安全。
+                    .normal   = glm::normalize(position),
+                    // 接線は u（経度 phi）が増える向き = ∂P/∂phi を正規化したもの（phase15 ③-4）。
+                    //   P = r * (sin(theta)cos(phi), cos(theta), sin(theta)sin(phi)) を phi で偏微分すると
+                    //   r*sin(theta) * (-sin(phi), 0, cos(phi)) になり、係数を落とすと単位ベクトルが残る。
+                    // ★ 極（sin(theta) = 0）では ∂P/∂phi の**長さ**が 0 になるが、向きである
+                    //   (-sin(phi), 0, cos(phi)) は常に長さ 1 なので、極も特別扱いせずに済む
+                    //   （ゼロ長の接線を入れると vert の normalize() が NaN を返し、面が消える）。
+                    // ★ w = +1 は cross(N, T) が ∂P/∂v（v が増える = 南へ下がる向き）と
+                    //   そのまま一致することから決まる。cube は UV の張り方の都合で w = -1 に
+                    //   なっており、w は**メッシュごとに違って正常**（片方に合わせないこと）。
+                    .tangent  = glm::vec4(-sin_phi, 0.0f, cos_phi, 1.0f),
+                    .uv       = glm::vec2(u, v),
+                });
+            }
+        }
+
+        std::vector<std::uint16_t> indices;
+        indices.reserve(static_cast<std::size_t>(rings) * static_cast<std::size_t>(segments) * 6);
+
+        for (int ring = 0; ring < rings; ++ring) {
+            for (int seg = 0; seg < segments; ++seg) {
+                const auto a = static_cast<std::uint16_t>(ring * columns + seg);
+                const auto b = static_cast<std::uint16_t>(a + 1);        // 経度方向の隣（phi + d）
+                const auto c = static_cast<std::uint16_t>(a + columns);  // 緯度方向の隣（theta + d）
+                const auto d = static_cast<std::uint16_t>(c + 1);
+
+                // 外から見て反時計回りになる並び（frontFace = COUNTER_CLOCKWISE）。
+                //   赤道上の点で確かめると (b - a) × (c - a) が中心から外を向く:
+                //     b - a は +phi 方向、c - a は -y 方向（theta が増えると下がる）
+                //   ★ 逆順にすると球が裏返り、背面カリングで**丸ごと消える**。
+                // ★ 極（ring = 0 と ring = rings-1）では a と b（または c と d）が同じ位置に
+                //   重なって三角形が縮退するが、面積0はラスタライズされないので実害は無い。
+                //   極だけ三角形1枚にする最適化もあるが、条件分岐が増えるわりに得るものが少ない。
+                indices.push_back(a); indices.push_back(b); indices.push_back(c);
+                indices.push_back(b); indices.push_back(d); indices.push_back(c);
+            }
+        }
+
+        return registry.add(vertices, indices);
+    }
 
 }  // namespace sq::graphics

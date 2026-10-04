@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cstddef>
-
 #include <vulkan/vulkan.h>
 
 #include "sq/graphics/buffer.hpp"

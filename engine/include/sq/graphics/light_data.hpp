@@ -1,9 +1,7 @@
 #pragma once
 
 #include <cstddef>
-#include <cstdint>
-
-#include <glm/glm.hpp>
+#include <glm/glm.hpp> // ☆ IDEがなぜか使用されていない可能性があると判断している
 
 namespace sq::graphics {
 

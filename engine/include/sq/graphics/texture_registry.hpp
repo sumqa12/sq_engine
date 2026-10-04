@@ -148,21 +148,7 @@ public:
 protected:
     // 登録時のフック（phase16 ③-3）。既存の register_texture の手順4をそのまま移す:
     //   bindless_set_ の binding=0, dstArrayElement = id.index へ entry.texture->view() を書く。
-    void on_registered(scene::TextureId id, const TextureEntry& entry) override {
-        VkDescriptorImageInfo image_info{};
-        image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        image_info.imageView = entry.texture->view();
-        image_info.sampler = sampler_;
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = bindless_set_;
-        write.dstBinding = 0;
-        write.dstArrayElement = id.index;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.descriptorCount = 1;
-        write.pImageInfo = &image_info;
-        vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
-    };
+    void on_registered(scene::TextureId id, const TextureEntry& entry) override;
 
     // 解放時のフック（phase16 ③-3）。既存の unload() の手順3〜5をそのまま移す:
     //   1. bindless の id.index 番目を既定テクスチャの view で上書きする
@@ -172,31 +158,7 @@ protected:
     //      ★ 消し忘れると次の load が死んだハンドルを返す。
     //        手順8でここが一番効いてくる（参照カウントで自動的に解放されるようになると、
     //        「いつ消えたか」を呼び出し側が意識しなくなるため）。
-    void on_destroy(scene::TextureId id, TextureEntry&& entry) override {
-        VkDescriptorImageInfo info = {
-            .sampler = sampler_,
-            .imageView = get(default_texture_).texture->view(),
-            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-        };
-        VkWriteDescriptorSet write = {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = bindless_set_, .dstBinding = 0,
-            .dstArrayElement = id.index, .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &info
-        };
-        vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
-        //   ★ このディスクリプタ更新は遅延しなくてよい（UPDATE_AFTER_BIND_BIT があるため）。
-        //     遅延が要るのは VkImage / VkImageView の破棄の方。
-
-        //   実体を遅延解放キューへ移す:
-        auto tex = std::shared_ptr(std::move(entry.texture));
-        deletions_->push([tex]() mutable { tex.reset(); });
-
-        //   by_path_ から該当エントリを消す（★ 消し忘れると次の load が死んだIDを返す）
-        std::erase_if(by_path_, [id] (const auto& pair) {
-            return pair.second == id;
-        });
-    };
+    void on_destroy(scene::TextureId id, TextureEntry&& entry) override;
 
 private:
     // load / load_from_pixels の共通部分（phase16 ③-3 で引数から index を外した）。
