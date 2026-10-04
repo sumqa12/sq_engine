@@ -7,6 +7,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include "sq/graphics/asset_ref.hpp"
 #include "sq/graphics/asset_registry.hpp"
 #include "sq/graphics/deletion_queue.hpp"
 #include "sq/graphics/gpu_allocator.hpp"
@@ -60,6 +61,9 @@ public:
     // ★ 同じ path でも format が異なれば**別のテクスチャとして登録する**こと
     //   （by_path_ のキーを {path, format} にした理由。baseColor と occlusion が
     //     同じ画像ファイルを指すモデルが実在する）。
+    // ★ phase16 手順8: キャッシュヒットでも**retain しない**（生の ID を返すだけ）。
+    //   呼び出し側が TextureRef に包んだ時点で +1 されるので、同じテクスチャを2回 load して
+    //   2回包めば ref_count は 2 になる。ここで retain すると二重に数える（③-4）。
     scene::TextureId load(const std::string& path, VkFormat format);
 
     // デコード済みピクセル列から登録する（phase14 ③-4。glTF の埋め込み画像用）。
@@ -202,5 +206,9 @@ private:
     scene::TextureId flat_normal_texture_ = scene::kInvalidTextureId;  // phase15 ③-2（中立フォールバック）
     // ★ phase16 ③-3: max_textures_ は基底の capacity_ へ移した（full() で判定する）。
 };
+
+// テクスチャへの所有参照（phase16 手順8 / ③-4）。
+// MaterialEntry（マテリアル → テクスチャの連鎖解放）と Renderer（既定テクスチャの永続参照）が持つ。
+using TextureRef = AssetRef<TextureRegistry, scene::TextureId>;
 
 }  // namespace sq::graphics

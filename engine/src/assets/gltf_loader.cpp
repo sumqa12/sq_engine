@@ -822,6 +822,10 @@ LoadedModel load_gltf(const std::string& path,
     const std::vector<LoadedMaterial> material_table =
         load_materials(model, image_tables, textures, materials);
 
+    // TODO(phase16 手順8 / ③-6): material_table の各 id を graphics::MaterialRef で包み、
+    //   result.owned_materials へ積む（reserve してから emplace_back(materials, id)）。
+    //   ★ テクスチャは包まない（MaterialEntry が TextureRef で持っている。gltf_loader.hpp 参照）。
+
     // (4) メッシュ。glTF の mesh 1件が複数プリミティブを持つので、
     //     「mesh 添字 → プリミティブの並び」の二次元の対応表になる。
     //     ★ ノードは mesh を指すので、ノード走査の前にここを済ませておく。
@@ -832,6 +836,8 @@ LoadedModel load_gltf(const std::string& path,
         auto& transparent = mesh_transparent.emplace_back();
         for (auto& primitive : mesh.primitives) {
             if (std::optional<scene::MeshId> mesh_id = load_primitive(model, primitive, meshes)) {
+                // TODO(phase16 手順8 / ③-6): mesh_id を graphics::MeshRef で包み、result.owned_meshes へ積む。
+                //   ★ プリミティブ1つにつき meshes.add が1回なので、ここで包めば重複しない。
                 const bool has_material = primitive.material >= 0
                     && primitive.material < static_cast<int>(material_table.size());
                 const scene::MaterialId material_id = has_material

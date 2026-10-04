@@ -5,6 +5,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include "sq/graphics/asset_ref.hpp"
 #include "sq/graphics/asset_registry.hpp"
 #include "sq/graphics/deletion_queue.hpp"
 #include "sq/graphics/gpu_allocator.hpp"
@@ -99,6 +100,9 @@ private:
 
     // ★ phase16 ③-3: slots_ / free_indices_ は基底（AssetRegistry）へ移した。
 };
+
+// メッシュへの所有参照（phase16 手順8 / ③-4）。assets::LoadedModel が持つ。
+using MeshRef = AssetRef<MeshRegistry, scene::MeshId>;
 
 // -- 組み込みジオメトリの生成ヘルパ --
 // 将来: add_capsule_mesh 等を追加する。

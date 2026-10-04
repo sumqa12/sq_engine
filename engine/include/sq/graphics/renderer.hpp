@@ -375,6 +375,31 @@ private:
     //   （bindless_set() を借りており、フォールバック判定でも参照しているため）。
     std::unique_ptr<MaterialRegistry> materials_;
 
+    // 既定アセットの永続参照（phase16 手順8 / ③-5）。
+    //
+    // 誰も参照しなくなっても解放してはいけないものを、Renderer が AssetRef で持ち続ける:
+    //   default_texture_ref_     … textures/default.png（市松。読み込み失敗の可視化）
+    //   white_texture_ref_       … 白 1×1（テクスチャ無しスロットの中立値）
+    //   flat_normal_texture_ref_ … フラット法線 1×1（法線マップ無しの中立値）
+    //   default_material_ref_    … 既定マテリアル（Material を持たない／無効IDのエンティティ用）
+    // ★ 忘れると「最後のモデルを破棄した瞬間に既定テクスチャが消え、以後すべての
+    //   フォールバックが死ぬ」。最初のモデルを持っている間は正常に見えるので、
+    //   解放を実装するまで発覚しない。
+    //
+    // ★ plan ③-5 は「宣言順をレジストリより前にすれば AssetRef が先に死ぬ」としているが、
+    //   **このクラスでは成り立たない**。
+    //   - 宣言が前 = 破棄は**後**（破棄は宣言の逆順）なので、そもそも向きが逆
+    //   - しかも ~Renderer() は本体の中で materials_.reset() / textures_.reset() を
+    //     明示的に呼んでいる。メンバの自動破棄はその**後**に走るので、宣言位置をどこにしても
+    //     「レジストリが先に死に、AssetRef が死んだレジストリへ release する」になる
+    //   → ~Renderer() の本体で、レジストリの reset より前に明示的に reset() すること
+    //     （順序は renderer.cpp の TODO(phase16 手順8 / ③-5) を参照）。
+    //     reset し忘れると、終了時に解放済みのレジストリへ release して落ちる。
+    TextureRef default_texture_ref_;
+    TextureRef white_texture_ref_;
+    TextureRef flat_normal_texture_ref_;
+    MaterialRef default_material_ref_;
+
     // 描画アイテムの収集バッファ（phase12 手順6）。
     // 毎フレームのヒープ確保を避けるためメンバに持ち、draw_frame の先頭で clear() して再利用する
     // （clear() は capacity を保つ）。

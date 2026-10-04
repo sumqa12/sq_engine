@@ -48,6 +48,28 @@ struct LoadedModel {
     };
 
     std::vector<Node> nodes;
+
+    // -- このファイルがレジストリへ登録したものの所有権（phase16 手順8 / ③-6） --
+    //
+    // LoadedModel が破棄されると AssetRef が全部落ち、他に参照が無いものだけが解放される。
+    // Node::primitives は生ハンドルのまま（展開時に ECS へコピーするため。D-9）。
+    //
+    // ★ 破棄の順序は「エンティティ → LoadedModel」（③-6）。逆にすると、エンティティが
+    //   死んだハンドルを握ったまま1フレーム描かれ、既定メッシュ／既定マテリアルへ
+    //   フォールバックした姿（市松模様）が一瞬見える。落ちはしない。
+    // ★ LoadedModel は Renderer より**後に宣言**すること（先に破棄されるため）。
+    //   main.cpp の models は renderer の後に宣言されているので現状は満たしている。
+    //   逆になると、死んだレジストリへ release を呼んで落ちる（このフェーズで一番踏みやすい罠）。
+    std::vector<graphics::MeshRef> owned_meshes;
+
+    // ★ テクスチャはここに持たない。マテリアルが TextureRef で持っている（MaterialEntry）ので、
+    //   マテリアルが解放されれば連鎖して解放される（③-6）。
+    //   load_images は determine_image_formats でマテリアルから参照される画像・用途だけを
+    //   読み込むので、「どのマテリアルにも包まれずに ref_count == 0 で残るテクスチャ」は出ない。
+    //   ★ 例外: materials.add が上限で失敗した（既定マテリアルが返った）場合、
+    //     そのマテリアル用に読んだテクスチャは誰にも包まれずに残る。上限超過はそもそも
+    //     エラーログが出る異常系なので、このフェーズでは割り切る。
+    std::vector<graphics::MaterialRef> owned_materials;
 };
 
 // path の .gltf / .glb を読み、メッシュ・テクスチャ・マテリアルを各レジストリへ登録して
@@ -63,6 +85,11 @@ struct LoadedModel {
 //   KHR 拡張全般、スパースアクセサ、TEXCOORD_1 以降、頂点カラー、
 //   normalTexture.scale / occlusionTexture.strength / doubleSided / sampler のフィルタ・ラップ設定
 //   （phase15 D-6 で継続）。
+//
+// phase16 手順8: 登録したメッシュ・テクスチャ・マテリアルを LoadedModel::owned_* に包んで返す。
+//   ★ 包むのは「このファイルが登録した ID」すべて。既定マテリアル（materials.default_material()）を
+//     フォールバックで使ったプリミティブがあっても、それは包まない（Renderer が守っている）。
+//   ★ 読み込みに失敗して早期 return するときは owned_* が空のまま返る。
 [[nodiscard]] LoadedModel load_gltf(const std::string& path,
                                     graphics::MeshRegistry& meshes,
                                     graphics::TextureRegistry& textures,

@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace sq::graphics {
@@ -17,9 +19,16 @@ namespace sq::graphics {
 // Entry:  スロットに置く実体。**ムーブ可能であればよい**（コピー不可でよい）。
 //         ★ ただし既定構築可能であること（slots_.emplace_back() で空のスロットを作るため）。
 //
-// ★ 手順7（このステップ）では参照カウントを**入れない**。
-//   既存の unload() をそのまま destroy() に載せ替えるところまで（絵が変わらないリファクタ）。
-//   retain / release / ref_count と Slot::ref_count は手順8（③-4）で足す。
+// 参照カウント（phase16 手順8 / ③-4 / D-9）:
+//   カウントはスロット側（Slot::ref_count）に持ち、増減は AssetRef（asset_ref.hpp）が行う。
+//   ★ retain / release を直接呼ぶのは AssetRef だけ、と一本に決めること
+//     （load / add の中で retain しない。phase15 ③-9 バグA と同じ教訓）。
+//   ★ ref_count == 0 のまま一度も AssetRef に包まれなかったアセットは**自動では解放されない**
+//     （main.cpp が生ハンドルで持っている cube / plane 等。従来どおりの挙動）。
+//     解放が走るのは「1以上 → 0」に落ちた瞬間だけ。
+//   ★ unload()（= destroy()）は参照カウントを無視する強制解放として残す。
+//     解放後に残った AssetRef が release しても、世代照合で contains() が false になるので
+//     何も起きない（release の先頭で弾く）。
 //
 // ★ テンプレートなのでヘッダオンリー（.cpp は作らない。CMake の変更も不要）。
 //   メンバ関数の定義はこのヘッダの末尾（クラス定義の外）に書くこと。
@@ -70,6 +79,32 @@ public:
     [[nodiscard]] std::size_t alive_count() const {
         return slots_.size() - free_indices_.size();
     };
+
+    // -- 参照カウント（phase16 手順8 / ③-4） --
+    //
+    // ★ public にしてあるのは AssetRef（別クラステンプレート）から呼ぶため。
+    //   アプリ側から直接呼ばないこと（呼び忘れ・呼びすぎの温床。D-9 の (a) 案そのもの）。
+
+    // 参照カウントを1増やす。
+    //   contains(id) でなければ何もしない（死んだハンドルを包もうとした。AssetRef 側でも弾く）。
+    void retain(Handle id);
+
+    // 参照カウントを1減らし、0 になったら destroy(id) を呼ぶ。
+    //   1. contains(id) でなければ何もしない
+    //      ★ unload() で強制解放された後に、残っていた AssetRef が破棄されたケース。
+    //        ここで弾かないと、再利用された別のアセットのカウントを減らしてしまう（ABA）。
+    //   2. ref_count == 0 なら spdlog::warn を出して何もしない（retain より多く release した。バグ）
+    //      ★ asset_registry.hpp に spdlog を入れたくなければ、assert でもよい。
+    //        「黙って 0 のまま destroy する」のだけは避けること（呼びすぎを隠してしまう）。
+    //   3. --ref_count、0 になったら destroy(id)
+    //
+    // ★ destroy() の中で Entry が破棄され、MaterialEntry の TextureRef が
+    //   **別のレジストリ（TextureRegistry）の release を呼ぶ**。連鎖解放はこの経路で起きる。
+    //   同じレジストリへ再入することは無い（依存は Material → Texture の一方向。D-9）。
+    void release(Handle id);
+
+    // 現在の参照カウント（検証・デバッグ用。③-7）。contains(id) でなければ 0。
+    [[nodiscard]] std::uint32_t ref_count(Handle id) const;
 
 protected:
     // capacity: 登録できる件数の上限。0 なら無制限（MeshRegistry）。
@@ -138,10 +173,13 @@ protected:
     //      ★ on_destroy がムーブで持っていかなかった場合（MaterialRegistry）に備える。
     //        手順8で MaterialEntry に TextureRef が入ると、ここで**テクスチャの release が走る**。
     //   4. alive = false, ++generation
+    //      ★ 手順8: ref_count = 0 もここで戻すこと（再利用時に前のカウントを引き継がないように）。
     //   5. free_indices_.push_back(id.index)
     //
     // ★ 「既定アセットは解放させない」判定はここに入れない（派生ごとに既定の有無が違う）。
     //   派生の unload() が destroy() を呼ぶ前に判定する。
+    //   ★ release() 経由で 0 になった場合はこの判定を**通らない**。既定アセットは
+    //     Renderer が AssetRef を持ち続けることで守る（③-5）。
     void destroy(Handle id) {
         if (!contains(id)) { return; }
 
@@ -200,7 +238,9 @@ private:
         Entry entry{};
         std::uint32_t generation = 0;
         bool alive = false;
-        // ★ 手順8（③-4）で std::uint32_t ref_count = 0; を足す。
+        // 参照カウント（phase16 手順8 / ③-4）。AssetRef の数と一致する。
+        // ★ emplace 直後は 0。呼び出し側が AssetRef に包んだ時点で 1 になる。
+        std::uint32_t ref_count = 0;
     };
 
     std::vector<Slot> slots_;                  // 添字が Handle::index
@@ -209,8 +249,8 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// メンバ関数の定義（ここから下はユーザーが書く）
-//   contains / get / alive_count / コンストラクタ / full / emplace / destroy / get_mutable
+// TODO(phase16 手順8): retain / release / ref_count の定義
+//   クラス内にインラインで書いても、ここへクラス外定義で書いてもよい（他のメンバに揃えるならクラス内）。
 // ---------------------------------------------------------------------------
 
 }  // namespace sq::graphics

@@ -3,7 +3,7 @@
 
 namespace sq::graphics {
     MaterialRegistry::MaterialRegistry(GpuAllocator& allocator, VkDevice device,
-                                       const TextureRegistry& textures,
+                                       TextureRegistry& textures,
                                        VkDescriptorSet asset_set, std::uint32_t max_materials)
         : AssetRegistry(max_materials), device_(device), textures_(&textures), asset_set_(asset_set) {
         buffer_ = std::make_unique<MaterialBuffer>(allocator, device_, max_materials);
