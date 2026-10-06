@@ -15,6 +15,13 @@ file(GLOB SHADERS
         ${SHADER_SOURCE_DIR}/*.frag
         ${SHADER_SOURCE_DIR}/*.comp)
 
+# phase17 ⓪-1: シェーダの共通定義（shaders/include/*.glsl）を集める。
+file(GLOB SHADER_INCLUDES
+        ${SHADER_SOURCE_DIR}/include/*.glsl)
+#   ★ 上の SHADERS の GLOB は *.vert / *.frag / *.comp しか拾わないので、
+#     include/*.glsl が単独でコンパイルされることはない（拡張子を .glsl にした理由）。
+#   ★ GLOB を足したら CMake の再実行が要る。
+
 foreach(source IN LISTS SHADERS)
     get_filename_component(FILENAME ${source} NAME)
     add_custom_command(
@@ -22,8 +29,9 @@ foreach(source IN LISTS SHADERS)
             COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_BUILD_DIR}
             COMMAND ${glslc_executable}
             -o ${SHADER_BUILD_DIR}/${FILENAME}.spv
+            -I ${SHADER_SOURCE_DIR}/include
             ${source}
-            DEPENDS ${source}
+            DEPENDS ${source} ${SHADER_INCLUDES}
             COMMENT "Compiling ${FILENAME}"
     )
     list(APPEND SPV_SHADERS ${SHADER_BUILD_DIR}/${FILENAME}.spv)

@@ -62,7 +62,7 @@ namespace sq::scene {
     // phase16 ①-4 / D-3: light_view_projection を足して 96 → 160 バイト。
     //   シャドウパスの頂点シェーダ（shadow.vert）と本パスのフラグメントシェーダ
     //   （triangle.frag）の**両方**が同じ値を読むので、プッシュ定数ではなくここに置く。
-    // ★ シェーダ側の uniform CameraUBO ブロックは **triangle.vert / triangle.frag / shadow.vert の3箇所**。
+    // ★ シェーダ側の uniform CameraUBO ブロックは shaders/include/camera.glsl の1箇所。
     //   1つでも古いままだと、そのシェーダだけが camera_position を
     //   light_view_projection の一部として読む（絵は出るが鏡面反射だけがおかしくなる）。
     struct CameraUBO {

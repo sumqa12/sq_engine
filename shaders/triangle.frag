@@ -4,47 +4,9 @@
 #define PI 3.14159265359
 #define EP 1e-5
 
-// ★ phase16 ①-4: light_view_proj を追加（C++ 側 scene::CameraUBO と対。3箇所で揃える）。
-//   light_count.y = 影を落とすライトの添字（無ければ 0xFFFFFFFF。D-4）
-layout(set = 0, binding = 0) uniform CameraUBO {
-    mat4  view_proj;
-    mat4  light_view_proj;
-    vec4  camera_position;
-    uvec4 light_count;
-} camera;
-
-
-struct LightData {
-    vec4 position_type;
-    vec4 direction_range;
-    vec4 color_intensity;
-};
-layout(std430, set = 0, binding = 2) readonly buffer LightBuffer {
-    LightData lights[];
-};
-
-layout(set = 1, binding = 0) uniform sampler2D textures[];
-
-// マテリアル本体（phase14 ①）。C++ 側 graphics::MaterialData と対になる。
-// ★ メンバの順・型を1つでもずらすと、全マテリアルの見た目が崩れる。
-struct MaterialData {
-    vec4 base_color;
-    vec4 emissive;
-    float metallic;
-    float roughness;
-    float alpha_cutoff;
-    uint albedo_index;
-    uint normal_index;
-    uint metallic_roughness_index;
-    uint occlusion_index;
-    uint emissive_index;
-};
-
-// set=1 = 「起動後は不変なアセット」（D-2）。テクスチャ配列と同居させる。
-// set=0 と違ってフレーム複製が無いので、バッファは全体で1本。
-layout(std430, set = 1, binding = 1) readonly buffer MaterialBuffer {
-    MaterialData materials[];
-};
+#include "camera.glsl"
+#include "light.glsl"
+#include "material.glsl"
 
 // set=2「ライティング環境」（phase16 D-1）。binding=1..3（IBL）は ② で足す。
 //   ★ sampler2D ではなく sampler2DShadow。texture() の戻り値が

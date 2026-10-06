@@ -7,13 +7,7 @@
 // ★ 立方体メッシュ方式を採らない理由: 頂点／インデックスバッファ・メッシュ登録・
 //   内側を向くカリング・near/far との干渉をすべて考えなくてよい。
 
-// ★ C++ 側 scene::CameraUBO と対（triangle.vert / triangle.frag / shadow.vert と揃える。これで4箇所）。
-layout(set = 0, binding = 0) uniform CameraUBO {
-    mat4  view_proj;
-    mat4  light_view_proj;
-    vec4  camera_position;
-    uvec4 light_count;
-} camera;
+#include "camera.glsl"
 
 layout(location = 0) out vec3 out_direction;  // ワールド空間のレイ方向（未正規化）
 
