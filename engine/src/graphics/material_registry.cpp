@@ -34,19 +34,16 @@ namespace sq::graphics {
     }
 
     scene::MaterialId MaterialRegistry::add(const MaterialData& data, const scene::MaterialTextures& textures) {
-        //   1. スロットの上限チェック
+        //   スロットの上限チェック
         if (full()) {
             spdlog::error("MaterialRegistry::add: 登録件数の上限に達しています。");
             return default_material_;
         }
 
-        //   2. 5スロットぶんのフォールバック解決（phase15 ③-3）:
-        MaterialData resolved = resolve_textures(data, textures);
+        //   レジストリに登録
+        auto id = emplace(make_entry(data, textures));
 
-        //   3. レジストリに登録
-        auto id = emplace(MaterialEntry{resolved});
-
-        //   4. 最初の1件を既定マテリアルにする（TextureRegistry::default_texture と同じ流儀）
+        //   最初の1件を既定マテリアルにする（TextureRegistry::default_texture と同じ流儀）
         if (default_material_.is_null()) { default_material_ = id; }
         return id;
     }
@@ -70,9 +67,9 @@ namespace sq::graphics {
         // contains(id) でなければ何もしない
         // ★ GPU が読んでいる最中に書き換えると壊れる。このフェーズでは起動時専用。
         if (contains(id)) {
-            const MaterialData resolved = resolve_textures(data, textures);
-            get_mutable(id).data = resolved;
-            buffer_->write(id.index, resolved);
+            MaterialEntry& entry = get_mutable(id);
+            entry = make_entry(data, textures);
+            buffer_->write(id.index, entry.data);
         }
     }
 
@@ -114,10 +111,29 @@ namespace sq::graphics {
         return result;
     }
 
+    // add / update が共有する Entry の組み立て（phase16 手順8）
+    MaterialEntry MaterialRegistry::make_entry(const MaterialData &data, const scene::MaterialTextures &textures) {
+        //   1. data = resolve_textures(data, textures)
+        MaterialData resolved = resolve_textures(data, textures);
+
+        //   2. 5スロットそれぞれ TextureRef(*textures_, textures.<slot>) で包む
+        //      （無効／未登録の ID は AssetRef 側で空の参照になる）
+        MaterialEntry result = {
+            .data = resolved,
+            .albedo = TextureRef(*textures_, textures.albedo),
+            .normal = TextureRef(*textures_, textures.normal),
+            .metallic_roughness = TextureRef(*textures_, textures.metallic_roughness),
+            .occlusion = TextureRef(*textures_, textures.occlusion),
+            .emissive = TextureRef(*textures_, textures.emissive),
+        };
+
+        return result;
+    }
+
     void MaterialRegistry::on_registered(scene::MaterialId id, const MaterialEntry& entry) {
         buffer_->write(id.index, entry.data);
-    };
+    }
 
-    void MaterialRegistry::on_destroy(scene::MaterialId, MaterialEntry&&) {};
+    void MaterialRegistry::on_destroy(scene::MaterialId, MaterialEntry&&) {}
 
 }  // namespace sq::graphics

@@ -87,7 +87,7 @@ namespace sq::graphics {
             vertices.reset();
             indices.reset();
         });
-    };
+    }
 
     // ----- 組み込みジオメトリ -----
     //

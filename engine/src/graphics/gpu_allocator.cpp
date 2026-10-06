@@ -77,6 +77,9 @@ Allocation GpuAllocator::allocate(const VkMemoryRequirements& reqs, VkMemoryProp
         insert_free_range(block, { .offset = reqs.size, .size = block.size - reqs.size });
     }
 
+    // ログ
+    log_block_count();
+
     return Allocation{
         .memory = block.memory,
         .offset = 0,
@@ -90,6 +93,9 @@ Allocation GpuAllocator::allocate(const VkMemoryRequirements& reqs, VkMemoryProp
 void GpuAllocator::free(const Allocation& allocation) {
     Block& block = blocks_[allocation.block_index];
     insert_free_range(block, { .offset = allocation.offset, .size = allocation.size });
+
+    // ログ
+    log_block_count();
 }
 
 void GpuAllocator::insert_free_range(Block& block, const FreeRange& range) {
@@ -163,6 +169,12 @@ std::uint32_t GpuAllocator::create_block(std::uint32_t memory_type_index, VkDevi
     // 5. ブロックを追加して、インデックスを返す
     blocks_.push_back(std::move(block));
     return static_cast<std::uint32_t>(blocks_.size() - 1);
+}
+
+void GpuAllocator::log_block_count() {
+    if (block_count_ == blocks_.size()) { return; }
+    block_count_ = blocks_.size();
+    spdlog::info("GpuAllocator::block_count : ブロック数: {}",  blocks_.size());
 }
 
 }  // namespace sq::graphics

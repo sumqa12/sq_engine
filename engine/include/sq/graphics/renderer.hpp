@@ -393,7 +393,6 @@ private:
     //     明示的に呼んでいる。メンバの自動破棄はその**後**に走るので、宣言位置をどこにしても
     //     「レジストリが先に死に、AssetRef が死んだレジストリへ release する」になる
     //   → ~Renderer() の本体で、レジストリの reset より前に明示的に reset() すること
-    //     （順序は renderer.cpp の TODO(phase16 手順8 / ③-5) を参照）。
     //     reset し忘れると、終了時に解放済みのレジストリへ release して落ちる。
     TextureRef default_texture_ref_;
     TextureRef white_texture_ref_;

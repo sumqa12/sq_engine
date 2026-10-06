@@ -56,20 +56,17 @@ public:
     // 頂点・インデックスをGPUへ登録し、その MeshId を返す。
     //
     // ★ phase16 ③-3: スロットの確保は基底の emplace(std::move(entry)) に任せる。
-    //   register_mesh() は emplace そのものになったので削除した。
     [[nodiscard]] scene::MeshId add(const std::vector<Vertex>& vertices,
                                     const std::vector<std::uint16_t>& indices);
 
     // uint32 インデックス版（phase14 ③-2）。glTF が 65536 頂点を超えるモデルで使う。
     // ★ uint16 版との違いは IndexBuffer のコンストラクタだけ。
-    //   境界球の計算・スロット確保・ID の払い出しは完全に共通なので、
-    //   共通部分は register_mesh() に括り出して両方から呼ぶこと
+    //   共通部分（境界球は compute_bounds、スロット確保と ID の払い出しは基底の emplace）を両方から呼ぶ。
     //   （TextureRegistry の load / load_from_pixels と同じ構図）。
     [[nodiscard]] scene::MeshId add(const std::vector<Vertex>& vertices,
                                     const std::vector<std::uint32_t>& indices);
 
     // ★ phase16 ③-3: contains() / get() は基底（AssetRegistry）へ移した。
-    //   mesh_registry.cpp の MeshRegistry::contains / MeshRegistry::get の定義は削除すること。
 
     // メッシュを解放する（phase14 ②-3）。
     //

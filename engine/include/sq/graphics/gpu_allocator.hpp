@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <vector>
-
 #include <vulkan/vulkan.h>
 
 namespace sq::graphics {
@@ -77,11 +76,15 @@ private:
     [[nodiscard]] std::uint32_t create_block(std::uint32_t memory_type_index, VkDeviceSize size,
                                              VkMemoryPropertyFlags properties, bool linear);
 
+    // ブロック数が増減した場合のみ、出力する。
+    void log_block_count();
+
     static constexpr VkDeviceSize kDefaultBlockSize = 64ull * 1024 * 1024;  // 64 MiB（要調整）
 
     VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
     std::vector<Block> blocks_;  // 全メモリタイプのブロックを一列に持つ（Block::memory_type_index で判別）
+    std::size_t block_count_ = 0; // ブロック数を持つ
 };
 
 }  // namespace sq::graphics

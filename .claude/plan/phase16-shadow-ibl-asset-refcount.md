@@ -1279,7 +1279,7 @@ class MeshRegistry : public AssetRegistry<scene::MeshId, MeshRegistry::Entry> { 
 //         明示的に書く必要は無い。
 ```
 
-### ③-4. 参照カウントと `AssetRef`（新規 `engine/include/sq/scene/asset_ref.hpp`）
+### ③-4. 参照カウントと `AssetRef`（新規 `engine/include/sq/graphics/asset_ref.hpp`）
 
 ```cpp
 // アセットへの所有参照（phase16 ③-4 / D-9）。
@@ -1352,17 +1352,46 @@ private:
 //   （将来）既定メッシュ
 //
 // 対処: Renderer がこれらの AssetRef をメンバとして持つ。
-//   scene::TextureRef default_texture_ref_;
-//   scene::TextureRef white_texture_ref_;
-//   scene::TextureRef flat_normal_texture_ref_;
-//   scene::MaterialRef default_material_ref_;
+//   graphics::TextureRef default_texture_ref_;
+//   graphics::TextureRef white_texture_ref_;
+//   graphics::TextureRef flat_normal_texture_ref_;
+//   graphics::MaterialRef default_material_ref_;
+//   （AssetRef は scene/ ではなく graphics/asset_ref.hpp に置いた。
+//     scene は graphics を知らない層で、コンポーネントは生ハンドルのまま（D-9）なので
+//     scene 側に置く理由が無い。別名は各レジストリのヘッダ末尾で定義する）
 //
 // ★ 忘れると「最後のモデルを unload した瞬間に既定テクスチャが消え、
 //   以後すべてのフォールバックが死ぬ」。しかも最初のモデルをロードしている間は
 //   正常に見えるので、**解放を実装するまで発覚しない。**
 // ★ これらの AssetRef は、各レジストリより**後に破棄**されてはならない。
-//   Renderer のメンバ宣言順を、レジストリより**前**にすること
-//   （破棄は宣言の逆順なので、AssetRef が先に死ぬ）。
+//   ただし**メンバの宣言順では解決できない**:
+//   - 破棄は宣言の逆順なので、レジストリより「前」に宣言すると AssetRef は「後」に死ぬ
+//     （向きが逆。「後」に宣言すれば先に死ぬ）
+//   - しかも ~Renderer() は本体の中で materials_.reset() / textures_.reset() を
+//     明示的に呼んでいる。メンバの自動破棄は本体の**後**に走るので、宣言位置をどこにしても
+//     「レジストリが先に死に、AssetRef が死んだレジストリへ release する」になる
+//   → ~Renderer() の本体で、vkDeviceWaitIdle の後・レジストリの reset より前に
+//     **明示的に reset() する**。順序は「release の連鎖がまだ生きているものだけを触る」ように並べる:
+//     1. default_material_ref_.reset()
+//        既定マテリアルが解放され、その MaterialEntry の TextureRef が release される
+//        （既定テクスチャは default_texture_ref_ がまだ持っているので消えない）
+//     2. materials_.reset()
+//        残りのマテリアルのスロットが基底のデストラクタで破棄され、TextureRef が release される
+//        （連鎖で 0 になったテクスチャは on_destroy → deletions_->push に積まれる）
+//     3. white_texture_ref_.reset(); flat_normal_texture_ref_.reset();
+//     4. default_texture_ref_.reset()   ★ **最後**
+//        TextureRegistry::on_destroy は bindless を既定テクスチャの view で埋め直すので、
+//        既定が先に死ぬと、後から解放されるテクスチャの on_destroy で get() が例外を投げる
+//        （デストラクタからの例外 = std::terminate）
+//     5. deletions_->flush_all()
+//        ★ 1〜4 で積まれた分も含めて流すため、ここ（reset の後）で呼ぶ。
+//          reset より前に呼ぶと、1〜4 で積まれた Texture が DeletionQueue のデストラクタまで
+//          残り、警告とリークになる
+//     6. 以降は従来どおり（meshes_ / textures_ / deletions_ ...）
+// ★ AssetRef のデストラクタ／reset() は registry_ == nullptr なら何もしないこと。
+//   本体で reset() した後、メンバの自動破棄でデストラクタがもう一度走る。
+// ★ 同じ理屈で、アプリ側の AssetRef（main.cpp の LoadedModel）は Renderer より
+//   **後に宣言**する（こちらは関数ローカルなので宣言順がそのまま効く。③-4）。
 ```
 
 ### ③-6. モデルのアンロード
@@ -1380,8 +1409,8 @@ struct LoadedModel {
     //
     //   テクスチャをここに持たなくてよい理由: マテリアルが AssetRef で
     //   持っている（③-3）ので、マテリアルが解放されれば連鎖する。
-    std::vector<scene::MeshRef> owned_meshes;
-    std::vector<scene::MaterialRef> owned_materials;
+    std::vector<graphics::MeshRef> owned_meshes;
+    std::vector<graphics::MaterialRef> owned_materials;
 };
 ```
 

@@ -30,10 +30,6 @@ namespace sq::graphics {
         //   PARTIALLY_BOUND を付けてあるので確保・バインドできる。
     }
 
-    TextureRegistry::~TextureRegistry() {
-        by_path_.clear();
-    }
-
     scene::TextureId TextureRegistry::load(const std::string& path, VkFormat format) {
         //  1. 既にロード済みなら再利用する（同じ画像を何体が参照してもロードは1回）:
         if (auto it = by_path_.find({path, format}); it != by_path_.end()) { return it->second; }
@@ -133,9 +129,12 @@ namespace sq::graphics {
     }
 
     void TextureRegistry::unload(scene::TextureId id) {
-        //   ★ 既定テクスチャは unload させない（フォールバック先が消えると全体が壊れる）
         if (id == default_texture_) {
             spdlog::warn("TextureRegistry::unload : 既定テクスチャは解放できません。");
+            return;
+        }
+        if (id == white_texture_ || id == flat_normal_texture_) {
+            spdlog::warn("TextureRegistry::unload : フォールバックテクスチャは解放できません。");
             return;
         }
 
@@ -156,7 +155,7 @@ namespace sq::graphics {
         write.descriptorCount = 1;
         write.pImageInfo = &image_info;
         vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
-    };
+    }
 
     void TextureRegistry::on_destroy(scene::TextureId id, TextureEntry&& entry) {
         VkDescriptorImageInfo info = {
@@ -182,6 +181,6 @@ namespace sq::graphics {
         std::erase_if(by_path_, [id] (const auto& pair) {
             return pair.second == id;
         });
-    };
+    }
 
 }  // namespace sq::graphics

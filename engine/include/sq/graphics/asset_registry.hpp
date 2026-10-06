@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
+#include <spdlog/spdlog.h>
 
 namespace sq::graphics {
 
@@ -71,14 +72,14 @@ public:
         }
 
         throw std::runtime_error("AssetRegistry::get : 登録されていません。");
-    };
+    }
 
     // 生きているスロット数（検証・デバッグ用。③-7）。
     //   ★ slots_.size() ではない（解放済みスロットも含むため）。
     //     slots_.size() - free_indices_.size() で求まる。
     [[nodiscard]] std::size_t alive_count() const {
         return slots_.size() - free_indices_.size();
-    };
+    }
 
     // -- 参照カウント（phase16 手順8 / ③-4） --
     //
@@ -87,7 +88,11 @@ public:
 
     // 参照カウントを1増やす。
     //   contains(id) でなければ何もしない（死んだハンドルを包もうとした。AssetRef 側でも弾く）。
-    void retain(Handle id);
+    void retain(Handle id) {
+        if (contains(id)) {
+            ++slots_[id.index].ref_count;
+        }
+    }
 
     // 参照カウントを1減らし、0 になったら destroy(id) を呼ぶ。
     //   1. contains(id) でなければ何もしない
@@ -101,16 +106,34 @@ public:
     // ★ destroy() の中で Entry が破棄され、MaterialEntry の TextureRef が
     //   **別のレジストリ（TextureRegistry）の release を呼ぶ**。連鎖解放はこの経路で起きる。
     //   同じレジストリへ再入することは無い（依存は Material → Texture の一方向。D-9）。
-    void release(Handle id);
+    void release(Handle id) {
+        if (!contains(id)) { return; }
+
+        Slot& slot = slots_[id.index];
+        if (slot.ref_count == 0) {
+            spdlog::warn("AssetRegistry::release : 参照されていないスロットを release しようとしました。");
+            return;
+        }
+
+        --slot.ref_count;
+        if (slot.ref_count == 0) {
+            destroy(id);
+        }
+    }
 
     // 現在の参照カウント（検証・デバッグ用。③-7）。contains(id) でなければ 0。
-    [[nodiscard]] std::uint32_t ref_count(Handle id) const;
+    [[nodiscard]] std::uint32_t ref_count(Handle id) const {
+        if (contains(id)) {
+            return slots_[id.index].ref_count;
+        }
+        return 0;
+    }
 
 protected:
     // capacity: 登録できる件数の上限。0 なら無制限（MeshRegistry）。
     //   TextureRegistry は max_textures（ディスクリプタ配列の枠）、
     //   MaterialRegistry は max_materials（SSBO の要素数）を渡す。
-    explicit AssetRegistry(std::uint32_t capacity = 0) : capacity_(capacity) {};
+    explicit AssetRegistry(std::uint32_t capacity = 0) : capacity_(capacity) {}
 
     // これ以上登録できないか。
     //   capacity_ != 0 && slots_.size() >= capacity_ && free_indices_.empty()
@@ -124,7 +147,7 @@ protected:
         return capacity_ != 0
         && slots_.size() >= capacity_
         && free_indices_.empty();
-    };
+    }
 
     // スロットを確保して Handle を払い出す（派生の add() / load() が実体を作り終えてから呼ぶ）。
     //   1. full() なら std::runtime_error を投げる（③-2。上限チェックをここへ集約する）
@@ -173,7 +196,7 @@ protected:
     //      ★ on_destroy がムーブで持っていかなかった場合（MaterialRegistry）に備える。
     //        手順8で MaterialEntry に TextureRef が入ると、ここで**テクスチャの release が走る**。
     //   4. alive = false, ++generation
-    //      ★ 手順8: ref_count = 0 もここで戻すこと（再利用時に前のカウントを引き継がないように）。
+    //      ★ 再利用時に前のカウントを引き継がないように ref_count も 0 に戻す
     //   5. free_indices_.push_back(id.index)
     //
     // ★ 「既定アセットは解放させない」判定はここに入れない（派生ごとに既定の有無が違う）。
@@ -189,10 +212,11 @@ protected:
         slot.entry = Entry{};
 
         slot.alive = false;
+        slot.ref_count = 0;
         ++slot.generation;
 
         free_indices_.push_back(id.index);
-    };
+    }
 
     // 登録済みの実体を書き換え用に取り出す（MaterialRegistry::update 用）。
     //   contains(id) でなければ例外（get と同じ）。
@@ -205,7 +229,7 @@ protected:
         }
 
         throw std::runtime_error("AssetRegistry::get_mutable : 登録されていません。");
-    };
+    }
 
     // -- 派生が埋めるフック --
 
@@ -247,10 +271,5 @@ private:
     std::vector<std::uint32_t> free_indices_;  // 解放済みスロットの再利用リスト
     std::uint32_t capacity_ = 0;               // 0 なら無制限
 };
-
-// ---------------------------------------------------------------------------
-// TODO(phase16 手順8): retain / release / ref_count の定義
-//   クラス内にインラインで書いても、ここへクラス外定義で書いてもよい（他のメンバに揃えるならクラス内）。
-// ---------------------------------------------------------------------------
 
 }  // namespace sq::graphics

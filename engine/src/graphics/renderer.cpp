@@ -176,12 +176,11 @@ namespace sq::graphics {
         // 続けて既定マテリアルを1件登録する（Material を持たない／無効IDのエンティティ用）。
         materials_->add(MaterialData{}, { .albedo = textures_->default_texture() });
 
-        // TODO(phase16 手順8 / ③-5): 既定アセットを永続参照で包む。
-        //   default_texture_ref_     = TextureRef(*textures_, textures_->default_texture());
-        //   white_texture_ref_       = TextureRef(*textures_, textures_->white_texture());
-        //   flat_normal_texture_ref_ = TextureRef(*textures_, textures_->flat_normal_texture());
-        //   default_material_ref_    = MaterialRef(*materials_, materials_->default_material());
-        //   ★ 上の load / create_* / add の戻り値をその場で包んでもよい。
+        // 既定アセットを永続参照で包む。
+        default_texture_ref_     = TextureRef(*textures_, textures_->default_texture());
+        white_texture_ref_       = TextureRef(*textures_, textures_->white_texture());
+        flat_normal_texture_ref_ = TextureRef(*textures_, textures_->flat_normal_texture());
+        default_material_ref_    = MaterialRef(*materials_, materials_->default_material());
         //   ★ 既定マテリアルの albedo（= default_texture）は MaterialEntry の TextureRef でも
         //     包まれるので、default_texture の ref_count は 2 になる。これで正しい。
 
@@ -202,38 +201,38 @@ namespace sq::graphics {
     Renderer::~Renderer() {
         vkDeviceWaitIdle(device_->handle());
 
-        // TODO(phase16 手順8 / ③-5): 既定アセットの永続参照を、レジストリより先に落とす。
-        //   順序が肝心（release の連鎖が「まだ生きているもの」だけを触るように並べる）:
-        //     1. default_material_ref_.reset();
-        //        → 既定マテリアルが解放され、MaterialEntry の TextureRef が release される
-        //          （default_texture はまだ default_texture_ref_ が持っているので消えない）
-        //     2. materials_.reset();
-        //        → 残りのマテリアルのスロットが基底のデストラクタで破棄され、
-        //          その TextureRef が release される（連鎖で消えるテクスチャは
-        //          on_destroy → deletions_->push に積まれる）
-        //     3. white_texture_ref_.reset(); flat_normal_texture_ref_.reset();
-        //     4. default_texture_ref_.reset();   ★ **最後**
-        //        TextureRegistry::on_destroy は bindless を default_texture の view で埋め直すので、
-        //        既定が先に死ぬと、後から解放されるテクスチャの on_destroy で get() が例外を投げる
-        //        （デストラクタからの例外 = std::terminate）。
-        //     5. deletions_->flush_all();   ★ 1〜4 で積まれた分も含めて全部流すため、
-        //        今の位置（下）から**ここへ移す**こと。今の位置のままだと、
-        //        1〜4 で積まれた Texture が DeletionQueue のデストラクタまで残り、
-        //        「破棄されていないものが残っています」の警告とリークになる。
-        //     6. 以降は従来どおり（meshes_ / textures_ / deletions_ ...）。
-        //        下の materials_.reset() は 2 で済んでいるので消してよい（2回目の reset は無害）。
-        //   ★ アプリ側の AssetRef（main.cpp の LoadedModel）は Renderer より先に死んでいる前提
-        //     （main.cpp で models を renderer より後に宣言しているため）。
+        // 既定アセットの永続参照を、レジストリより先に落とす。
+        //   順序が肝心（release の連鎖が「まだ生きているもの」だけを触るように並べる）
+        //   1.
+        default_material_ref_.reset();
+        //      → 既定マテリアルが解放され、MaterialEntry の TextureRef が release される
+        //        （default_texture はまだ default_texture_ref_ が持っているので消えない）
 
-        // ★ vkDeviceWaitIdle の後、レジストリ破棄の前に呼ぶ。
-        if (deletions_) { deletions_->flush_all(); }
+        //   2.
+        materials_.reset();
+        //      → 残りのマテリアルのスロットが基底のデストラクタで破棄され、
+        //        その TextureRef が release される（連鎖で消えるテクスチャは
+        //        on_destroy → deletions_->push に積まれる）
+
+        //   3.
+        white_texture_ref_.reset(); flat_normal_texture_ref_.reset();
+
+        //   4.
+        default_texture_ref_.reset(); // ★ **最後**
+        //      TextureRegistry::on_destroy は bindless を default_texture の view で埋め直すので、
+        //      既定が先に死ぬと、後から解放されるテクスチャの on_destroy で get() が例外を投げる
+        //      （デストラクタからの例外 = std::terminate）。
+
+        //   5.
+        if (deletions_) {
+            deletions_->flush_all();
+            //   ★ 1〜4 で積まれた分も含めて流すため、reset の後で呼ぶ
+        }
 
         destroy_framebuffers();
         // メッシュ・テクスチャ・マテリアル（GPUリソース）は GpuAllocator（= Device）より前に破棄する
         // （phase11 ③ の不変条件）。ディスクリプタセットはこの後のプール破棄でまとめて解放される。
         meshes_.reset();
-        // ★ materials_ は textures_ への参照を持つので、textures_ より**先に**破棄する（phase14 ①）。
-        materials_.reset();
         textures_.reset();
         deletions_.reset();  // ★ レジストリより後（レジストリが参照を持つため。phase14 ②）
         sync_objects_.reset();

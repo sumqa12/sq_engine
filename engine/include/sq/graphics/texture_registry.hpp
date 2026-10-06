@@ -49,7 +49,7 @@ public:
                     VkDescriptorSetLayout material_set_layout,
                     VkSampler sampler, std::uint32_t max_textures,
                     DeletionQueue& deletions);
-    ~TextureRegistry() override;
+    ~TextureRegistry() override = default;
 
     TextureRegistry(const TextureRegistry&) = delete;
     TextureRegistry& operator=(const TextureRegistry&) = delete;
@@ -86,7 +86,6 @@ public:
     [[nodiscard]] VkDescriptorSet bindless_set() const;
 
     // ★ phase16 ③-3: contains() は基底（AssetRegistry）へ移した。
-    //   texture_registry.cpp の TextureRegistry::contains の定義は削除すること。
 
     // 1×1 の白テクスチャを生成して登録する（phase14 ③）。起動時に1回だけ呼ぶ。
     //

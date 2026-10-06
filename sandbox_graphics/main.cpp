@@ -136,7 +136,6 @@ static void loop(sq::ecs::Registry &registry, sq::graphics::Renderer &renderer, 
             //   ★ 更新レート側（ここ）で回す。描画レート側で回すと FPS で回転速度が変わる。
             //   ★ 確認: 影が「太陽と反対側へ」「物体の高さに比例した長さで」伸び、滑らかに回ること。
             //     逆向きに伸びるなら light_dir の符号、長さが変なら正射影の範囲を疑う（①-9）。
-            (void)sun;
 
             input.new_frame(); // 入力の消費
 
@@ -432,53 +431,15 @@ int main() {
 
     for (int i = 0; i < models.size(); i++) {
         // モデル全体をまとめて動かすための空の親を1つ作る（④ の階層の使いどころ）
-        auto& model = models[i];
+        auto&[fst, snd] = models[i];
         float f = i % 2 == 0 ? 5.0f : -5.0f;
         const sq::ecs::Entity model_root = registry.create();
         registry.add<Transform>(model_root, Transform(
-            glm::vec3(static_cast<float>(i) * f, 0, 0), glm::quat(1,0,0,0), glm::vec3(model.second)));
+            glm::vec3(static_cast<float>(i) * f, 0, 0), glm::quat(1,0,0,0), glm::vec3(snd)));
         registry.add<WorldTransform>(model_root, WorldTransform{});
 
-        std::vector<sq::ecs::Entity> model_entities = sq::assets::spawn_model(registry, model.first, model_root);
+        std::vector<sq::ecs::Entity> model_entities = sq::assets::spawn_model(registry, fst, model_root);
     }
-
-    // TODO(phase16 手順8 / ③-7): 参照カウントの検証
-    //   ログ用ヘルパ（このファイルの static 関数にする）:
-    //     spdlog::info("meshes={} textures={} materials={}",
-    //                  renderer.meshes().alive_count(),
-    //                  renderer.textures().alive_count(),
-    //                  renderer.materials().alive_count());
-    //
-    //   1. 基本   : ロード前 → ロード後 → LoadedModel 破棄後 の3回ログを出し、**元の数に戻る**こと。
-    //               ★ 元の数は 0 ではない（既定アセットと、このファイルで生ハンドルのまま登録した
-    //                 cube / plane / sphere・hsr_icon テクスチャ・マテリアル群が残る）。
-    //   2. 共有   : Duck.glb を2回ロード → 1つ破棄 → テクスチャ数が**減らない**こと。
-    //               ★ load_from_pixels は by_path_ を通らないので、glb の埋め込み画像は2回ロードすると
-    //                 **別のテクスチャとして2枚登録される**（共有されない）。「共有」の確認には
-    //                 パスで読むテクスチャ（textures().load）を2つのマテリアルから使う形で試すこと。
-    //   3. 連鎖   : マテリアルを MaterialRef で包んで破棄 → そのマテリアルだけが使っていた
-    //               テクスチャも消え、他と共有しているテクスチャは残ること（ref_count() で確認）。
-    //   4. ABA    : エンティティを残したまま LoadedModel を破棄 → 既定メッシュ／既定マテリアルへ
-    //               フォールバックし、落ちないこと。
-    //   5. 再利用 : 破棄 → 別のモデルをロード → 同じ index で generation が上がっていること。
-    //   6. 反復   : ロード／破棄を 100 回繰り返して GPU メモリが増え続けないこと。
-    //
-    //   ★ 破棄の順序は「エンティティ（registry.destroy）→ LoadedModel」（③-6）。
-    //     いまは spawn_model の戻り値（model_entities）を捨てているので、検証するなら
-    //     ループの外へ持ち出して保持すること。
-    //   ★ LoadedModel を破棄するのはフレームループの**中**（例: キー入力で1体ずつ）にすること。
-    //     描画中の GPU が読んでいるメッシュ・テクスチャは DeletionQueue が kFramesInFlight 待つので
-    //     安全だが、loop() の前に破棄すると「1フレームも描かずに消えた」だけで、遅延解放の
-    //     経路を通ったかどうかが確かめられない。
-    //   ★ 検証順序（③-6）。いま assets/models にあるのは Box.glb のみ:
-    //     1. Box.glb（無地・バイナリ形式）→ 形が出るか・**裏返っていないか**  ← 現在ここ
-    //     2. BoxTextured               → UV が上下反転していないか（glTF の UV 原点は左上）
-    //     3. SimpleMeshes              → ノードの入れ子が反映されるか
-    //     4. .gltf（JSON形式）          → テキスト形式も読めるか（.bin / 画像の相対参照を含む）
-    //     5. 65536 頂点超のモデル       → uint32 インデックスで崩れないか
-    //     6. matrix 形式のノードを持つモデル
-    //   ★ 同時に「組み込み cube / plane が従来どおり表示されること」も毎回見ること
-    //     （巻き順を CCW に変えた影響がこちらに出る）。
 
     {
         sq::ecs::Entity camera_1 = create_camera(

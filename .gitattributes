@@ -8,3 +8,4 @@
 *.ktx2 binary
 *.hdr  binary
 *.spv  binary
+*.rdc binary

@@ -22,7 +22,7 @@ namespace sq::graphics {
 //   レジストリの完全な定義を要する（retain / release を呼ぶため）ので、
 //   レジストリのヘッダに置く方が include が1本で済む。
 //
-// ★ テンプレートなのでヘッダオンリー。メンバ関数の定義はユーザーが書く。
+// ★ テンプレートなのでヘッダオンリー。
 template <typename Registry, typename Handle>
 class AssetRef {
 public:
@@ -38,40 +38,85 @@ public:
     // ★ retain するのは**このコンストラクタとコピーだけ**。
     //   レジストリの add() / load() は生の Handle を返すだけで retain しない
     //   （load のキャッシュヒットも同じ。ここを2箇所にすると二重に数える。③-4）。
-    AssetRef(Registry& registry, Handle id);
+    AssetRef(Registry& registry, Handle id) {
+        if (registry.contains(id)) {
+            registry.retain(id);
+            registry_ = &registry;
+            id_ = id;
+        }
+    }
 
     // 同じものをもう1本所有する（other が有効なら retain）。
-    AssetRef(const AssetRef& other);
+    AssetRef(const AssetRef& other) {
+        if (other.valid()) {
+            other.registry_->retain(other.id_);
+        }
+        registry_ = other.registry_;
+        id_ = other.id_;
+    }
 
     // 所有権の移譲。retain しない。other を空にする（registry_ = nullptr, id_ = {}）。
     // ★ noexcept を付けること。std::vector<AssetRef> の再確保がコピーではなく
     //   ムーブを選ぶのは noexcept のときだけ（付けないと再確保のたびに retain / release が走る）。
-    AssetRef(AssetRef&& other) noexcept;
+    AssetRef(AssetRef&& other) noexcept {
+        registry_ = std::exchange(other.registry_, nullptr);
+        id_ = std::exchange(other.id_, {});
+    }
 
     // 所有していれば release。
-    ~AssetRef();
+    ~AssetRef() {
+        reset();
+    }
 
     // ★ 自己代入を必ず扱うこと。a = a; で release → retain の順に走ると、
     //   カウント 1 の状態で解放されて**ダングリングになる**。
     //   「先に other を retain してから自分を release する」順にすれば、
     //   自己代入も「同じアセットへの付け替え」も同じコードで安全になる。
-    AssetRef& operator=(const AssetRef& other);
+    AssetRef& operator=(const AssetRef& other) {
+        if (this == &other) { return *this; }
+
+        if (other.valid()) {
+            other.registry_->retain(other.id_);
+        }
+
+        reset();
+        registry_ = other.registry_;
+        id_ = other.id_;
+        return *this;
+    }
 
     // ★ 自己ムーブ代入（a = std::move(a)）でも壊れないこと。
     //   this == &other なら何もしない、で足りる。
-    AssetRef& operator=(AssetRef&& other) noexcept;
+    AssetRef& operator=(AssetRef&& other) noexcept {
+        if (this == &other) { return *this; }
+
+        reset();
+        registry_ = std::exchange(other.registry_, nullptr);
+        id_ = std::exchange(other.id_, {});
+        return *this;
+    }
 
     // GPU へ渡す生の添字はここから取る（id().index）。
-    [[nodiscard]] Handle id() const;
+    [[nodiscard]] Handle id() const {
+        return id_;
+    }
 
     // 何かを所有しているか。
     // ★ 「まだ生きているか」ではない。レジストリ側で unload()（強制解放）された後も true のまま。
     //   生死を見たいときは registry.contains(id()) を使うこと。
-    [[nodiscard]] bool valid() const;
+    [[nodiscard]] bool valid() const {
+        return registry_ != nullptr;
+    }
 
     // release して空にする。
     // ★ Renderer のデストラクタで既定アセットの参照を、レジストリより先に落とすのに使う（③-5）。
-    void reset();
+    void reset() {
+        if (valid()) {
+            registry_->release(id_);
+            registry_ = nullptr;
+            id_ = {};
+        }
+    }
 
 private:
     Registry* registry_ = nullptr;   // 所有しない

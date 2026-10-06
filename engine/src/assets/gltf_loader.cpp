@@ -345,7 +345,7 @@ template <typename T>
     }
 
     if (fallback_count == 0) {
-        spdlog::info("接線のフォールバックはありません。");
+        spdlog::debug("接線のフォールバックはありません。");
     } else {
         spdlog::debug("接線のフォールバック数: {}", fallback_count);
     }
@@ -688,8 +688,8 @@ struct LoadedMaterial {
     if (auto it = primitive.attributes.find("TANGENT"); it == primitive.attributes.end()) {
         // ★ 書式指定子 {} に対応する引数が無かったので頂点数を渡す形にした
         //   （引数無しの {} は fmt の実行時 format_error になりうる）。
-        spdlog::info("load_primitive : プリミティブにTANGENT属性が無いので生成しました。頂点数 {}",
-                     positions.size());
+        spdlog::debug("load_primitive : プリミティブにTANGENT属性が無いので生成しました。頂点数 {}",
+            positions.size());
         tangents = generate_tangents(positions, normals, tex_coords, indices);
     } else {
         tangents = read_accessor<glm::vec4>(model, it->second);
@@ -822,9 +822,12 @@ LoadedModel load_gltf(const std::string& path,
     const std::vector<LoadedMaterial> material_table =
         load_materials(model, image_tables, textures, materials);
 
-    // TODO(phase16 手順8 / ③-6): material_table の各 id を graphics::MaterialRef で包み、
-    //   result.owned_materials へ積む（reserve してから emplace_back(materials, id)）。
+    // material_table の各 id を graphics::MaterialRef で包み、result.owned_materials へ積む
     //   ★ テクスチャは包まない（MaterialEntry が TextureRef で持っている。gltf_loader.hpp 参照）。
+    result.owned_materials.reserve(material_table.size());
+    for (const auto&[id, _] : material_table) {
+        result.owned_materials.emplace_back(materials, id);
+    }
 
     // (4) メッシュ。glTF の mesh 1件が複数プリミティブを持つので、
     //     「mesh 添字 → プリミティブの並び」の二次元の対応表になる。
@@ -836,8 +839,9 @@ LoadedModel load_gltf(const std::string& path,
         auto& transparent = mesh_transparent.emplace_back();
         for (auto& primitive : mesh.primitives) {
             if (std::optional<scene::MeshId> mesh_id = load_primitive(model, primitive, meshes)) {
-                // TODO(phase16 手順8 / ③-6): mesh_id を graphics::MeshRef で包み、result.owned_meshes へ積む。
+                // mesh_id を graphics::MeshRef で包み、result.owned_meshes へ積む。
                 //   ★ プリミティブ1つにつき meshes.add が1回なので、ここで包めば重複しない。
+                result.owned_meshes.emplace_back(meshes, mesh_id.value());
                 const bool has_material = primitive.material >= 0
                     && primitive.material < static_cast<int>(material_table.size());
                 const scene::MaterialId material_id = has_material

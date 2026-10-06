@@ -93,7 +93,6 @@ public:
     scene::MaterialId add(const MaterialData& data, const scene::MaterialTextures& textures);
 
     // ★ phase16 ③-3: contains() は基底（AssetRegistry）へ移した。
-    //   material_registry.cpp の MaterialRegistry::contains の定義は削除すること。
 
     // Material::id が無効／未登録のときに使う既定マテリアル（最初に add したもの）。
     [[nodiscard]] scene::MaterialId default_material() const;
