@@ -70,7 +70,7 @@ namespace sq::scene {
         glm::mat4  light_view_projection;  // offset  64, 64  光源のクリップ空間への変換（D-3）
         glm::vec4  camera_position;        // offset 128, 16  xyz=ワールド位置, w=未使用
         glm::uvec4 light_count;            // offset 144, 16  x=有効ライト数
-                                           //                 y=影を落とすライトの添字（無ければ ~0u。D-4）
+                                           //                 y=デバッグフラグ（② で bit0 = カスケード色分け）
                                            //                 z, w=未使用
     };
 

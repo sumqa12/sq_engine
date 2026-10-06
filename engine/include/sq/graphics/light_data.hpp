@@ -33,10 +33,31 @@ struct LightData {
     // rgb = 色（linear）
     //   a = 強度 intensity
     glm::vec4 color_intensity{1.0f};  // offset 32, 16
+
+    // 影の情報（phase17 ⓪-2 / D-4）。
+    //   x = シャドウスロット（kNoShadowSlot = 影なし）。シェーダ側で int(x) として読む。
+    //       Directional: 0（CSM。方向光の影は1つだけ）
+    //       Point:       0..kMaxPointShadows-1（キューブ配列の何番目か。③-1）
+    //   y = near（Point のみ。③-1）
+    //   z = far （Point のみ。= range。③-1）
+    //   w = 未使用
+    //
+    // なぜ CameraUBO::light_count.y（phase16 D-4）をやめるのか:
+    //   phase17 では方向光1 + 点光源4 の最大5灯が影を落とす。uvec4 の空き成分には入りきらない。
+    //   「どのライトが影を持つか」はライト自身のデータとして持たせる方が、灯数が増えても形が変わらない。
+    //
+    // ★ 既定値は {kNoShadowSlot, 0, 0, 0}。{0, 0, 0, 0} にすると全ライトが
+    //   「スロット 0 の影を持つ」扱いになり、**全ライトに太陽の影が掛かる**。
+    glm::vec4 shadow{-1.0f, 0.0f, 0.0f, 0.0f};  // offset 48, 16
 };
 
-static_assert(sizeof(LightData) == 48, "std430 のレイアウトと一致させること");
+// LightData::shadow.x の「影なし」（phase17 ⓪-2）。
+// ★ シェーダ側は int(shadow.x) >= 0 で判定するので、負であれば何でもよいが、値は1つに決めておく。
+inline constexpr float kNoShadowSlot = -1.0f;
+
+static_assert(sizeof(LightData) == 64, "std430 のレイアウトと一致させること");
 static_assert(offsetof(LightData, direction_range) == 16, "シェーダ側のメンバ順と一致させること");
 static_assert(offsetof(LightData, color_intensity) == 32, "シェーダ側のメンバ順と一致させること");
+static_assert(offsetof(LightData, shadow) == 48, "シェーダ側のメンバ順と一致させること");
 
 }  // namespace sq::graphics

@@ -223,9 +223,11 @@ void main() {
         // ライト放射輝度
         vec3 radiance = light.color_intensity.rgb * light.color_intensity.w * attenuation;
 
-        // 影を落とすライト（i == camera.light_count.y）のときだけ係数を掛ける。
+        // 影を落とすライト（int(light.shadow.x) >= 0 && light.position_type.w == 0）のときだけ係数を掛ける。
         float shadow = 1.0;
-        if (i == camera.light_count.y) { shadow = sample_shadow(frag_world_pos, N, L); }
+        if (int(light.shadow.x) >= 0 && type == 0) {
+            shadow = sample_shadow(frag_world_pos, N, L);
+        }
         //   ★ N はシェーディング法線（法線マップ適用後）でよいが、アクネが消えないときは
         //     ジオメトリ法線 normalize(frag_normal) で試すこと（法線マップの凹凸でオフセットがぶれる）。
         result += (diff + specular) * radiance * NdotL * shadow;

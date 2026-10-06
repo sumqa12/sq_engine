@@ -15,7 +15,8 @@ layout(set = 0, binding = 0) uniform CameraUBO {
     mat4  view_proj;
     mat4  light_view_proj;   // phase16 ①-4（②-4 で cascade_view_proj[] に置き換える）
     vec4  camera_position;   // xyz = ワールド位置
-    uvec4 light_count;       // x = 有効ライト数 / y = 影を落とすライトの添字（無ければ 0xFFFFFFFF。⓪-2 で廃止）
+    uvec4 light_count;       // x = 有効ライト数 / y = デバッグフラグ（② で bit0 = カスケード色分け）
+    //   影を持つライトは LightData::shadow.x で表す（light.glsl。D-4）。
 } camera;
 
 #endif

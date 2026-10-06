@@ -123,9 +123,7 @@ private:
     //
     // ★ ①-1 は**絵が変わらないリファクタ**。①-2 以降（影の実装）とは別コミットにすること。
 
-    // 「影を落とすライトが無い」を表す値（CameraUBO::light_count.y に入る。D-4）。
-    // ★ シェーダ側は `i == camera.light_count.y` で比較するだけなので、
-    //   ライト数の上限（kMaxLights）と衝突しない値であればよい。
+    // 「影を落とすライトが無い」を表す値。FrameContext::shadow_light_indexとの比較で使用する。
     static constexpr std::uint32_t kNoShadowLight = ~0u;
 
     // 1フレームぶんの「CPU 側で決めた値」。collect_frame_data が作り、記録側が読む。

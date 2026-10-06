@@ -413,7 +413,7 @@ namespace sq::graphics {
         scene::CameraUBO camera_ubo{};
         camera_ubo.view_projection = context.view_projection;
         camera_ubo.camera_position = glm::vec4(context.camera_position, 1.0f);
-        camera_ubo.light_count = glm::uvec4(lights_.size(), context.shadow_light_index, 0, 0);
+        camera_ubo.light_count = glm::uvec4(lights_.size(), 0, 0, 0); // y: デバッグフラグ
         camera_ubo.light_view_projection = context.light_view_projection;
         camera_ubos_[current_frame_]->update(&camera_ubo, sizeof(camera_ubo));
 
@@ -475,6 +475,10 @@ namespace sq::graphics {
                     context.shadow_light_index = lights_.size();
                     context.light_view_projection = compute_light_view_projection(direction);
                     is_selected = true;
+                    light_data.shadow.x = 0.0f; // CSM のスロット
+                    //   ★ 選ばれなかったライトは既定値（kNoShadowSlot）のまま。ここで明示的に書かなくてよい。
+                    //   ★ context.shadow_light_index は残す（record_shadow_pass の「方向光が居るか」の判定と、
+                    //     ② のカスケード計算で使う）。シェーダへ渡す経路が LightData に変わるだけ。
                 }
             }
 
