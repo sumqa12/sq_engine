@@ -87,11 +87,19 @@ public:
     //   ★ 既定引数にはしないこと。phase15 D-6 の VkFormat と同じ理由で、
     //     「書き忘れ」が黙って通ると、カラー出力の無いパイプラインが意図せず作られる。
     //
+    // push_constant_range: パイプラインレイアウトに組み込むプッシュ定数レンジ（phase17 ⓪-3 / D-3）。
+    //   size == 0 なら pushConstantRangeCount = 0（ComputePipeline と同じ規則）。
+    //   ★ set_layouts と同じく、**全パイプラインで同じものを渡すこと**（Renderer::kPushConstantRange）。
+    //     1本だけ違うレンジを渡すと、そのパイプラインへ切り替えた瞬間にディスクリプタセットが外れる。
+    //   ★ 既定引数にしないこと（frag_spv_path と同じ理由。呼び出し側に毎回書かせることで、
+    //     「このパイプラインだけ渡し忘れた」をコンパイルエラーで気付けるようにする）。
+    //
     // config: depth write / blend / カラーの有無 / depth bias / カリング / 深度比較 /
     //   頂点入力の有無（phase11 ①・phase16 ⓪-2。既定は不透明相当）。
     GraphicsPipeline(VkDevice device, VkRenderPass render_pass, VkExtent2D viewport_extent,
                       const std::string& vert_spv_path, const std::string& frag_spv_path,
                       const std::vector<VkDescriptorSetLayout>& set_layouts,
+                      const VkPushConstantRange& push_constant_range,
                       const PipelineConfig& config);
     ~GraphicsPipeline();
 

@@ -11,6 +11,7 @@ namespace sq::graphics {
 GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, VkExtent2D viewport_extent,
                                     const std::string& vert_spv_path, const std::string& frag_spv_path,
                                     const std::vector<VkDescriptorSetLayout>& set_layouts,
+                                    const VkPushConstantRange& push_constant_range,
                                     const PipelineConfig& config)
     : device_(device) {
 
@@ -165,7 +166,15 @@ GraphicsPipeline::GraphicsPipeline(VkDevice device, VkRenderPass render_pass, Vk
     // パイプラインレイアウトを作成する
     VkPipelineLayoutCreateInfo pipeline_layout_info = {};
     pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipeline_layout_info.pushConstantRangeCount = 0;
+    if (push_constant_range.size > 0) {
+        pipeline_layout_info.pushConstantRangeCount = 1;
+        pipeline_layout_info.pPushConstantRanges = &push_constant_range;
+        //   ★ pPushConstantRanges が指す先は vkCreatePipelineLayout の呼び出しまで生きていればよい。
+        //     引数の参照を直接渡してよい（ローカルにコピーする必要は無い）。
+    } else {
+        pipeline_layout_info.pushConstantRangeCount = 0;
+    }
+
     // phase12 手順3: set=0（カメラUBO）と set=1（マテリアル）の2つを組み込む。
     pipeline_layout_info.setLayoutCount = static_cast<std::uint32_t>(set_layouts.size());
     pipeline_layout_info.pSetLayouts = set_layouts.data();

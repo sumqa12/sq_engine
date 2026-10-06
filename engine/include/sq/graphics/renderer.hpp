@@ -23,6 +23,7 @@
 #include "sq/graphics/render_pass.hpp"
 #include "sq/graphics/sampler.hpp"
 #include "sq/graphics/shadow_map.hpp"
+#include "sq/graphics/shadow_push_constants.hpp"
 #include "sq/graphics/swapchain.hpp"
 #include "sq/graphics/sync_objects.hpp"
 #include "sq/graphics/texture_registry.hpp"
@@ -210,6 +211,20 @@ private:
     void write_environment_sets();
 
     static constexpr std::size_t kFramesInFlight = 2;
+
+    // 全グラフィックスパイプラインに共通のプッシュ定数レンジ（phase17 ⓪-3 / D-3）。
+    //   中身は ShadowPushConstants（shadow_push_constants.hpp）。使うのはシャドウパスだけ。
+    //
+    // ★ set_layouts（コンストラクタの「14. パイプラインの作成」）と同じく、**全パイプラインにこの1つを渡す**。
+    //   本パス・半透明・スカイボックスは push しないが、レンジが違うとレイアウト互換が崩れ、
+    //   パイプラインを切り替えた瞬間にバインド済みのディスクリプタセットが外れる（phase16 D-3）。
+    // ★ vkCmdPushConstants の stageFlags はこのレンジと**一致**させること
+    //   （VERTEX だけで push すると「レンジと一致しない」でバリデーションエラー）。
+    static constexpr VkPushConstantRange kPushConstantRange{
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,  // stageFlags
+        0,                                                           // offset
+        sizeof(ShadowPushConstants),                                 // size
+    };
 
     std::unique_ptr<Window> window_;
     std::unique_ptr<VulkanInstance> instance_;
