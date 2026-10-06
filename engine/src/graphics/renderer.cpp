@@ -93,7 +93,7 @@ namespace sq::graphics {
         // ★ レイアウトに含めるだけなら、そのセットをバインドしない限り何も起きない。
         //   set=2 を実際にバインドし始めるのは ①-6 から。
         const std::vector set_layouts = { camera_set_layout_, material_set_layout_, environment_set_layout_ };
-        
+
         pipeline_opaque_ = std::make_unique<GraphicsPipeline>(device_->handle(), render_pass_->handle(), swapchain_->extent(),
             "shaders/triangle.vert.spv", "shaders/triangle.frag.spv",
             set_layouts, kPushConstantRange,
