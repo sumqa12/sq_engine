@@ -8,7 +8,8 @@ namespace sq::graphics {
 void transition_image_layout(VkCommandBuffer command_buffer, VkImage image,
                              VkImageLayout old_layout, VkImageLayout new_layout,
                              std::uint32_t base_mip_level, std::uint32_t level_count,
-                             std::uint32_t base_array_layer, std::uint32_t layer_count) {
+                             std::uint32_t base_array_layer, std::uint32_t layer_count,
+                             VkImageAspectFlags aspect_mask) {
     VkImageMemoryBarrier barrier = {};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.oldLayout = old_layout;
@@ -16,7 +17,7 @@ void transition_image_layout(VkCommandBuffer command_buffer, VkImage image,
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.aspectMask = aspect_mask;
     barrier.subresourceRange.baseMipLevel = base_mip_level;
     barrier.subresourceRange.levelCount = level_count;
     barrier.subresourceRange.baseArrayLayer = base_array_layer;
@@ -36,6 +37,11 @@ void transition_image_layout(VkCommandBuffer command_buffer, VkImage image,
             barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
             src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
             dst_stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        } else if (new_layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         } else {
             is_not_supported = true;
         }

@@ -664,23 +664,21 @@ namespace sq::graphics {
 
     // シャドウパスを記録する。
     void Renderer::record_shadow_pass(VkCommandBuffer command_buffer, const FrameContext& context) {
-        //   ★ 影を落とすライトが無いフレームでも、**レンダーパスの Begin / End だけは通す**こと。
-        //     シャドウマップのレイアウトを DEPTH_STENCIL_READ_ONLY_OPTIMAL にするのは
-        //     このパスの finalLayout だけなので、スキップすると初回フレームのレイアウトが
-        //     UNDEFINED のまま本パスが set=2 を読み、バリデーションが出る。
-        //     描画（手順 4〜7）だけを context.shadow_light_index で飛ばす。
+        //   ★ 影を落とすライトが無いフレームでも、レンダーパスは通すこと。
+        //     影を落とすライトが無ければ**パスごと飛ばしてよい**（実際に飛ばす形にするのは ②-7。⓪-5 はそのままでよい）。
+        //     飛ばしたフレームでは、シャドウマップは前回描いた内容のまま（または未定義）だが、
+        //     LightData::shadow.x が全ライト -1 なので本パスは読まない（⓪-2）。
         VkClearValue clear{};
         clear.depthStencil = {
             .depth = 1.0f,
             .stencil = 0
         };
-        //      clearValueCount = 1   ★ カラーが無いので1つだけ
         VkRenderPassBeginInfo render_pass_begin_info{};
         render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         render_pass_begin_info.renderPass = shadow_render_pass_->handle();
-        render_pass_begin_info.framebuffer = shadow_maps_[current_frame_]->framebuffer();
+        render_pass_begin_info.framebuffer = shadow_maps_[current_frame_]->framebuffer(0);
         render_pass_begin_info.renderArea =  {{0, 0}, shadow_maps_[current_frame_]->extent()};
-        render_pass_begin_info.clearValueCount = 1;
+        render_pass_begin_info.clearValueCount = 1; // ★ カラーが無いので1つだけ
         render_pass_begin_info.pClearValues = &clear;
 
         // レンダーパスの開始
@@ -1141,7 +1139,15 @@ namespace sq::graphics {
         for (std::size_t i = 0; i < kFramesInFlight; ++i) {
             shadow_maps_.push_back(std::make_unique<ShadowMap>(
                 device_->handle(), device_->allocator(),
-                shadow_render_pass_->handle(), kShadowMapSize, depth_format_));
+                *queue_family_indices_.graphics_family, device_->graphics_queue(),
+                shadow_render_pass_->handle(), depth_format_,
+                ShadowMapConfig {
+                    .size = kShadowMapSize,
+                    .layers = 1,
+                    .sample_view_type =  VK_IMAGE_VIEW_TYPE_2D
+                }
+            ));
+            //   ★ ⓪-5 は phase16 と同じ1枚を再現する（絵が変わらないことの確認）。② で 4層 / 2D_ARRAY にする。
         }
     }
 
@@ -1153,7 +1159,7 @@ namespace sq::graphics {
             std::array<VkDescriptorImageInfo, 4> infos{};
             infos[0] = {
                 .sampler = shadow_sampler_->handle(),
-                .imageView = shadow_maps_[i]->view(),
+                .imageView = shadow_maps_[i]->sample_view(),
                 .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
             };
 

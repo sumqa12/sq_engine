@@ -32,6 +32,12 @@ namespace sq::graphics {
 //                                                    dst: SHADER_WRITE   / COMPUTE_SHADER
 //   GENERAL              -> SHADER_READ_ONLY_OPTIMAL src: SHADER_WRITE   / COMPUTE_SHADER
 //                                                    dst: SHADER_READ    / FRAGMENT_SHADER | COMPUTE_SHADER
+//   --- phase17 ⓪-5 で追加（シャドウマップの初期遷移） ---
+//   UNDEFINED -> DEPTH_STENCIL_READ_ONLY_OPTIMAL     src: 0              / TOP_OF_PIPE
+//                                                    dst: SHADER_READ    / FRAGMENT_SHADER
+//     ★ 中身を作る遷移ではない（内容は未定義のまま）。「本パスが一度も描かれていない層を読んでも
+//       レイアウトが合っている」状態にするためだけの遷移。dst を SHADER_READ にしておけば、
+//       この後の最初のシャドウパスのサブパス依存 [0]（src = FRAGMENT_SHADER / SHADER_READ）と噛み合う。
 //
 // ★ SHADER_READ_ONLY への遷移の dst ステージに **COMPUTE_SHADER も含める**こと。
 //   phase15 までは読み手がフラグメントシェーダだけだったが、② では
@@ -40,10 +46,15 @@ namespace sq::graphics {
 //   ので、FRAGMENT だけだと「コンピュートが書き込み前のデータを読む」競合になる
 //   （バリデーションの sync 検証を有効にしていないと気付けない）。
 // ★ 未対応の組み合わせは throw すること（黙って通すとバリアが空になり、競合が見えなくなる）。
-// ★ aspectMask は COLOR 固定でよい（深度イメージの遷移はレンダーパスが担う）。
+// aspect_mask: バリアの subresourceRange.aspectMask（phase17 ⓪-5 で追加）。
+//   phase16 までは COLOR 固定だった（深度イメージの遷移はレンダーパスが担っていた）。
+//   ⓪-5 でシャドウマップ（深度）の初期遷移に使うため引数にした。既定は COLOR（既存の呼び出しはそのまま）。
+//   ★ 深度とステンシルの両方を持つフォーマットでは DEPTH | STENCIL を渡すこと
+//     （両方を持つイメージのレイアウトは両方まとめてしか遷移できない。)
 void transition_image_layout(VkCommandBuffer command_buffer, VkImage image,
                              VkImageLayout old_layout, VkImageLayout new_layout,
                              std::uint32_t base_mip_level, std::uint32_t level_count,
-                             std::uint32_t base_array_layer = 0, std::uint32_t layer_count = 1);
+                             std::uint32_t base_array_layer = 0, std::uint32_t layer_count = 1,
+                             VkImageAspectFlags aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT);
 
 }  // namespace sq::graphics
