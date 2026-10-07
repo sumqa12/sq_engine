@@ -347,7 +347,7 @@ int main() {
     // ★ 段階的に上げること:
     //     15 -> 3375 体（kMaxInstances = 4096 未満。まず正しく描けることを確認する）
     //     17 -> 4913 体（上限超え。描画側クランプが無いと表示が壊れる境界テスト）
-    constexpr int kGridSide = 10;
+    constexpr int kGridSide = 26;
     constexpr float kSpacing = 2.0f;
     // 何体に1体を半透明にするか。半透明はインスタンス化されず1体1ドローなので、
     // ここを小さくするとドローコール数が半透明の体数に支配され、

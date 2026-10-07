@@ -4,9 +4,10 @@
 #include <array>
 #include <chrono>
 #include <stdexcept>
-#include <thread>
 #include <utility>
 #include <vector>
+#include <cassert>
+#include <ranges>
 #include <GLFW/glfw3.h>
 #include <glm/ext/matrix_transform.hpp>
 #include <spdlog/spdlog.h>
@@ -364,25 +365,42 @@ namespace sq::graphics {
         current_frame_ = (current_frame_ + 1) % kFramesInFlight;
     }
 
+    // instances_に詰める順に集める
+    std::array<Renderer::DrawList*, Renderer::kDrawListCount> Renderer::draw_lists_in_order() {
+        std::array<DrawList*, kDrawListCount> result{};
+        result[0] = &opaque_;
+        result[1] = &transparent_;
+        std::size_t idx = 2;
+        for (auto& cascade_list : cascade_lists_) {
+            result[idx++] = &cascade_list;
+        }
+        for (auto& point_shadow_list : point_shadow_lists_) {
+            result[idx++] = &point_shadow_list;
+        }
+
+        assert(idx == kDrawListCount);
+
+        return result;
+    }
+
     // 収集・ソート済みの描画アイテムを順に記録する（phase12 手順6）。
     void Renderer::record_draw_items(VkCommandBuffer command_buffer,
                                      const GraphicsPipeline& pipeline,
-                                     const std::vector<DrawItem>& items,
-                                     std::uint32_t first_instance,
+                                     const DrawList& list,
                                      bool instanced) {
         std::size_t i = 0;
-        while (i < items.size()) {
+        while (i < list.items.size()) {
             // 1. 同じメッシュが続く範囲 [i, j) を数える
             std::size_t j = i;
             if (!instanced) {
                 j = i + 1;
             } else {
-                while (j < items.size() && items[j].mesh == items[i].mesh) { ++j; }
+                while (j < list.items.size() && list.items[j].mesh == list.items[i].mesh) { ++j; }
             }
             // ★ instanced == false（半透明）なら j = i + 1 に固定する（まとめない）
 
             // 2. 範囲の先頭で1回だけメッシュをバインドする
-            const auto& [vertices, indices, bounds] = meshes_->get(items[i].mesh);
+            const auto& [vertices, indices, bounds] = meshes_->get(list.items[i].mesh);
             vertices->bind(command_buffer);
             indices->bind(command_buffer);
 
@@ -390,7 +408,7 @@ namespace sq::graphics {
             vkCmdDrawIndexed(command_buffer, indices->index_count(),
                  static_cast<std::uint32_t>(j - i),               // instanceCount
                  0, 0,
-                 first_instance + static_cast<std::uint32_t>(i)   // firstInstance
+                 list.first_instance + static_cast<std::uint32_t>(i)   // firstInstance
             );
             i = j;
         }
@@ -510,9 +528,9 @@ namespace sq::graphics {
         const scene::Frustum light_frustum = scene::Frustum::from_view_projection(context.light_view_projection);
         const scene::Frustum frustum = scene::Frustum::from_view_projection(context.view_projection);
 
-        opaque_items_.clear();
-        transparent_items_.clear();
-        shadow_items_.clear();
+        for (auto& draw_list : draw_lists_in_order()) {
+            draw_list->items.clear();
+        }
 
         // view を <scene::Transform, scene::MeshHandle> から
         //   <scene::WorldTransform, scene::MeshHandle> へ変える。
@@ -571,10 +589,10 @@ namespace sq::graphics {
                 };
 
                 if (in_camera) {
-                    (material.transparent ? transparent_items_ : opaque_items_).push_back(item);
+                    (material.transparent ? transparent_.items : opaque_.items).push_back(item);
                 }
                 if (in_light) {
-                    shadow_items_.push_back(item);
+                    cascade_lists_[0].items.push_back(item);
                 }
             }
         );
@@ -583,7 +601,7 @@ namespace sq::graphics {
         // phase14 ②: MeshId が構造体になったので、比較は AssetHandle::operator<
         //   （index 比較）が担う。ここの式自体は変えなくてよいが、
         //   「何を比べているのか」が asset_handle.hpp 側に移ったことは意識しておくこと。
-        std::ranges::sort(opaque_items_,
+        std::ranges::sort(opaque_.items,
             [](const DrawItem& a, const DrawItem& b) {
                 return a.mesh < b.mesh;
             }
@@ -591,14 +609,14 @@ namespace sq::graphics {
 
         // 半透明: 遠い順（back-to-front）。
         // ★ 正しさが順序に依存するため、テクスチャ・メッシュでまとめてはいけない（ソート順が絶対）。
-        std::ranges::sort(transparent_items_,
+        std::ranges::sort(transparent_.items,
             [](const DrawItem& a, const DrawItem& b) {
                 return a.distance_sq > b.distance_sq;
             }
         );
 
         // シャドウアイテム: メッシュ順
-        std::ranges::sort(shadow_items_,
+        std::ranges::sort(cascade_lists_[0].items,
         [](const DrawItem& a, const DrawItem& b) {
                 return a.mesh < b.mesh;
             }
@@ -607,38 +625,37 @@ namespace sq::graphics {
 
     // instances_ を組み立てて instance_buffers_[current_frame_] へ転送する。
     void Renderer::upload_instances() {
+        // 詰める順に収集
+        std::array lists = draw_lists_in_order();
+
         instances_.clear();
-        instances_.reserve(opaque_items_.size() + transparent_items_.size() + shadow_items_.size());
-        // 不透明 → 半透明 → シャドウアイテムの順に詰める（★この順序が first_instance の基準になる）:
-        for (const DrawItem& item : opaque_items_) {
-            instances_.push_back(item.instance_data);
+        std::size_t item_size = 0;
+        for (auto& list : lists) {
+            item_size += list->items.size();
         }
-        for (const DrawItem& item : transparent_items_) {
-            instances_.push_back(item.instance_data);
-        }
-        for (const DrawItem& item : shadow_items_) {
-            instances_.push_back(item.instance_data);
+        instances_.reserve(item_size);
+
+        // 詰める
+        for (auto& list : lists) {
+            list->first_instance = static_cast<std::uint32_t>(instances_.size());
+            for (auto& item : list->items) {
+                instances_.push_back(item.instance_data);
+            }
         }
 
         // 上限超えたら警告を出し、リサイズ
         if (instances_.size() > kMaxInstances) {
             std::size_t exceeds = instances_.size() - kMaxInstances;
-            spdlog::warn("Renderer::upload_instances : インスタンスの個数 {} は上限 {} を超過しています。切り詰めます。\n",
+            spdlog::warn("Renderer::upload_instances : インスタンスの個数 {} は上限 {} を超過しています。切り詰めます。",
                    instances_.size(), kMaxInstances);
             instances_.resize(kMaxInstances);
 
             // 描画側も同じ位置で止める（転送されていない範囲を描かないため）
-            std::size_t n = glm::min(exceeds, shadow_items_.size());
-            shadow_items_.resize(shadow_items_.size() - n);
-            exceeds -= n;
-            if (exceeds > 0) {
-                n = glm::min(exceeds, transparent_items_.size());
-                transparent_items_.resize(transparent_items_.size() - n);
+            for (auto& list : lists | std::views::reverse) {
+                if (exceeds == 0) { break; }
+                std::size_t n = glm::min(exceeds, list->items.size());
+                list->items.resize(list->items.size() - n);
                 exceeds -= n;
-            }
-            if (exceeds > 0) {
-                n = glm::min(exceeds, opaque_items_.size());
-                opaque_items_.resize(opaque_items_.size() - n);
             }
         }
 
@@ -690,8 +707,7 @@ namespace sq::graphics {
                 pipeline_shadow_->layout(), 0, 1, &descriptor_sets_[current_frame_], 0, nullptr);
             //  ★ set=1 / set=2 はバインドしない。set=2 binding=0 はいま書き込んでいる当のイメージ。
 
-            record_draw_items(command_buffer, *pipeline_shadow_, shadow_items_,
-                opaque_items_.size() + transparent_items_.size(), true);
+            record_draw_items(command_buffer, *pipeline_shadow_, cascade_lists_[0], true);
         }
 
         vkCmdEndRenderPass(command_buffer);
@@ -746,7 +762,7 @@ namespace sq::graphics {
 
         // 記録（不透明パス → 半透明パス）
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_opaque_->handle());
-        record_draw_items(command_buffer, *pipeline_opaque_, opaque_items_, 0, true);
+        record_draw_items(command_buffer, *pipeline_opaque_, opaque_, true);
 
         // スカイボックスを入れる。
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_skybox_->handle());
@@ -762,7 +778,7 @@ namespace sq::graphics {
         // ★ 半透明はインスタンス化しない（描画順が正しさそのもの。まとめると順序が壊れる。D-5）。
         //   ただし InstanceData 経由でデータを渡す形は共通なので、シェーダは1本で済む。
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_transparent_->handle());
-        record_draw_items(command_buffer, *pipeline_transparent_, transparent_items_, static_cast<uint32_t>(opaque_items_.size()), false);
+        record_draw_items(command_buffer, *pipeline_transparent_, transparent_, false);
 
         // レンダーパスの終了
         vkCmdEndRenderPass(command_buffer);

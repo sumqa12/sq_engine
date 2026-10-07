@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -30,6 +31,7 @@
 #include "sq/graphics/uniform_buffer.hpp"
 #include "sq/graphics/vulkan_instance.hpp"
 #include "sq/graphics/window.hpp"
+#include "sq/scene/shadow_constants.hpp"
 
 namespace sq::graphics {
 
@@ -95,12 +97,41 @@ private:
         float distance_sq{};          // カメラからの2乗距離（半透明ソート用）
     };
 
-    //   first_instance: InstanceData 配列における items[0] の位置。
-    //   instanced: false なら範囲でまとめず1件ずつ描く（半透明パス用。順序が正しさそのもの）。
+    // ---- phase17 ⓪-4: 描画リストの一般化（D-1） ----
+    //
+    // instances_ は「区間の並び」になる。区間1本 = DrawList 1つ:
+    //   [ opaque | transparent | cascade 0..3 | point 0 face 0 .. point 3 face 5 ]
+    //   ↑ 本パス              ↑ ② CSM（4本）  ↑ ③ 点光源（4灯 × 6面 = 24本）
+    //
+    // ★ ⓪-4 の時点で使うのは opaque_ / transparent_ / cascade_lists_[0]（= phase16 の shadow_items_）だけ。
+    //   残りは空のまま並びに入れておく（空の区間は instances_ に何も足さない）。
+
+    // 影を落とせる点光源の最大数（phase17 D-9。③ で使う。⓪-4 では区間の本数を決めるためだけに要る）。
+    static constexpr std::uint32_t kMaxPointShadows = 4;
+
+    // 区間の総数 = 本パス2本 + カスケード + 点光源の面。
+    static constexpr std::size_t kDrawListCount = 2 + scene::kCascadeCount + kMaxPointShadows * 6;
+
+    // 区間1本（phase17 ⓪-4 / D-1）。
+    struct DrawList {
+        std::vector<DrawItem> items;
+        // InstanceData 配列（instances_）における items[0] の位置。upload_instances が埋める。
+        // ★ 収集フェーズでは触らないこと。並び順（draw_lists_in_order）からしか決まらない値。
+        std::uint32_t first_instance = 0;
+    };
+
+    // instances_ に詰める順 = kMaxInstances 超過時に**残る**優先順位（先頭ほど残る）。
+    //   opaque_ → transparent_ → cascade_lists_[0..3]（近い段から）→ point_shadow_lists_[0..23]
+    // ★ 並びはこの関数以外に書かないこと。2か所に書くと first_instance がずれる。
+    // ★ ポインタを返すのは、upload_instances が first_instance を書き込み、
+    //   超過時に items を削るため（読むだけなら const 参照でよかった）。
+    [[nodiscard]] std::array<DrawList*, kDrawListCount> draw_lists_in_order();
+
+    // DrawList 版（phase17 ⓪-4）。list.first_instance を firstInstance の基準にする。
+    //   instanced: false なら1件ずつ描く（半透明パス用。今までどおり）。
     void record_draw_items(VkCommandBuffer command_buffer,
                            const GraphicsPipeline& pipeline,
-                           const std::vector<DrawItem>& items,
-                           std::uint32_t first_instance,
+                           const DrawList& list,
                            bool instanced);
 
     // ---- phase16 ①-1: draw_frame の分解 ----
@@ -165,12 +196,10 @@ private:
     //   ①-3 でシャドウキャスタライトの選択もここに入る（context.shadow_light_index を埋める）。
     void collect_lights(const ecs::Registry& registry, FrameContext& context);
 
-    // カメラ視錐台でカリングして opaque_items_ / transparent_items_ へ振り分け、ソートする。
-    //   ①-5 でライト視錐台による shadow_items_ の振り分けも**同じループ**に入る。
+    // カメラ視錐台でカリングして opaque_ / transparent_ / cascade_lists_[0] へ振り分け、ソートする。
     void collect_draw_items(const ecs::Registry& registry, const FrameContext& context);
 
-    // ソート済みの DrawItem から instances_ を組み立て、kMaxInstances でクランプして転送する。
-    //   ①-5 で3区間（不透明 | 半透明 | シャドウキャスタ）になる。
+    // draw_lists_in_order() の順に詰め、各 first_instance を埋め、超過したら並びの末尾から削る。
     void upload_instances();
 
     // シャドウパスの記録（①-6）。
@@ -344,13 +373,17 @@ private:
     // phase13 ②: per-instance データ（model / base_color / texture_index）の SSBO。
     // 「フレームごとに書き換わるもの」なのでカメラUBOと同じ set=0 に binding=1 として同居させる。
     // ★ kFramesInFlight 個持つ（GPU が読んでいる最中に上書きしないため。D-5）。
-    static constexpr std::size_t kMaxInstances = 4096;  // 1フレームに描ける最大体数
+    // phase17 ⓪-4 / D-1: 4096 → 16384。
+    //   カスケードの境界をまたぐ物体・床のような大きな物体は、複数の影の区間に**重複して**入る。
+    //   1000 体の格子だけで影の区間が数千に達するため、本パスの体数より大きく取る。
+    //   80 バイト × 16384 = 1.25 MiB × kFramesInFlight。
+    static constexpr std::size_t kMaxInstances = 16384;  // 1フレームに描ける最大インスタンス数（全区間の合計）
     std::vector<std::unique_ptr<InstanceBuffer>> instance_buffers_;
     static constexpr std::size_t kMaxLights = 64;       // 1フレームに描ける最大光源数
     std::vector<std::unique_ptr<LightBuffer>> light_buffers_;
 
     // InstanceData の組み立て用バッファ（毎フレームのヒープ確保を避けるためメンバに持つ）。
-    // 並び順は「不透明→半透明」で連結し、DrawItem の並び順と1対1に対応させる。
+    // 並び順は「draw_lists_in_order() の順」に全区間を連結し、DrawItem の並び順と1対1に対応させる。
     std::vector<InstanceData> instances_;
 
     // LightData の組み立て用バッファ（毎フレームのヒープ確保を避けるためメンバに持つ）。
@@ -412,15 +445,16 @@ private:
     TextureRef flat_normal_texture_ref_;
     MaterialRef default_material_ref_;
 
-    // 描画アイテムの収集バッファ（phase12 手順6）。
-    // 毎フレームのヒープ確保を避けるためメンバに持ち、draw_frame の先頭で clear() して再利用する
-    // （clear() は capacity を保つ）。
-    std::vector<DrawItem> opaque_items_;
-    std::vector<DrawItem> transparent_items_;
-    // シャドウキャスタ（phase16 ①-5 / D-5）。ライトの視錐台でカリングした不透明物体。
-    // ★ 半透明は含めない（深度しか書かないので、ガラスが真っ黒な影を落とす）。
-    // ★ instances_ の第3区間（不透明 | 半透明 | シャドウキャスタ）に並ぶ。
-    std::vector<DrawItem> shadow_items_;
+    // ---- phase17 ⓪-4: 区間（D-1） ----
+    // ★ 毎フレームの先頭（collect_draw_items）で**全区間の items を** clear() すること。
+    //   ⓪-4 の時点で使わない区間も含める。② ③ で使い始めたときに clear し忘れると、
+    //   前フレームのキャスタが残って影の残像になる。draw_lists_in_order() で回せば漏れない。
+    DrawList opaque_;
+    DrawList transparent_;
+    // カスケードごとのシャドウキャスタ（②）。⓪-4 では [0] が phase16 の shadow_items_ の代わり。
+    std::array<DrawList, scene::kCascadeCount> cascade_lists_;
+    // 点光源の面ごとのシャドウキャスタ（③）。添字 = slot * 6 + face（キューブ配列の層番号と同じ）。
+    std::array<DrawList, kMaxPointShadows * 6> point_shadow_lists_;
 
     std::size_t current_frame_ = 0;
 };
