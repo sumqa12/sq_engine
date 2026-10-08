@@ -34,7 +34,18 @@ layout(std430, set = 1, binding = 1) readonly buffer MaterialBuffer {
     MaterialData materials[];
 };
 
-// ★ ① で、本パスとシャドウパスが共有する alpha の discard 判定をここに関数として足す
-//   （phase17 ①-1 / ③-5。コピーすると片方だけ直す事故が起きる）。
+// アルファマスク（glTF の alphaMode == "MASK"）で、この画素を捨てるべきか（phase17 ①-1 / D-6）。
+//   alpha: albedo テクスチャの a × base_color.a（本パスの out_color.a と同じ値）
+//   戻り値: true なら呼び出し側で discard する
+//
+// ★ 本パス（triangle.frag）・シャドウパス（shadow.frag）・③ の点光源（shadow_point.frag）で**共有する**。
+//   コピーすると片方だけ直す事故が起きる（本パスでは抜けているのに影は四角い、など）。
+// ★ discard そのものは関数の中に書かない。discard は呼び出し元のシェーダの main で書く方が、
+//   「ここで画素が消える」が読み手に見える。
+// ★ alpha_cutoff == 0 は「MASK 無効」（phase15 ②-2 の約束）。0 との比較を省くと、
+//   alpha が 0 の BLEND（半透明）マテリアルの画素まで消える。
+bool is_masked_out(MaterialData m, float alpha) {
+    return m.alpha_cutoff > 0.0 && alpha < m.alpha_cutoff;
+}
 
 #endif

@@ -106,12 +106,13 @@ namespace sq::graphics {
             PipelineConfig{ .depth_write_enable = false, .blend_enable = true });
 
         pipeline_shadow_ = std::make_unique<GraphicsPipeline>(device_->handle(), shadow_render_pass_->handle(), swapchain_->extent(),
-            "shaders/shadow.vert.spv", "",
+            "shaders/shadow.vert.spv", "shaders/shadow.frag.spv",
             set_layouts, kPushConstantRange,
             PipelineConfig{
                 .depth_write_enable = true, .blend_enable = false,
                 .has_color_attachment = false, .depth_bias_enable = true,
-                .cull_mode = VK_CULL_MODE_FRONT_BIT,
+                .cull_mode = VK_CULL_MODE_NONE,
+                //   アルファマスクの板は片面が多く、FRONT だと「裏をライトに向けた板」しか影を落とさない。
             }
         );
 
@@ -703,7 +704,10 @@ namespace sq::graphics {
 
             vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 pipeline_shadow_->layout(), 0, 1, &descriptor_sets_[current_frame_], 0, nullptr);
-            //  ★ set=1 / set=2 はバインドしない。set=2 binding=0 はいま書き込んでいる当のイメージ。
+            VkDescriptorSet bindless = textures_->bindless_set();
+            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                pipeline_shadow_->layout(), 1, 1, &bindless, 0, nullptr);
+            //   ★ set=2 はバインドしない。set=2 binding=0 はいま書き込んでいる当のイメージ。
 
             record_draw_items(command_buffer, *pipeline_shadow_, cascade_lists_[0], true);
         }

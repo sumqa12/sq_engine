@@ -151,6 +151,12 @@ void main() {
     // マテリアルパラメータ取得
     // テクスチャがない場合はCBufferMaterialの定数値で代用
     vec4 albedo_sample = texture(textures[nonuniformEXT(m.albedo_index)], frag_uv);
+
+    float alpha = albedo_sample.a * m.base_color.a;
+    if (is_masked_out(m, alpha)) { discard; }
+    //   ★ ライティングの計算（下のテクスチャ読み・ライト 65 灯のループ）より**前**に置くこと。
+    //     後ろに置いても結果は同じだが、捨てる画素に全部の計算をしてから捨てることになる。
+
     vec3 albedo = albedo_sample.rgb * m.base_color.rgb; // テクスチャ × 定数色
     // metallicRoughness / occlusion / emissive テクスチャを合成する。
     vec2 mr = texture(textures[nonuniformEXT(m.metallic_roughness_index)], frag_uv).gb;
@@ -258,5 +264,5 @@ void main() {
     // ★ トーンマップ（下の result / (result + 1)）は今までどおり**最後**に置く。
     result += m.emissive.rgb * emissive_tex;
     result = result / (result + 1.0);
-    out_color = vec4(result, albedo_sample.a * m.base_color.a);
+    out_color = vec4(result, alpha);
 }

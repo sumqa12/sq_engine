@@ -579,8 +579,8 @@ int main() {
             },{ .albedo = white }
         );
         //   エンティティ
-        //      ★ plane_mesh は XZ 平面・法線 +Y・一辺 1（mesh_registry.cpp）。
-        //      ★ kFloorY は格子（y = -9..+9）の下、-10.5 あたり。y = 0 に置くと格子を貫通する。
+        //   ★ plane_mesh は XZ 平面・法線 +Y・一辺 1（mesh_registry.cpp）。
+        //   ★ kFloorY は格子（y = -9..+9）の下、-10.5 あたり。y = 0 に置くと格子を貫通する。
         //   ★ 正射影の箱は原点中心 ±40（kShadowOrthoExtent）。床は ±50 なので、
         //     縁の 10 ぶんには影が出ない。これは**仕様**（①-10）。
         sq::ecs::Entity e = registry.create();
@@ -592,21 +592,35 @@ int main() {
         registry.add<WorldTransform>(e, WorldTransform{});
         registry.add<MeshHandle>(e, MeshHandle{ plane_mesh });
         registry.add<Material>(e, Material{ .id = floor_material, .transparent = false });
-        //
-        // ★ 検証の前に知っておくこと（①-8 との関係）:
-        //   - シャドウパスは cull_mode = FRONT。片面の板（plane_mesh）は三角形が1組しか無いので、
-        //     **ライトから見て表なら書かれず、裏なら書かれる**（向き次第で影が出たり出なかったりする）。
-        //       (a) 床は表（法線 +Y）が太陽を向いているので書かれない
-        //           （床が自分に影を落とすアクネも出ない）
-        //       (b) 格子の板は**ランダムに回転している**ので、裏を太陽に向けた板だけが影を落とす。
-        //           BACK にすると逆に表を向けた板だけが落とす。どちらのモードでも
-        //           「板の影が出る」ように見えるのはこのため（バグではない）。
-        //     ★ 確かめるには、格子の回転を一時的に単位 quat にして全部の板を +Y 向きに揃える。
-        //       FRONT なら板の影が全部消え、BACK なら全部出る。
-        //   - ①-8 の手順1「bias を 0 にすると縞が出るのが正常」は、FRONT カリングのままだと
-        //     **縞が出ないことがある**（表面の深度を書いていないので自己遮蔽が起きにくい）。
-        //     配管の確認としてアクネを見たいときは、一時的に cull_mode を BACK にしてから
-        //     bias を 0 にすること。縞が出れば配管は通っている。
+        //   ★ phase17 D-5 でシャドウのカリングを NONE にしたので、板は向きに関係なく影を落とす。
+        //     代わりに床が自分自身の深度を書くので、bias が足りないと床に縞が出る。
+    }
+
+    {
+        // ---- phase17 ①-5 の検証シーン: アルファマスクの板 ----
+        const TextureId texture = renderer.textures().load("./textures/hsr_icon_01/Blade 1.png", VK_FORMAT_R8G8B8A8_SRGB);
+        MaterialId material = renderer.materials().add(
+            sq::graphics::MaterialData{
+                .base_color = {1,1,1,1},
+                .roughness = 0.8f,
+                .alpha_cutoff = 0.5f,
+            }, { .albedo = texture }
+        );
+
+        const float kBoardZ = 15;
+        glm::quat rotQuat1 = glm::angleAxis(glm::radians(90.0f), glm::vec3(1, 0, 0));
+        glm::quat rotQuat2 = glm::angleAxis(glm::radians(-90.0f), glm::vec3(1, 0, 0));
+        for (std::size_t i = 1; i <= 4; ++i) {
+            sq::ecs::Entity board = registry.create();
+            registry.add<Transform>(board,
+                Transform(glm::vec3(i * 10, 10, kBoardZ), i % 2 == 0 ? rotQuat1 : rotQuat2, glm::vec3(10)));
+            registry.add<WorldTransform>(board, WorldTransform{});
+
+            registry.add<MeshHandle>(board, MeshHandle{ plane_mesh });
+            registry.add<Material>(board, Material{ .id = material, .transparent = false });
+            //   ★ 確認: 板の透明な部分が描かれない（本パスの discard）／床の影がアイコンの形に抜ける
+            //     （シャドウパスの discard）／半透明の格子の見た目が変わらない（alpha_cutoff == 0 の約束）。
+        }
     }
 
     loop(registry, renderer, sun);

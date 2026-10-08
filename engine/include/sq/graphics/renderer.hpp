@@ -285,6 +285,7 @@ private:
 
     // depth bias（①-8）。vkCmdSetDepthBias で毎フレーム渡す（動的ステート）。
     // ★ 調整はまず両方 0 から。縞模様（アクネ）が出るのが正常で、出ないなら配管を疑う。
+    // FRONT/NONE でも phase16 の値で床の縞は出なかった（① で確認）
     static constexpr float kDepthBiasConstant = 1.25f;
     static constexpr float kDepthBiasSlope    = 1.75f;
 
