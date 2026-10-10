@@ -96,9 +96,9 @@ static void loop(sq::ecs::Registry &registry, sq::graphics::Renderer &renderer, 
                 renderer.set_fullscreen(!renderer.is_fullscreen());
             }
 
-            // TODO(phase17 ②-9): Action::ToggleShadowDebug が押されたら
-            //   renderer.set_shadow_debug(!renderer.shadow_debug()) で色分け表示を切り替える。
-            //   ★ is_down ではなく is_pressed（押した瞬間だけ）。is_down だと押している間 tick ごとに反転する。
+            if (input_map.is_pressed(input, sq::input::Action::ToggleShadowDebug)) {
+                renderer.set_shadow_debug(!renderer.shadow_debug());
+            }
 
             renderer.set_cursor_captured(!input_map.is_down(input, sq::input::Action::CursorEnable));
 

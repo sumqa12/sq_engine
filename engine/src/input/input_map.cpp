@@ -20,8 +20,7 @@ InputMap InputMap::default_map() {
     map.set(Action::ToggleFullscreen, InputDevice::Keyboard, GLFW_KEY_F11);
     map.set(Action::Quit,             InputDevice::Keyboard, GLFW_KEY_ESCAPE);
     map.set(Action::SwitchCamera,     InputDevice::Keyboard, GLFW_KEY_C);
-    // TODO(phase17 ②-9): Action::ToggleShadowDebug を GLFW_KEY_F3 に割り当てる。
-    //   ★ 割り当てないと is_pressed が常に false になるだけで、エラーは出ない（押しても何も起きない）。
+    map.set(Action::ToggleShadowDebug, InputDevice::Keyboard, GLFW_KEY_F3);
     return map;
 }
 

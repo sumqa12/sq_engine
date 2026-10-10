@@ -4,8 +4,6 @@
 #include <cstdint>
 
 #include <glm/glm.hpp>
-#include <glm/ext/matrix_clip_space.hpp>
-#include <glm/ext/matrix_transform.hpp>
 
 #include "sq/ecs/registry.hpp"
 #include "sq/scene/shadow_constants.hpp"  // kCascadeCount（phase17 ②-4）

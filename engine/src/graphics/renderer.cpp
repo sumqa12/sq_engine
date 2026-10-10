@@ -441,8 +441,7 @@ namespace sq::graphics {
             .camera_forward = glm::vec4(context.camera_forward, 0.0f),      // 方向なので w = 0
             .cascade_splits = context.cascade_splits,
             .cascade_texel_sizes = context.cascade_texel_sizes,
-            .light_count = glm::uvec4(lights_.size(), 0, 0, 0)        // y: デバッグフラグ
-            // TODO(phase17 ②-9): y に shadow_debug_ ? scene::kDebugFlagCascadeColors : 0u を入れる。
+            .light_count = glm::uvec4(lights_.size(), shadow_debug_ ? scene::kDebugFlagCascadeColors : 0u, 0, 0) // y: デバッグフラグ
             //   ★ フラグは「ビット」として持つ（将来、別のデバッグ表示を足すときに | で重ねられるように）。
         };
         for (std::size_t i = 0; i < scene::kCascadeCount; i++) {
@@ -1396,7 +1395,11 @@ namespace sq::graphics {
         return window_->is_focused();
     }
 
-    // TODO(phase17 ②-9): set_shadow_debug / shadow_debug を定義する（shadow_debug_ を読み書きするだけ）。
-    //   ★ ここで UBO を直接書き換えないこと。UBO は collect_frame_data が毎フレーム作り直すので、
-    //     フラグはメンバに持っておき、そこで反映すれば十分（kFramesInFlight 個の UBO を気にしなくてよい）。
+    void Renderer::set_shadow_debug(bool enabled) {
+        shadow_debug_ = enabled;
+    }
+
+    bool Renderer::shadow_debug() const {
+        return shadow_debug_;
+    }
 }  // namespace sq::graphics

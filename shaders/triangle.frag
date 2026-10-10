@@ -134,27 +134,31 @@ const vec3 kCascadeColors[SQ_CASCADE_COUNT] = vec3[](
 //   色分け表示と影のサンプリングが別々に段を選ぶと、「色は緑なのに影は赤の段から引いている」という
 //   デバッグ表示そのものが嘘をつく状態になる。両方がこの関数を呼ぶ形にする。
 int select_cascade(vec3 world_pos) {
-    // TODO(phase17 ②-9): sample_cascade_shadow の「1. ビュー深度で段を選ぶ」をここへ移す。
-    //   範囲外は return -1。sample_cascade_shadow 側は「-1 なら return 1.0」に書き換える。
-    return -1;
-}
-
-float sample_cascade_shadow(vec3 world_pos, vec3 geo_normal, vec3 L) {
     //   1. ビュー深度で段を選ぶ
     float depth = dot(world_pos - camera.camera_position.xyz, camera.camera_forward.xyz);
-    //        depth > cascade_splits[SQ_CASCADE_COUNT - 1] なら 1.0（影の最大距離の外。仕様）
+    //        depth > cascade_splits[SQ_CASCADE_COUNT - 1] なら -1
     if (depth > camera.cascade_splits[SQ_CASCADE_COUNT - 1]) {
-        return 1.0;
+        return -1;
     }
 
-    uint cascade = 0;
-    for (uint c = 0; c < SQ_CASCADE_COUNT; ++c) {
+    int cascade = SQ_CASCADE_COUNT - 1;
+    for (int c = 0; c < SQ_CASCADE_COUNT; ++c) {
         if (depth < camera.cascade_splits[c]) {
             cascade = c;
             break;
         }
     }
     //   ★ 「カメラからの距離」ではなく「視線方向への射影」。距離で選ぶと段の境界が円弧になる。
+
+    return cascade;
+}
+
+float sample_cascade_shadow(vec3 world_pos, vec3 geo_normal, vec3 L) {
+    //   1. ビュー深度で段を選ぶ
+    int cascade = select_cascade(world_pos);
+    if (cascade == -1) {
+        return 1.0;
+    }
 
     //   2. 法線オフセット（D-8）
     vec3 offset_pos = world_pos + geo_normal * camera.cascade_texel_sizes[cascade] * kNormalOffsetScale
@@ -305,10 +309,15 @@ void main() {
 
     // ★ トーンマップ（下の result / (result + 1)）は今までどおり**最後**に置く。
     result += m.emissive.rgb * emissive_tex;
-    // TODO(phase17 ②-9): (camera.light_count.y & SQ_DEBUG_CASCADE_COLORS) != 0u なら、
-    //   int c = select_cascade(frag_world_pos); が 0 以上のとき result *= kCascadeColors[c]; を掛ける。
+    if ((camera.light_count.y & SQ_DEBUG_CASCADE_COLORS) != 0u) {
+        int c = select_cascade(frag_world_pos);
+        if (c >= 0) {
+            result *= kCascadeColors[c];
+        }
+    }
+
     //   ★ トーンマップの**前**に掛けること（後に掛けると明るい所ほど色が飛んで見分けにくい）。
-    //   ★ 影を落とすライトがあるかどうかに関係なく塗ってよい（段の境界の位置を見るための表示）。
+    //   ★ 影を落とすライトが無いフレームは cascade_splits が 0 なので塗られない
     //   ★ 影の最大距離より遠い画素（c == -1）は塗らない。ここで「影が出ない範囲」も見える。
     result = result / (result + 1.0);
     out_color = vec4(result, alpha);
