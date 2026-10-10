@@ -7,11 +7,25 @@
 
 namespace sq::scene {
 
-    glm::mat4 Camera::view_projection(float aspect) const {
+    glm::mat4 Camera::view() const {
+        return glm::lookAt(position, target, up);
+    }
+    glm::mat4 Camera::projection(float aspect) const {
         glm::mat4 proj = glm::perspective(fov_y_radians, aspect, near_plane, far_plane);
         proj[1][1] *= -1;  // VulkanはY下向き。上下反転を補正
-        glm::mat4 view = glm::lookAt(position, target, up);
-        return proj * view;
+        return proj;
+    }
+
+    glm::mat4 Camera::view_projection(float aspect) const {
+        return projection(aspect) * view();
+    }
+
+    Camera Camera::fallback() {
+        return Camera{
+            .position = { 0, 1.5, 3},
+            .target = { 0, 0, 0 },
+            .far_plane = 10
+        };
     }
 
     ecs::Entity get_active_camera(const ecs::Registry& registry) {

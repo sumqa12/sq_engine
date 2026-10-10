@@ -73,6 +73,14 @@ public:
 
     [[nodiscard]]bool is_focused() const;
 
+    // カスケードシャドウの段の色分け表示（phase17 ②-9）。
+    //   有効にすると、本パスの frag が段ごとに色を掛ける（0 段目から 赤・緑・青・黄）。
+    //   CameraUBO::light_count.y の scene::kDebugFlagCascadeColors ビットとして渡す。
+    // ★ bias の調整（②-10）より**先に**使えるようにしておくこと。どの段で影を引いているかが
+    //   見えないまま値をいじると、「どの段の問題か」が分からない。
+    void set_shadow_debug(bool enabled);
+    [[nodiscard]] bool shadow_debug() const;
+
     // メッシュの登録・参照（phase12 手順2）。アプリ側が起動時に
     // graphics::add_cube_mesh(renderer.meshes()) 等で登録し、得た MeshId を
     // scene::MeshHandle コンポーネントに入れる。
@@ -164,22 +172,57 @@ private:
         glm::mat4 view_projection{ 1.0f };
         glm::vec3 camera_position{ 0.0f };  // 半透明ソートの距離基準 / カメラUBO の camera_position
 
+        // ---- phase17 ②-1: カメラのパラメータ（resolve_camera が埋める） ----
+        // カスケードを切るには「カメラの視錐台を距離で輪切りにする」必要があり、
+        // 合成済みの view_projection だけでは足りない（②-3 で near/far を差し替えた projection を作り直す）。
+        // ★ resolve_camera の3段フォールバックの**どの段でも**埋めること（既定ビューでも）。
+        glm::mat4 view{ 1.0f };
+        glm::vec3 camera_forward{ 0.0f, 0.0f, -1.0f };  // 正規化済み（normalize(target - position)）
+        float fov_y = 0.0f;       // ラジアン
+        float aspect = 1.0f;
+        float near_plane = 0.1f;
+        float far_plane = 500.0f;
+
         // phase16 ①-3: 影を落とすライトの情報（collect_lights が埋める）。
         //   shadow_light_index == kNoShadowLight なら、このフレームは影を落とすライトが無い。
-        //   その場合 light_view_projection は意味を持たない（誰も読まない）。
-        glm::mat4     light_view_projection{ 1.0f };
         std::uint32_t shadow_light_index = kNoShadowLight;  // lights_ 内の添字（D-4）
+
+        // ---- phase17 ②-3: カスケード（compute_cascades が埋める） ----
+        //   shadow_light_index == kNoShadowLight のフレームでは意味を持たない（誰も読まない）。
+        glm::vec3 shadow_light_direction{ 0.0f, -1.0f, 0.0f };  // 光の**進む**向き（collect_lights が埋める）
+        std::array<glm::mat4, scene::kCascadeCount> cascade_view_projection{};
+        glm::vec4 cascade_splits{ 0.0f };       // 各段の遠い側のビュー深度（CameraUBO と同じ形）
+        glm::vec4 cascade_texel_sizes{ 0.0f };  // 各段の1テクセルのワールド幅（D-8）
     };
 
-    // 方向光の光源空間行列（view-projection）を作る（phase16 ①-3）。
-    //   light_direction: 光の**進む**向き（LightData::direction_range.xyz と同じ。正規化済み）
-    //
-    // ★ v1 は「原点固定 + kShadowOrthoExtent の正射影」。カメラ追従はしない（シマリング対策が
-    //   要るため phase17 の CSM とセット）。
-    // ★ light_direction がほぼ ±Y のとき lookAt の up が縮退して NaN になる。
-    //   main.cpp の create_directional_light と同じ分岐（|y| > 0.99 なら up = Z）が要る。
-    //   NaN になると影ではなく**画面全体が真っ黒**になる。
-    [[nodiscard]] static glm::mat4 compute_light_view_projection(const glm::vec3& light_direction);
+    // ---- phase17 ②: カスケードシャドウ（D-7） ----
+
+    // 1段ぶんの計算結果。
+    struct Cascade {
+        glm::mat4 view_projection{ 1.0f };  // スナップ済みの光源 view-projection（CameraUBO::cascade_view_projection[c]）
+        float texel_size = 0.0f;            // 1テクセルのワールド幅 = 2 * radius / kCascadeSize（D-8）
+    };
+
+    // 分割距離（practical split。②-2）。
+    //   戻り値[i] = i 段目の**遠い側**のビュー深度。i 段目の近い側は [i - 1]（0 段目は near_plane）。
+    //   far_plane は呼び出し側で min(カメラの far, kShadowMaxDistance) にしてから渡すこと。
+    // ★ 純粋な計算なので static。式は plan ②-2（λ = kCascadeSplitLambda で対数分割と一様分割を混ぜる）。
+    [[nodiscard]] static std::array<float, scene::kCascadeCount>
+        compute_cascade_splits(float near_plane, float far_plane);
+
+    // 1段ぶんの光源行列（②-3）。輪切り [split_near, split_far] を境界球で包み、テクセル単位でスナップする。
+    //   light_direction: 光の**進む**向き（正規化済み）
+    //   context:         カメラのパラメータ（view / fov_y / aspect）を読む
+    // ★ 手順は plan ②-3 の 1〜5。特に 4（スナップ）は proj の平行移動成分だけを動かす。
+    // ★ up の縮退（light_direction がほぼ ±Y）は compute_light_view_projection と同じ分岐が要る。
+    [[nodiscard]] static Cascade compute_cascade(const glm::vec3& light_direction, const FrameContext& context,
+                                                 float split_near, float split_far);
+
+    // 全段を計算して context の cascade_* を埋める（②-2 + ②-3）。
+    //   ★ 呼ぶのは collect_lights の**後**（shadow_light_direction が要る）、collect_draw_items の**前**
+    //     （段ごとの視錐台でキャスタを振り分けるため）。collect_frame_data の中が素直。
+    //   ★ 影を落とすライトが無いフレームでは呼ばなくてよい。
+    static void compute_cascades(FrameContext& context);
 
     // フレームのデータを作ってGPUへ転送する（記録はしない）。
     //   ★ 呼ぶ位置は「vkAcquireNextImageKHR が成功した後」。
@@ -196,7 +239,7 @@ private:
     //   ①-3 でシャドウキャスタライトの選択もここに入る（context.shadow_light_index を埋める）。
     void collect_lights(const ecs::Registry& registry, FrameContext& context);
 
-    // カメラ視錐台でカリングして opaque_ / transparent_ / cascade_lists_[0] へ振り分け、ソートする。
+    // カメラ視錐台でカリングして opaque_ / transparent_ / cascade_lists_ へ振り分け、ソートする。
     void collect_draw_items(const ecs::Registry& registry, const FrameContext& context);
 
     // draw_lists_in_order() の順に詰め、各 first_instance を埋め、超過したら並びの末尾から削る。
@@ -269,19 +312,20 @@ private:
     std::unique_ptr<GraphicsPipeline> pipeline_opaque_;       // depthWrite=TRUE,  blend=OFF
     std::unique_ptr<GraphicsPipeline> pipeline_transparent_;  // depthWrite=FALSE, blend=ON
 
-    // ---- phase16 ①: シャドウマップ ----
+    // ---- phase17 ②: カスケードシャドウの定数（D-7） ----
     //
-    // シャドウマップの一辺（①-2）。①-8 の調整では、解像度を上げるより先に
-    // kShadowOrthoExtent を狭める方が効く（40 → 20 でテクセル密度 4 倍）。
-    static constexpr std::uint32_t kShadowMapSize = 2048;
-
-    // 光源空間の正射影（①-3）。原点を中心に ±kShadowOrthoExtent の箱。
-    static constexpr float kShadowOrthoExtent = 40.0f;  // 正射影の半幅
-    static constexpr float kShadowNear        = 0.1f;
-    static constexpr float kShadowFar         = 200.0f;
-    // 原点からライトを引く距離。★ kShadowFar / 2 くらいにしておくこと。
-    //   近すぎるとシーンの手前側が near でクリップされ、「手前の物体の影だけ消える」。
-    static constexpr float kShadowDistance    = 100.0f;
+    // 1段（1層）の一辺。4層 × kFramesInFlight で、D32 なら 16 MiB × 8 = 128 MiB。
+    //   重いと感じたら 1024 に下げる（それでも 0 段目のテクセル密度は phase16 の数倍ある。②-11）。
+    static constexpr std::uint32_t kCascadeSize = 2048;
+    // 影を出す最大のビュー深度。カメラの far（500）まで4段で割ると近い段まで粗くなるので、ここで打ち切る。
+    //   これより遠い場所には影が出ない（仕様。②-11）。
+    static constexpr float kShadowMaxDistance = 100.0f;
+    // practical split の混ぜ具合。1 = 純対数（近い段が狭すぎる）、0 = 一様（近い段が広すぎる）。
+    static constexpr float kCascadeSplitLambda = 0.75f;
+    // 正射影の near を光源側へ伸ばす量（②-3 の 3。D-7 で depth clamp の代わりに採った方法）。
+    //   輪切りの外（光源側）にある物体も、輪切りの中へ影を落とす。小さすぎると
+    //   「高い物体の影が、カメラを根元に近づけた途端に消える」。
+    static constexpr float kCascadeCasterMargin = 50.0f;
 
     // depth bias（①-8）。vkCmdSetDepthBias で毎フレーム渡す（動的ステート）。
     // ★ 調整はまず両方 0 から。縞模様（アクネ）が出るのが正常で、出ないなら配管を疑う。
@@ -458,6 +502,9 @@ private:
     std::array<DrawList, kMaxPointShadows * 6> point_shadow_lists_;
 
     std::size_t current_frame_ = 0;
+
+    // カスケードの色分け表示（phase17 ②-9）。collect_frame_data が CameraUBO::light_count.y へ反映する。
+    bool shadow_debug_ = false;
 };
 
 }  // namespace sq::graphics

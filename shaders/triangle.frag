@@ -8,20 +8,18 @@
 #include "light.glsl"
 #include "material.glsl"
 
-// set=2「ライティング環境」（phase16 D-1）。binding=1..3（IBL）は ② で足す。
-//   ★ sampler2D ではなく sampler2DShadow。texture() の戻り値が
-//     「色」ではなく「比較結果 [0,1]」になり、引数が vec3（uv, 比較する深度）になる。
+// set=2「ライティング環境」
+//   ★ sampler2DShadow ではなく sampler2DArrayShadow。texture() の座標が vec3 → vec4（uv, 層番号, 比較する深度）になる。
 //   ★ C++ 側のサンプラは compare_enable = true / CLAMP_TO_BORDER / 白ボーダー（⓪-3）。
 //   ★ 宣言しただけでは「静的に使用」されないので、set=2 をバインドしていなくても害は無い。
-//     sample_shadow の中で texture(shadow_map, ...) を書くのは、
-//     C++ 側で set=2 をバインドするようにしてから（①-6）。
-layout(set = 2, binding = 0) uniform sampler2DShadow shadow_map;
+layout(set = 2, binding = 0) uniform sampler2DArrayShadow shadow_cascades;
 
-// 法線オフセットの大きさ（①-8）。**NDC の z 空間での値**。
-//   kShadowFar - kShadowNear ≒ 200 なので、ワールドの 5cm は z 空間では 0.00025。
-//   桁を間違えると「影が全く出ない（大きすぎ）」か「縞模様（小さすぎ）」になる。
-const float kNormalBiasMax = 0.0005;
-const float kNormalBiasMin = 0.00005;
+// 法線オフセットの大きさ（phase17 ②-8 / D-8）。**その段の1テクセルのワールド幅の何倍ずらすか**。
+//   phase16 の kNormalBiasMax / Min は「NDC の z 空間の値」で、正射影の z 範囲が1つだから成立していた。
+//   CSM は段ごとに z 範囲もテクセルの大きさも違うので、1つの定数では全段に合わない。
+//   比較の**前に**ワールド座標を法線方向へずらし、ずらす量をテクセル幅（camera.cascade_texel_sizes[c]）に比例させる。
+// ★ 出発点は 1.5（②-10 で調整）。近い段と遠い段で同時に縞が消えれば、比例が効いている。
+const float kNormalOffsetScale = 1.5;
 
 // IBL（phase16 ②-8）。C++ 側 write_environment_sets() が書く。
 //   ★ 宣言するのは binding=1..3 に**キューブ / LUT の view を書いてから**にすること。
@@ -111,14 +109,60 @@ vec3 F_SchlickRoughness(float NdotV, vec3 F0, float roughness) {
     return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - NdotV, 5.0);
 }
 
-// @brief world_pos のフラグメントが影の中にいるか（phase16 ①-7）
-// @param world_pos フラグメントのワールド座標
-// @param N         シェーディング法線（法線オフセットに使う）
-// @param L         ライトへ向かうベクトル
+// @brief world_pos のフラグメントが、方向光のカスケードシャドウの中にいるか（phase17 ②-8）
+// @param world_pos  フラグメントのワールド座標
+// @param geo_normal ジオメトリ法線（normalize(frag_normal)。法線マップ適用**前**）
+// @param L          ライトへ向かうベクトル
 // @return 1.0 = 照らされている、0.0 = 完全な影
-float sample_shadow(vec3 world_pos, vec3 N, vec3 L) {
+//
+// ★ geo_normal に法線マップ適用後の N を渡さないこと。法線オフセットが凹凸でぶれて、縞が消えにくくなる
+//   （phase16 ①-7 の「アクネが消えないときはジオメトリ法線で試す」を、ここで最初から採用する）。
+// 段の色分け表示の色（phase17 ②-9）。0 段目から 赤・緑・青・黄。
+//   result（トーンマップ前の linear な色）に**掛ける**ので、1.0 を超えない淡い色にしておく
+//   （純色 (1, 0, 0) を掛けると、緑や青の成分しか無い面が真っ黒になって形が読めなくなる）。
+const vec3 kCascadeColors[SQ_CASCADE_COUNT] = vec3[](
+    vec3(1.0, 0.4, 0.4),
+    vec3(0.4, 1.0, 0.4),
+    vec3(0.4, 0.4, 1.0),
+    vec3(1.0, 1.0, 0.4)
+);
+
+// @brief world_pos がどのカスケード段に入るか（phase17 ②-9）
+// @return 0..SQ_CASCADE_COUNT-1。影の最大距離（cascade_splits[最後]）より遠ければ -1
+//
+// ★ sample_cascade_shadow の手順1（段の選択）をここへ**移す**こと（コピーしない）。
+//   色分け表示と影のサンプリングが別々に段を選ぶと、「色は緑なのに影は赤の段から引いている」という
+//   デバッグ表示そのものが嘘をつく状態になる。両方がこの関数を呼ぶ形にする。
+int select_cascade(vec3 world_pos) {
+    // TODO(phase17 ②-9): sample_cascade_shadow の「1. ビュー深度で段を選ぶ」をここへ移す。
+    //   範囲外は return -1。sample_cascade_shadow 側は「-1 なら return 1.0」に書き換える。
+    return -1;
+}
+
+float sample_cascade_shadow(vec3 world_pos, vec3 geo_normal, vec3 L) {
+    //   1. ビュー深度で段を選ぶ
+    float depth = dot(world_pos - camera.camera_position.xyz, camera.camera_forward.xyz);
+    //        depth > cascade_splits[SQ_CASCADE_COUNT - 1] なら 1.0（影の最大距離の外。仕様）
+    if (depth > camera.cascade_splits[SQ_CASCADE_COUNT - 1]) {
+        return 1.0;
+    }
+
+    uint cascade = 0;
+    for (uint c = 0; c < SQ_CASCADE_COUNT; ++c) {
+        if (depth < camera.cascade_splits[c]) {
+            cascade = c;
+            break;
+        }
+    }
+    //   ★ 「カメラからの距離」ではなく「視線方向への射影」。距離で選ぶと段の境界が円弧になる。
+
+    //   2. 法線オフセット（D-8）
+    vec3 offset_pos = world_pos + geo_normal * camera.cascade_texel_sizes[cascade] * kNormalOffsetScale
+        * (1.0 - max(dot(geo_normal, L), 0.0));
+
+    //   3. cascade_view_proj[c] で光源クリップ空間へ → uv / z（旧 sample_shadow と同じ。z は再マップしない）
     //   光源クリップ空間へ
-    vec4 lp = camera.light_view_proj * vec4(world_pos, 1.0);
+    vec4 lp = camera.cascade_view_proj[cascade] * vec4(offset_pos, 1.0);
     vec3 ndc = lp.xyz / lp.w;
     //      ★ 正射影なので w は常に 1。除算は phase17（透視）への備え。
 
@@ -133,14 +177,12 @@ float sample_shadow(vec3 world_pos, vec3 N, vec3 L) {
     }
     //      uv の範囲外は CLAMP_TO_BORDER + 白ボーダーが 1.0 を返すので明示チェック不要。
 
-    // ★ ①-8 の調整はまず bias = 0 から。縞模様（アクネ）が出るのが正常。
-    float bias = max(kNormalBiasMax * (1.0 - dot(N, L)), kNormalBiasMin);
-
-    //   3x3 PCF
-    vec2 texel = 1.0 / vec2(textureSize(shadow_map, 0));
+    //   4. 3x3 PCF:
+    //   ★ 段の境界で影の濃さが段差になるのは v1 の仕様（ブレンドは将来課題。②-8）。
+    vec2 texel_uv = 1.0 / vec2(textureSize(shadow_cascades, 0).xy); // ★ 配列の textureSize は ivec3（z = 層数）
     float sum = 0.0;
     for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
-        sum += texture(shadow_map, vec3(uv + vec2(x, y) * texel, z - bias));
+        sum += texture(shadow_cascades, vec4(uv + vec2(x, y) * texel_uv, float(cascade), z));
     }
 
     return sum / 9.0;
@@ -232,7 +274,7 @@ void main() {
         // 影を落とすライト（int(light.shadow.x) >= 0 && light.position_type.w == 0）のときだけ係数を掛ける。
         float shadow = 1.0;
         if (int(light.shadow.x) >= 0 && type == 0) {
-            shadow = sample_shadow(frag_world_pos, N, L);
+            shadow = sample_cascade_shadow(frag_world_pos, normalize(frag_normal), L);
         }
         //   ★ N はシェーディング法線（法線マップ適用後）でよいが、アクネが消えないときは
         //     ジオメトリ法線 normalize(frag_normal) で試すこと（法線マップの凹凸でオフセットがぶれる）。
@@ -263,6 +305,11 @@ void main() {
 
     // ★ トーンマップ（下の result / (result + 1)）は今までどおり**最後**に置く。
     result += m.emissive.rgb * emissive_tex;
+    // TODO(phase17 ②-9): (camera.light_count.y & SQ_DEBUG_CASCADE_COLORS) != 0u なら、
+    //   int c = select_cascade(frag_world_pos); が 0 以上のとき result *= kCascadeColors[c]; を掛ける。
+    //   ★ トーンマップの**前**に掛けること（後に掛けると明るい所ほど色が飛んで見分けにくい）。
+    //   ★ 影を落とすライトがあるかどうかに関係なく塗ってよい（段の境界の位置を見るための表示）。
+    //   ★ 影の最大距離より遠い画素（c == -1）は塗らない。ここで「影が出ない範囲」も見える。
     result = result / (result + 1.0);
     out_color = vec4(result, alpha);
 }

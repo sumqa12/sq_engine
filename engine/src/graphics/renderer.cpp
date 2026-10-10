@@ -428,12 +428,27 @@ namespace sq::graphics {
         // 光源の収集
         collect_lights(registry, context);
 
+        if (context.shadow_light_index !=  kNoShadowLight) {
+            compute_cascades(context);
+        }
+        //   ★ ここ（collect_lights の後・カメラUBO の更新と collect_draw_items の前）が呼ぶ場所。
+        //     UBO にカスケードの行列を入れ、collect_draw_items で段ごとの視錐台を作るため。
+
         // カメラUBOの更新
-        scene::CameraUBO camera_ubo{};
-        camera_ubo.view_projection = context.view_projection;
-        camera_ubo.camera_position = glm::vec4(context.camera_position, 1.0f);
-        camera_ubo.light_count = glm::uvec4(lights_.size(), 0, 0, 0); // y: デバッグフラグ
-        camera_ubo.light_view_projection = context.light_view_projection;
+        scene::CameraUBO camera_ubo = {
+            .view_projection = context.view_projection,
+            .camera_position = glm::vec4(context.camera_position, 1.0f),
+            .camera_forward = glm::vec4(context.camera_forward, 0.0f),      // 方向なので w = 0
+            .cascade_splits = context.cascade_splits,
+            .cascade_texel_sizes = context.cascade_texel_sizes,
+            .light_count = glm::uvec4(lights_.size(), 0, 0, 0)        // y: デバッグフラグ
+            // TODO(phase17 ②-9): y に shadow_debug_ ? scene::kDebugFlagCascadeColors : 0u を入れる。
+            //   ★ フラグは「ビット」として持つ（将来、別のデバッグ表示を足すときに | で重ねられるように）。
+        };
+        for (std::size_t i = 0; i < scene::kCascadeCount; i++) {
+            camera_ubo.cascade_view_projection[i] = context.cascade_view_projection[i];
+        }
+        //   ★ 影を落とすライトが無いフレームでも、cascade_* は何か入っていればよい（シェーダは読まない）。
         camera_ubos_[current_frame_]->update(&camera_ubo, sizeof(camera_ubo));
 
         // 描画アイテムの収集
@@ -447,23 +462,33 @@ namespace sq::graphics {
 
     // アクティブカメラを解決する（phase10 D-2 の3段フォールバック）。
     Renderer::FrameContext Renderer::resolve_camera(const ecs::Registry& registry, float aspect_ratio) const {
-        // カメラの取得
-        // アクティブカメラの選択を3段フォールバックにする（phase10プラン D-2）
-        glm::mat4 view_projection = scene::Camera::default_view_projection(aspect_ratio);
-        glm::vec3 cam_pos{0.0f, 1.5f, 3.0f};  // 既定ビューの位置（half-transparent ソートの距離基準。phase11 ①）
-        ecs::Entity camera_entity = registry.view<scene::Camera, scene::ActiveCamera>().front();
+        // phase17 ②-1: 「どの Camera を使うか」を決めてから、その Camera 1つから全部を埋める形にする。
+        //   フォールバック
+        scene::Camera camera = scene::Camera::fallback();
 
-        if (camera_entity.is_null()) {
-            camera_entity = registry.view<scene::Camera>().front();
+        //   ActiveCamera 付き → 無ければ最初の Camera、が見つかれば camera をそれで上書き（今までどおり）
+
+        if (ecs::Entity active_camera = registry.view<scene::Camera, scene::ActiveCamera>().front()
+            ; active_camera.is_null()) {
+            active_camera = registry.view<scene::Camera>().front();
+            camera = registry.get<scene::Camera>(active_camera);
+        } else {
+            camera = registry.get<scene::Camera>(active_camera);
         }
 
-        if (!camera_entity.is_null()) {
-            const scene::Camera& camera = registry.get<scene::Camera>(camera_entity);
-            view_projection = camera.view_projection(aspect_ratio);
-            cam_pos = camera.position;  // ソートの距離基準（phase10 で確定した ActiveCamera の位置）
-        }
-
-        return { .view_projection = view_projection, .camera_position = cam_pos };
+        //   camera から FrameContext を埋める
+        //   ★ 既定ビュー（下の default_view_projection と cam_pos）を別の経路で持たないこと。
+        //     Camera::fallback() に1本化すると、既定ビューでも CSM のパラメータが自動でそろう。
+        return FrameContext{
+            .view_projection = camera.view_projection(aspect_ratio),
+            .camera_position = camera.position,
+            .view = camera.view(),
+            .camera_forward = glm::normalize(camera.target - camera.position),
+            .fov_y = camera.fov_y_radians,
+            .aspect = aspect_ratio,
+            .near_plane = camera.near_plane,
+            .far_plane = camera.far_plane
+        };
     }
 
     // ライトを収集して light_buffers_[current_frame_] へ転送する。
@@ -492,7 +517,7 @@ namespace sq::graphics {
                     spdlog::warn("Renderer::collect_lights : 2つ目以降のシャドウキャスタライトがあります。無視します。");
                 } else {
                     context.shadow_light_index = lights_.size();
-                    context.light_view_projection = compute_light_view_projection(direction);
+                    context.shadow_light_direction = direction;
                     is_selected = true;
                     light_data.shadow.x = 0.0f; // CSM のスロット
                     //   ★ 選ばれなかったライトは既定値（kNoShadowSlot）のまま。ここで明示的に書かなくてよい。
@@ -526,8 +551,11 @@ namespace sq::graphics {
         // phase13 ⑤: この view-projection から視錐台を作り、収集の時点で画面外を落とす。
         // カメラ解決後・収集前に1回だけ作ればよい（フレーム中は不変）。
         const bool has_shadow = context.shadow_light_index != kNoShadowLight;
-        const scene::Frustum light_frustum = scene::Frustum::from_view_projection(context.light_view_projection);
         const scene::Frustum frustum = scene::Frustum::from_view_projection(context.view_projection);
+        std::array<scene::Frustum, scene::kCascadeCount> cascade_frusta;
+        for (std::size_t c = 0; c < cascade_frusta.size(); ++c) {
+            cascade_frusta[c] = scene::Frustum::from_view_projection(context.cascade_view_projection[c]);
+        }
 
         for (auto& draw_list : draw_lists_in_order()) {
             draw_list->items.clear();
@@ -568,8 +596,7 @@ namespace sq::graphics {
 
                 const float world_radius = entry.bounds.radius * std::max({ sx, sy, sz });
                 const bool in_camera = frustum.intersects(world_center, world_radius);
-                const bool in_light  = has_shadow && !material.transparent && light_frustum.intersects(world_center, world_radius);
-                if (!in_camera && !in_light) {
+                if (!in_camera && !has_shadow) {
                     return;
                 }
 
@@ -589,11 +616,15 @@ namespace sq::graphics {
                     .distance_sq = glm::dot(d, d),  // 2乗距離（順序比較にしか使わないので sqrt 不要）
                 };
 
+                if (has_shadow && !material.transparent) {
+                    for (std::size_t c = 0; c < scene::kCascadeCount; ++c) {
+                        if (cascade_frusta[c].intersects(world_center, world_radius)) {
+                            cascade_lists_[c].items.push_back(item);
+                        }
+                    }
+                }
                 if (in_camera) {
                     (material.transparent ? transparent_.items : opaque_.items).push_back(item);
-                }
-                if (in_light) {
-                    cascade_lists_[0].items.push_back(item);
                 }
             }
         );
@@ -617,11 +648,13 @@ namespace sq::graphics {
         );
 
         // シャドウアイテム: メッシュ順
-        std::ranges::sort(cascade_lists_[0].items,
-        [](const DrawItem& a, const DrawItem& b) {
-                return a.mesh < b.mesh;
-            }
-        );
+        for (std::size_t c = 0; c < scene::kCascadeCount; ++c) {
+            std::ranges::sort(cascade_lists_[c].items,
+            [](const DrawItem& a, const DrawItem& b) {
+                    return a.mesh < b.mesh;
+                }
+            );
+        }
     }
 
     // instances_ を組み立てて instance_buffers_[current_frame_] へ転送する。
@@ -665,54 +698,60 @@ namespace sq::graphics {
 
     // シャドウパスを記録する。
     void Renderer::record_shadow_pass(VkCommandBuffer command_buffer, const FrameContext& context) {
-        //   ★ 影を落とすライトが無いフレームでも、レンダーパスは通すこと。
-        //     影を落とすライトが無ければ**パスごと飛ばしてよい**（実際に飛ばす形にするのは ②-7。⓪-5 はそのままでよい）。
-        //     飛ばしたフレームでは、シャドウマップは前回描いた内容のまま（または未定義）だが、
-        //     LightData::shadow.x が全ライト -1 なので本パスは読まない（⓪-2）。
+        //   影を落とすライトが無ければ return（⓪-5 の初期遷移があるので Begin/End も要らない）。
+        if (context.shadow_light_index == kNoShadowLight) {
+            return;
+        }
+
+        //   パイプラインと set=0 / set=1 のバインドはループの**外**で1回（レンダーパスを跨いでも残る）。
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_shadow_->handle());
+
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipeline_shadow_->layout(), 0, 1, &descriptor_sets_[current_frame_], 0, nullptr);
+        VkDescriptorSet bindless = textures_->bindless_set();
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipeline_shadow_->layout(), 1, 1, &bindless, 0, nullptr);
+        //   ★ set=2 はバインドしない。set=2 binding=0 はいま書き込んでいる当のイメージ。
+
         VkClearValue clear{};
         clear.depthStencil = {
             .depth = 1.0f,
             .stencil = 0
         };
-        VkRenderPassBeginInfo render_pass_begin_info{};
-        render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        render_pass_begin_info.renderPass = shadow_render_pass_->handle();
-        render_pass_begin_info.framebuffer = shadow_maps_[current_frame_]->framebuffer(0);
-        render_pass_begin_info.renderArea =  {{0, 0}, shadow_maps_[current_frame_]->extent()};
-        render_pass_begin_info.clearValueCount = 1; // ★ カラーが無いので1つだけ
-        render_pass_begin_info.pClearValues = &clear;
 
-        // レンダーパスの開始
-        vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+        for (std::size_t c = 0; c < scene::kCascadeCount; ++c) {
+            VkRenderPassBeginInfo render_pass_begin_info{};
+            render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+            render_pass_begin_info.renderPass = shadow_render_pass_->handle();
+            render_pass_begin_info.framebuffer = shadow_maps_[current_frame_]->framebuffer(c);
+            render_pass_begin_info.renderArea =  {{0, 0}, shadow_maps_[current_frame_]->extent()};
+            render_pass_begin_info.clearValueCount = 1; // ★ カラーが無いので1つだけ
+            render_pass_begin_info.pClearValues = &clear;
 
-        VkViewport viewport{};
-        viewport.x = 0.0f;
-        viewport.y = 0.0f;
-        viewport.width  = static_cast<float>(shadow_maps_[current_frame_]->extent().width);
-        viewport.height = static_cast<float>(shadow_maps_[current_frame_]->extent().height);
-        viewport.minDepth = 0.0f;
-        viewport.maxDepth = 1.0f;
-        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+            // レンダーパスの開始
+            vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
 
-        VkRect2D scissor{{0, 0}, shadow_maps_[current_frame_]->extent()};
-        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+            VkViewport viewport{};
+            viewport.x = 0.0f;
+            viewport.y = 0.0f;
+            viewport.width  = static_cast<float>(shadow_maps_[current_frame_]->extent().width);
+            viewport.height = static_cast<float>(shadow_maps_[current_frame_]->extent().height);
+            viewport.minDepth = 0.0f;
+            viewport.maxDepth = 1.0f;
+            vkCmdSetViewport(command_buffer, 0, 1, &viewport);
 
-        if (context.shadow_light_index != kNoShadowLight) {
+            VkRect2D scissor{{0, 0}, shadow_maps_[current_frame_]->extent()};
+            vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
             vkCmdSetDepthBias(command_buffer, kDepthBiasConstant, 0.0f, kDepthBiasSlope);
 
-            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_shadow_->handle());
+            ShadowPushConstants pc{}; pc.indices.x = c;
+            vkCmdPushConstants(command_buffer, pipeline_shadow_->layout(), kPushConstantRange.stageFlags, 0, sizeof(pc), &pc);
 
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                pipeline_shadow_->layout(), 0, 1, &descriptor_sets_[current_frame_], 0, nullptr);
-            VkDescriptorSet bindless = textures_->bindless_set();
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                pipeline_shadow_->layout(), 1, 1, &bindless, 0, nullptr);
-            //   ★ set=2 はバインドしない。set=2 binding=0 はいま書き込んでいる当のイメージ。
+            record_draw_items(command_buffer, *pipeline_shadow_, cascade_lists_[c], true);
 
-            record_draw_items(command_buffer, *pipeline_shadow_, cascade_lists_[0], true);
+            vkCmdEndRenderPass(command_buffer);
         }
-
-        vkCmdEndRenderPass(command_buffer);
     }
 
     // 本パスを記録する。
@@ -1118,24 +1157,94 @@ namespace sq::graphics {
         );
     }
 
-    // 光源空間行列（phase16 ①-3）。
-    glm::mat4 Renderer::compute_light_view_projection(const glm::vec3& light_direction) {
-        constexpr glm::vec3 center{ 0.0f };     // v1 は原点固定
-        const glm::vec3 eye = center - light_direction * kShadowDistance;  // 光の来る側へ引く
+    // 分割距離（practical split。②-2）。
+    std::array<float, scene::kCascadeCount>
+        Renderer::compute_cascade_splits(float near_plane, float far_plane) {
+        std::array<float, scene::kCascadeCount> split{};
+        for (std::size_t i = 1; i <= scene::kCascadeCount; ++i) {
+            float p = static_cast<float>(i) / scene::kCascadeCount;
+            float log = near_plane * glm::pow(far_plane / near_plane, p);
+            float uniform = near_plane + (far_plane - near_plane) * p;
+            split[i - 1] = glm::mix(uniform, log, kCascadeSplitLambda);
+        }
+        return split;
+    }
+
+    // 1段ぶんの光源行列（②-3）。輪切り [split_near, split_far] を境界球で包み、テクセル単位でスナップする。
+    Renderer::Cascade Renderer::compute_cascade(const glm::vec3& light_direction, const FrameContext& context,
+                                                     float split_near, float split_far) {
+        //   1. 輪切りの8頂点をワールドで求める
+        auto proj_slice = glm::perspective(context.fov_y, context.aspect, split_near, split_far);
+        auto inv = glm::inverse(proj_slice * context.view);
+
+        //   NDC の8隅（x, y ∈ {-1, 1}、z ∈ {0, 1}）を inv で戻し、w で割る
+        constexpr std::array frustum_corners = {
+            // Near 平面 (z = 0.0f)
+            glm::vec4(-1.0f,  1.0f, 0.0f, 1.0f),
+            glm::vec4( 1.0f,  1.0f, 0.0f, 1.0f),
+            glm::vec4( 1.0f, -1.0f, 0.0f, 1.0f),
+            glm::vec4(-1.0f, -1.0f, 0.0f, 1.0f),
+            // Far 平面 (z = 1.0f)
+            glm::vec4(-1.0f,  1.0f, 1.0f, 1.0f),
+            glm::vec4( 1.0f,  1.0f, 1.0f, 1.0f),
+            glm::vec4( 1.0f, -1.0f, 1.0f, 1.0f),
+            glm::vec4(-1.0f, -1.0f, 1.0f, 1.0f),
+        };
+        std::vector<glm::vec3> world_corners;
+        world_corners.reserve(8);
+        for (const auto& corner : frustum_corners) {
+            glm::vec4 worldPos = inv * corner;
+            worldPos /= worldPos.w; // 透視除算
+            world_corners.emplace_back(worldPos);
+        }
+        //   ★ z は [0, 1]（GLM_FORCE_DEPTH_ZERO_TO_ONE）。-1 を使うと near の外側の点が混ざる。
+        //   ★ Camera::projection と違い Y 反転は要らない（8隅の集合は同じなので）。
+
+        //   2. 境界球: center = 8頂点の平均、radius = center から8頂点への距離の最大
+        glm::vec3 center(0.0f);
+        for (const auto& corner : world_corners) {
+            center += corner;
+        }
+        center /= 8.0f; // 重心を球の中心とする
+
+        float radius = 0.0f;
+        for (const auto& corner : world_corners) {
+            float distance = glm::distance(center, corner);
+            radius = glm::max(radius, distance);
+        }
+        radius = glm::ceil(radius * 16) / 16;  // ★ 半径の揺れでテクセル幅が毎フレーム変わるのを防ぐ
+
+        //   3.
         const glm::vec3 up = glm::abs(light_direction.y) > 0.99 ? glm::vec3{0, 0, 1} : glm::vec3{0, 1, 0};
-        const auto view = glm::lookAt(eye, center, up);
-        auto proj = glm::ortho(-kShadowOrthoExtent, kShadowOrthoExtent, -kShadowOrthoExtent, kShadowOrthoExtent, kShadowNear, kShadowFar);
-        proj[1][1] *= -1;  // ★ カメラ（camera.cpp）と同じく Y を反転する
-        return proj * view;
-        // ★ glm::ortho は GLM_FORCE_DEPTH_ZERO_TO_ONE により z が [0,1]。追加の補正は要らない。
-        // ★ Y 反転が要る理由は「上下」ではなく**三角形の巻き順**。
-        //   - 影の位置の上下は、反転してもしなくても正しく出る。書き込み（シャドウパス）と
-        //     読み出し（triangle.frag の uv = ndc.xy * 0.5 + 0.5）が同じ行列を使うので、
-        //     どちらでも同じ向きになる。
-        //   - 一方、Y を反転するとスクリーン上の巻き順が逆になる。本パスは「反転あり + CCW が表」で
-        //     動いているので、シャドウパスだけ反転しないと表裏の判定が逆転し、
-        //     cull_mode = FRONT が実際には**背面カリング**として働く
-        //     （①-8 のアクネ対策が効かず、「FRONT にしても縞が減らない」になる）。
+        glm::vec3 eye  = center - light_direction * (radius + kCascadeCasterMargin);
+        auto view = glm::lookAt(eye, center, up);
+        auto proj = glm::ortho(-radius, radius, -radius, radius, 0.0f, 2 * radius + kCascadeCasterMargin);
+        proj[1][1] *= -1; // ★ phase16 と同じく Y 反転
+
+        //   4. テクセル単位のスナップ
+        glm::vec4 origin = (proj * view) * glm::vec4(0, 0, 0, 1);
+        glm::vec2 origin_texels = glm::vec2(origin.x, origin.y) * (kCascadeSize / 2.0f);
+        glm::vec2 offset = (glm::round(origin_texels) - origin_texels) * (2.0f / kCascadeSize);
+        proj[3][0] += offset.x;  proj[3][1] += offset.y;
+        //   ★ proj の平行移動成分だけを動かす。proj 全体を作り直すのではない。
+
+        //   5.
+        return Cascade{
+            .view_projection = proj * view,
+            .texel_size = 2 * radius / kCascadeSize
+        };
+    }
+
+    void Renderer::compute_cascades(FrameContext& context) {
+        float shadow_far = glm::min(context.far_plane,  kShadowMaxDistance);
+        auto splits = compute_cascade_splits(context.near_plane, shadow_far);
+        for (std::size_t c = 0; c < splits.size(); ++c) {
+            auto [view_projection, texel_size] = compute_cascade(context.shadow_light_direction, context,
+                c == 0 ? context.near_plane : splits[c - 1], splits[c]);
+            context.cascade_splits[static_cast<int>(c)] = splits[c];
+            context.cascade_view_projection[c] = view_projection;
+            context.cascade_texel_sizes[static_cast<int>(c)] = texel_size;
+        }
     }
 
     // シャドウマップを kFramesInFlight 枚作る（phase16 ①-2）。
@@ -1146,12 +1255,11 @@ namespace sq::graphics {
                 *queue_family_indices_.graphics_family, device_->graphics_queue(),
                 shadow_render_pass_->handle(), depth_format_,
                 ShadowMapConfig {
-                    .size = kShadowMapSize,
-                    .layers = 1,
-                    .sample_view_type =  VK_IMAGE_VIEW_TYPE_2D
+                    .size = kCascadeSize,
+                    .layers = scene::kCascadeCount,
+                    .sample_view_type =  VK_IMAGE_VIEW_TYPE_2D_ARRAY
                 }
             ));
-            //   ★ ⓪-5 は phase16 と同じ1枚を再現する（絵が変わらないことの確認）。② で 4層 / 2D_ARRAY にする。
         }
     }
 
@@ -1287,4 +1395,8 @@ namespace sq::graphics {
     bool Renderer::is_focused() const {
         return window_->is_focused();
     }
+
+    // TODO(phase17 ②-9): set_shadow_debug / shadow_debug を定義する（shadow_debug_ を読み書きするだけ）。
+    //   ★ ここで UBO を直接書き換えないこと。UBO は collect_frame_data が毎フレーム作り直すので、
+    //     フラグはメンバに持っておき、そこで反映すれば十分（kFramesInFlight 個の UBO を気にしなくてよい）。
 }  // namespace sq::graphics

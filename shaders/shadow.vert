@@ -15,6 +15,7 @@ layout(location = 2) in vec2 in_uv;
 
 #include "camera.glsl"
 #include "instance.glsl"
+#include "shadow_push.glsl"   // phase17 ②-7: pc.indices.x = カスケード番号（D-3）
 
 // phase17 ①-2: shadow.frag へ渡す（shadow.frag の in と location・型・flat を一致させること）。
 layout(location = 0) out vec2 frag_uv;
@@ -22,8 +23,8 @@ layout(location = 1) out flat uint frag_material_index;   // ★ flat 必須（�
 
 void main() {
     InstanceData inst = instances[gl_InstanceIndex];
-    gl_Position = camera.light_view_proj * inst.model * vec4(in_position, 1.0);
-    //   ★ view_proj（カメラ）と取り違えると、シャドウマップにカメラから見た深度が書かれる。
+    //   ★ 行列そのものは push しない（本パスの frag も同じ行列を読むので UBO に置いてある。D-3）。
+    gl_Position = camera.cascade_view_proj[pc.indices.x] * inst.model * vec4(in_position, 1.0);
     //   ★ gl_InstanceIndex には firstInstance（= シャドウキャスタ区間の先頭）が既に足されている。
     frag_uv = in_uv;
     frag_material_index = inst.material_index;

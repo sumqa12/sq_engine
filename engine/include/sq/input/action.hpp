@@ -17,6 +17,7 @@ enum class Action {
     ToggleFullscreen,
     Quit,
     SwitchCamera,
+    ToggleShadowDebug,   // カスケードシャドウの段の色分け表示を切り替える（phase17 ②-9。既定: F3）
     Count,
 };
 
