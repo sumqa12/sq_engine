@@ -327,11 +327,10 @@ private:
     //   「高い物体の影が、カメラを根元に近づけた途端に消える」。
     static constexpr float kCascadeCasterMargin = 50.0f;
 
-    // depth bias（①-8）。vkCmdSetDepthBias で毎フレーム渡す（動的ステート）。
-    // ★ 調整はまず両方 0 から。縞模様（アクネ）が出るのが正常で、出ないなら配管を疑う。
-    // FRONT/NONE でも phase16 の値で床の縞は出なかった（① で確認）
-    static constexpr float kDepthBiasConstant = 1.25f;
-    static constexpr float kDepthBiasSlope    = 1.75f;
+    // depth bias（phase16 ①-8）。vkCmdSetDepthBias で毎フレーム渡す（動的ステート）。
+    // phase17 ②-10 では法線オフセットだけで足りたので 0。仕組みは残してある
+    static constexpr float kDepthBiasConstant = 0;
+    static constexpr float kDepthBiasSlope    = 0;
 
     // 深度専用のレンダーパス（RenderPassConfig{ .has_color = false,
     //   .depth_final_layout = DEPTH_STENCIL_READ_ONLY_OPTIMAL, .depth_store_op = STORE }）。

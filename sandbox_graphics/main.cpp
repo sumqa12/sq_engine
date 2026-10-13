@@ -199,6 +199,7 @@ static sq::ecs::Entity create_camera(sq::ecs::Registry& registry,
     registry.add<Controller>(camera_entity,
         Controller {
             .scheme = scheme,
+            .move_speed = 6.0f,
             .yaw = atan2(forward.z, forward.x),
             .pitch = atan2(forward.y, sqrt(forward.x * forward.x + forward.z * forward.z))
         }
@@ -347,7 +348,7 @@ int main() {
     // kGridSide^3 体を等間隔の立方格子に並べる。円環ではなく立方格子にするのは、
     // カメラを回したときに視界へ入る割合が大きく変わり、フラスタムカリング（⑤）の
     // 効きが観察しやすいため。
-    constexpr int kGridSide = 10;
+    constexpr int kGridSide = 2;
     constexpr float kSpacing = 2.0f;
     // 何体に1体を半透明にするか。半透明はインスタンス化されず1体1ドローなので、
     // ここを小さくするとドローコール数が半透明の体数に支配され、
@@ -397,7 +398,6 @@ int main() {
                 //   「per-instance データがずれると縞・まだらになる」ことを検証に使っていた。
                 //   マテリアル経由でも、格子座標から決定的に選べば同じ検証が成立する
                 //   （段階は kMaterialCount 段に粗くなるが、ずれれば模様が崩れるのは同じ）。
-                //
                 const auto pick = static_cast<std::size_t>((u + v + w) / 3.0f * (kMaterialCount - 1));
                 const MaterialId material_id = is_transparent
                     ? transparent_materials[pick]
@@ -481,8 +481,8 @@ int main() {
     {
         // 太陽。方向光なので位置は使われず、向きだけが効く。
         sun = create_directional_light(registry,
-            glm::vec3(0.3f, -1.0f, 0.5f),  // 光が進む向き。下向き成分が大きいほど真上からの光になる
-            glm::vec3(1.0f, 0.95f, 0.9f),    // ★ linear 値（⓪ の約束。sRGB の値をそのまま入れない）
+            glm::vec3(0.5, -1.0, 0.5),  // 光が進む向き。下向き成分が大きいほど真上からの光になる
+            glm::vec3(1.0, 0.95, 0.9),    // ★ linear 値（⓪ の約束。sRGB の値をそのまま入れない）
             2.0f,
             true);                           // ★ phase16 ①-9: 影を落とす
 
@@ -566,64 +566,65 @@ int main() {
         set_active_controllable_camera(registry, panel_camera);
     }
 
-    // ---- phase16 ①-9 の検証シーン: 影を受ける床 ----
-    //
-    // ★ 床が無いと影の落ちる先が他のモデルしか無く、「影が出ていない」のか
-    //   「影を受ける面が見えていない」のか区別できない。
-    {
-        constexpr float kFloorY = -9.5f;
+    // ---- phase17 ②-10 の検証シーン: シャドウアクネとピーターパンニング ----
+    constexpr float kFloorY = -9.5f;
+    //   マテリアル
+    //      ★ 鏡面が強いと影のコントラストが読みにくい。無地の粗い誘電体にする。
+    const MaterialId floor_material = renderer.materials().add(
+        sq::graphics::MaterialData{
+            .base_color = {0.8, 0.8, 0.8, 1},
+            .metallic = 0.0,
+            .roughness = 0.9,
+        },{ .albedo = white }
+    );
+    //   エンティティ
+    sq::ecs::Entity e = registry.create();
+    registry.add<Transform>(e, Transform(
+        glm::vec3(0, kFloorY, 0),
+        glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+        glm::vec3(500, 1, 500))
+    );
+    registry.add<WorldTransform>(e, WorldTransform{});
+    registry.add<MeshHandle>(e, MeshHandle{ plane_mesh });
+    registry.add<Material>(e, Material{ .id = floor_material, .transparent = false });
 
-        //   マテリアル
-        //      ★ 鏡面が強いと影のコントラストが読みにくい。無地の粗い誘電体にする。
-        const MaterialId floor_material = renderer.materials().add(
-            sq::graphics::MaterialData{
-                .base_color = {0.8, 0.8, 0.8, 1},
-                .metallic = 0.0,
-                .roughness = 0.9,
-            },{ .albedo = white }
-        );
-        //   エンティティ
-        //   ★ plane_mesh は XZ 平面・法線 +Y・一辺 1（mesh_registry.cpp）。
-        //   ★ kFloorY は格子（y = -9..+9）の下、-10.5 あたり。y = 0 に置くと格子を貫通する。
-        //   ★ 正射影の箱は原点中心 ±40（kShadowOrthoExtent）。床は ±50 なので、
-        //     縁の 10 ぶんには影が出ない。これは**仕様**（①-10）。
-        sq::ecs::Entity e = registry.create();
-        registry.add<Transform>(e, Transform(
-            glm::vec3(0, kFloorY, 0),
+    const MaterialId material = renderer.materials().add(
+        sq::graphics::MaterialData{
+            .base_color = {1.0, 0.4, 0.2, 1},
+        },{ .albedo = white }
+    );
+
+    {
+        const sq::ecs::Entity cube = registry.create();
+        registry.add<Transform>(cube, Transform(
+            glm::vec3(20, kFloorY + 10, 0),
             glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
-            glm::vec3(100, 1, 100))
-        );
-        registry.add<WorldTransform>(e, WorldTransform{});
-        registry.add<MeshHandle>(e, MeshHandle{ plane_mesh });
-        registry.add<Material>(e, Material{ .id = floor_material, .transparent = false });
-        //   ★ phase17 D-5 でシャドウのカリングを NONE にしたので、板は向きに関係なく影を落とす。
-        //     代わりに床が自分自身の深度を書くので、bias が足りないと床に縞が出る。
+            glm::vec3(10, 20, 10)
+        ));
+        registry.add<WorldTransform>(cube, WorldTransform{});
+        registry.add<MeshHandle>(cube, MeshHandle{ .id = cube_mesh });
+        registry.add<Material>(cube, Material{ .id = material, .transparent = false });
     }
 
     {
-        // ---- phase17 ①-5 の検証シーン: アルファマスクの板 ----
-        const TextureId texture = renderer.textures().load("./textures/hsr_icon_01/Blade 1.png", VK_FORMAT_R8G8B8A8_SRGB);
-        MaterialId material = renderer.materials().add(
-            sq::graphics::MaterialData{
-                .base_color = {1,1,1,1},
-                .roughness = 0.8f,
-                .alpha_cutoff = 0.5f,
-            }, { .albedo = texture }
-        );
+        constexpr float kGridSize = 10;
 
-        const float kBoardZ = 15;
-        glm::quat rotQuat1 = glm::angleAxis(glm::radians(90.0f), glm::vec3(1, 0, 0));
-        glm::quat rotQuat2 = glm::angleAxis(glm::radians(-90.0f), glm::vec3(1, 0, 0));
-        for (std::size_t i = 1; i <= 4; ++i) {
-            sq::ecs::Entity board = registry.create();
-            registry.add<Transform>(board,
-                Transform(glm::vec3(i * 10, 10, kBoardZ), i % 2 == 0 ? rotQuat1 : rotQuat2, glm::vec3(10)));
-            registry.add<WorldTransform>(board, WorldTransform{});
-
-            registry.add<MeshHandle>(board, MeshHandle{ plane_mesh });
-            registry.add<Material>(board, Material{ .id = material, .transparent = false });
-            //   ★ 確認: 板の透明な部分が描かれない（本パスの discard）／床の影がアイコンの形に抜ける
-            //     （シャドウパスの discard）／半透明の格子の見た目が変わらない（alpha_cutoff == 0 の約束）。
+        for (std::size_t i = 0; i < 5; ++i) {
+            for (std::size_t j = 0; j < 5; ++j) {
+                const auto entity = registry.create();
+                registry.add<Transform>(entity, Transform(
+                glm::vec3(static_cast<float>(i) * kGridSize, kFloorY + 2, static_cast<float>(j) * kGridSize),
+                glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+                glm::vec3(4)
+                ));
+                registry.add<WorldTransform>(entity, WorldTransform{});
+                if ((i * 5 + j) % 2 == 0) {
+                    registry.add<MeshHandle>(entity, MeshHandle{ .id = cube_mesh });
+                } else {
+                    registry.add<MeshHandle>(entity, MeshHandle{ .id = sphere_mesh });
+                }
+                registry.add<Material>(entity, Material{ .id = material, .transparent = false });
+            }
         }
     }
 

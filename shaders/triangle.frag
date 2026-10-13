@@ -18,8 +18,8 @@ layout(set = 2, binding = 0) uniform sampler2DArrayShadow shadow_cascades;
 //   phase16 の kNormalBiasMax / Min は「NDC の z 空間の値」で、正射影の z 範囲が1つだから成立していた。
 //   CSM は段ごとに z 範囲もテクセルの大きさも違うので、1つの定数では全段に合わない。
 //   比較の**前に**ワールド座標を法線方向へずらし、ずらす量をテクセル幅（camera.cascade_texel_sizes[c]）に比例させる。
-// ★ 出発点は 1.5（②-10 で調整）。近い段と遠い段で同時に縞が消えれば、比例が効いている。
-const float kNormalOffsetScale = 1.5;
+// ★ Phase17 ②-10 6.5で注視しないと見えなくなり、7.0では見えない。
+const float kNormalOffsetScale = 2.0;
 
 // IBL（phase16 ②-8）。C++ 側 write_environment_sets() が書く。
 //   ★ 宣言するのは binding=1..3 に**キューブ / LUT の view を書いてから**にすること。
@@ -161,8 +161,10 @@ float sample_cascade_shadow(vec3 world_pos, vec3 geo_normal, vec3 L) {
     }
 
     //   2. 法線オフセット（D-8）
-    vec3 offset_pos = world_pos + geo_normal * camera.cascade_texel_sizes[cascade] * kNormalOffsetScale
-        * (1.0 - max(dot(geo_normal, L), 0.0));
+    float NdotL = max(dot(geo_normal, L), 0.0);
+    float sin_theta = sqrt(1.0 - NdotL * NdotL);      // 光に対する面の傾き
+    vec3 offset_pos = world_pos + geo_normal * camera.cascade_texel_sizes[cascade] *
+        kNormalOffsetScale * sin_theta;
 
     //   3. cascade_view_proj[c] で光源クリップ空間へ → uv / z（旧 sample_shadow と同じ。z は再マップしない）
     //   光源クリップ空間へ

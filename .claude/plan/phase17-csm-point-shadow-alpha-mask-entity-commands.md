@@ -152,8 +152,12 @@ phase16 ①-8 は前面カリング（`VK_CULL_MODE_FRONT_BIT`）でアクネを
 phase16 の `kNormalBiasMax / kNormalBiasMin` は「NDC の z 空間での値」だった。正射影の z 範囲が1つだったから成立していた。
 
 - CSM では**段ごとに z 範囲もテクセルの大きさも違う**ので、1つの定数では全段に合わない（近い段に合わせると遠い段で縞、遠い段に合わせると近い段で peter-panning）。
-- 代わりに、**比較する前にワールド座標を法線方向へずらす**（normal offset）。ずらす量は「その段の1テクセルのワールド幅 × 係数」。テクセル幅は `CameraUBO::cascade_texel_sizes` で渡す。
+- 代わりに、**比較する前にワールド座標を法線方向へずらす**（normal offset）。ずらす量は「その段の1テクセルのワールド幅 × 係数 × sinθ」。テクセル幅は `CameraUBO::cascade_texel_sizes` で渡す。
+- **角度の係数は sinθ**（θ = 法線 N と光の向き L のなす角。`sqrt(1 - NdotL²)`）。
+  - 縞が出るのは、PCF が読む範囲（±1〜2 テクセル）の中で、受光面の深度が光の方向へ傾いているから。その傾きぶんを越えるのに要るずらし量は sinθ に比例する（光に正対する面 θ = 0 では不要、かすめる面 θ → 90° で最大）。
+  - ★ **当初は `(1 - NdotL)`（= 1 − cosθ）にしていたが、誤りだった**（②-10 の調整で判明）。θ が小さい（太陽が高い）ほど sinθ に対して極端に小さくなり（NdotL = 0.95 で約 1/6）、その不足を `kNormalOffsetScale` を大きくして補うことになる。太陽の高さ約 35° のシーンで 7.0 まで上げないと縞が消えず、しかもその値は太陽をさらに高くすると足りなくなる。
 - `vkCmdSetDepthBias` は**段ごとに**呼べる（動的ステート）。slope は共通、constant は段ごとに変えてもよい。
+  - ★ ②-10 の調整では、slope / constant とも 0 で影は浮かず、縞も法線オフセットだけで消えた（slope は各段のラスタライズの中で掛かるので、段ごとのスケールにもともと追従している）。仕組みは残し、値は 0 とする。
 
 ### D-9. 点光源の影は「線形距離」を深度に書き、`samplerCubeArrayShadow` で比較する
 
@@ -652,8 +656,11 @@ float sample_cascade_shadow(vec3 world_pos, vec3 geo_normal, vec3 L) {
     while (c < SQ_CASCADE_COUNT - 1 && depth > camera.cascade_splits[c]) { ++c; }
 
     // 2. 法線オフセット（D-8）。ジオメトリ法線を使うこと（法線マップの凹凸でずらすとぶれる）。
+    //    角度の係数は sinθ（= 面が光に対してどれだけ傾いているか）。1 - NdotL ではない（D-8 の注記）。
     float texel = camera.cascade_texel_sizes[c];
-    vec3 offset_pos = world_pos + geo_normal * texel * kNormalOffsetScale * (1.0 - max(dot(geo_normal, L), 0.0));
+    float NdotL = max(dot(geo_normal, L), 0.0);
+    float sin_theta = sqrt(1.0 - NdotL * NdotL);
+    vec3 offset_pos = world_pos + geo_normal * texel * kNormalOffsetScale * sin_theta;
 
     // 3. 光源クリップ空間へ → uv / z（phase16 ①-7 と同じ。z は再マップしない）
     // 4. 3x3 PCF: texture(shadow_cascades, vec4(uv + offset * texel_uv, float(c), z))
@@ -691,6 +698,23 @@ float sample_cascade_shadow(vec3 world_pos, vec3 geo_normal, vec3 L) {
 //   3. kNormalOffsetScale を上げて縞を消す。**近い段（赤）と遠い段（黄）で同時に消えれば**
 //      テクセル幅への比例（D-8）が効いている。片方だけ消えるなら texel_size の計算を疑う
 //   4. 影が物体から浮くなら kNormalOffsetScale を下げ、slope で補う
+//   5. **太陽の高さを3通り（低い・中くらい・ほぼ真上）変えて**、同じ値で縞が出ないことを確かめる
+//      ★ main.cpp の太陽は Y 軸まわりにしか回らないので、高さは変わらない。向きを手で変えること。
+//        角度の係数を誤ると（D-8 の 1 - NdotL）、ある高さでだけ消えて別の高さで戻る。
+//
+// ★ 縞の間隔 = その段の1テクセルの幅（2048 なら赤の段で約 4 mm、黄の段で約 7.5 cm）。
+//   赤の段の縞は地面に 1〜2 m まで近づかないと見えず、遠い段の縞は画素より細い＋PCF で平均されて
+//   「縞」ではなく「うっすらまだらに暗い」見え方になる。
+//   → **調整中は kCascadeSize を 256 に下げる**（テクセルが 8 倍になり、普段の視点で全段の縞が見える）。
+//     法線オフセットはテクセル幅の倍数なので、256 で決めた値は 2048 に戻してもそのまま効く
+//     （戻して縞も浮きも出なければ、D-8 の比例が正しく効いている証拠になる）。
+//   → 4色を近くに収めたいときは kShadowMaxDistance を一時的に 20 程度に下げる。
+//   ★ 調整が終わったら両方とも元の値に戻すこと。
+//
+// 結果（phase17 実施時）:
+//   - slope / constant は 0 で影が浮かなかった → 0 のまま（D-8 の注記）
+//   - 係数を (1 - NdotL) にしていた間は、太陽の高さ約 35° で kNormalOffsetScale = 7.0 が必要だった
+//     → sinθ に直して再調整する（2〜3 程度に下がる見込み）
 ```
 
 ### ②-11. 検証
@@ -720,6 +744,8 @@ float sample_cascade_shadow(vec3 world_pos, vec3 geo_normal, vec3 L) {
 | カメラを回すと影の縁がちらつく | 境界球の半径を丸めていない ／ AABB で包んでいる |
 | カメラを近づけると高い物体の影が消える | `kCascadeCasterMargin` が小さい ／ 段の視錐台を延長前の行列から作っている（②-6） |
 | 遠い段だけ縞が出る | 法線オフセットが定数（テクセル幅に比例していない。D-8） |
+| 太陽が高いときだけ縞が出る／縞を消すのに kNormalOffsetScale がやけに大きい | 角度の係数が `1 - NdotL`（sinθ であるべき。D-8） |
+| 地面に近づかないと縞が見えない | 異常ではない（縞の間隔 = テクセル幅。②-10 の注記どおり kCascadeSize を下げて調整する） |
 | 近い段だけ影が浮く | 同上（逆向き） |
 | 画面全体が黒い | ②-3 の lookAt の up の縮退（太陽が真上）／ 輪切りの逆行列の z に -1 を使っている |
 
@@ -858,6 +884,9 @@ layout(set = 2, binding = 4) uniform samplerCubeArrayShadow point_shadows;
 
 float sample_point_shadow(int slot, vec3 light_pos, float far, vec3 world_pos, vec3 geo_normal) {
     vec3 offset_pos = world_pos + geo_normal * kPointNormalOffset;   // ワールド単位（例 0.02）
+    //   ★ ② と同じく、縞が角度で出たり消えたりするなら sinθ（sqrt(1 - NdotL²)）を掛ける（D-8）。
+    //     ただし点光源のテクセル幅は「ライトからの距離 × 面1枚の画角 / 解像度」で場所ごとに変わるので、
+    //     ② のように UBO から渡すのではなく、length(v) から求めるか、まず定数で通してから考える。
     vec3 v = offset_pos - light_pos;
     float ref = length(v) / far - kPointDepthBias;                   // 例 0.05 / far 相当
     return texture(point_shadows, vec4(v, float(slot)), ref);
