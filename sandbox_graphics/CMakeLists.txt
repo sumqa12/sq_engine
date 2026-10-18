@@ -1,4 +1,14 @@
-add_executable(sandbox_graphics main.cpp)
+# 検証用シーン（scenes/）。phase17 ④の前に main.cpp から分離した。
+# ★ シーンを足したら、ここに .cpp を足すこと（GLOB にしていないので、足し忘れるとリンクエラーで気付ける）。
+add_executable(sandbox_graphics
+        main.cpp
+        scenes/scene_registry.cpp
+        scenes/scene_helpers.cpp
+        scenes/content_instancing.cpp
+        scenes/content_gltf.cpp
+        scenes/content_materials.cpp
+        scenes/content_shadows.cpp
+        scenes/content_lighting.cpp)
 target_link_libraries(sandbox_graphics PRIVATE sq_engine_lib)
 
 # シェーダーをSPIR-Vにコンパイルし、実行ファイルと同じディレクトリの shaders/ に出力する。
