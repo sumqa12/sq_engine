@@ -1,3 +1,4 @@
+#include <iostream>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -192,6 +193,8 @@ int main(int argc, char** argv) {
 
     if (scene_name == "list") {
         sandbox::log_scene_list();
+        std::cout << "Enterを押して終了" << std::endl;
+        std::cin.get();
         return 0;
     }
 
@@ -200,6 +203,8 @@ int main(int argc, char** argv) {
     if (scene == nullptr) {
         spdlog::error("シーン \"{}\" はありません。", scene_name);
         sandbox::log_scene_list();
+        std::cout << "Enterを押して終了" << std::endl;
+        std::cin.get();
         return 1;
     }
 
