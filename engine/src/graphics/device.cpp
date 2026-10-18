@@ -70,6 +70,17 @@ namespace sq::graphics {
         //   ★ samplerAnisotropy と違い「非対応なら無効のまま続行」にはできない。
         //     brdf_lut.comp の rg16f は SPIR-V に焼き込まれているので、機能が無効だと
         //     パイプライン作成時にバリデーションエラーになる（bindless と同じく throw で落とす）。
+
+        // imageCubeArray を有効化する（点光源のキューブ配列シャドウ。D-9）。
+        if (!supported_features.imageCubeArray) {
+            throw std::runtime_error("Device::Device : imageCubeArray に対応していません。");
+        }
+        features.imageCubeArray = VK_TRUE;
+        //   ★ samplerAnisotropy のように「無ければ無効で続行」はできない。CUBE_ARRAY のビューが作れず、
+        //     samplerCubeArrayShadow を使うシェーダはパイプライン作成時にバリデーションエラーになる。
+        //   ★ **triangle.frag に samplerCubeArrayShadow を宣言するのは、これを有効化した後**にすること
+        //     （宣言だけで SPIR-V が SampledCubeArray の capability を要求し得るため）。
+
         device_create_info.pEnabledFeatures = &features;
 
         // (phase13 ①-1): descriptor indexing（bindless）を有効化する。

@@ -91,8 +91,6 @@ namespace sq::graphics {
         //   set_layouts かプッシュ定数レンジが違うパイプライン同士は「レイアウト互換」で
         //   なくなり、vkCmdBindPipeline した瞬間に**バインド済みのディスクリプタセットが
         //   黙って外れる**。シャドウパスが set=2 を参照しなくても、レイアウトには含めておく。
-        // ★ レイアウトに含めるだけなら、そのセットをバインドしない限り何も起きない。
-        //   set=2 を実際にバインドし始めるのは ①-6 から。
         const std::vector set_layouts = { camera_set_layout_, material_set_layout_, environment_set_layout_ };
 
         pipeline_opaque_ = std::make_unique<GraphicsPipeline>(device_->handle(), render_pass_->handle(), swapchain_->extent(),
@@ -116,8 +114,20 @@ namespace sq::graphics {
             }
         );
 
-        // シャドウマップの作成
+        // シャドウマップ
         create_shadow_maps();
+
+        pipeline_point_shadow_ = std::make_unique<GraphicsPipeline>(device_->handle(), shadow_render_pass_->handle(), swapchain_->extent(),
+            "shaders/shadow_point.vert.spv", "shaders/shadow_point.frag.spv",
+            set_layouts, kPushConstantRange,
+            PipelineConfig{
+                .has_color_attachment = false, .depth_bias_enable = false,
+                .cull_mode = VK_CULL_MODE_NONE
+            }
+        );
+
+        // シャドウマップ
+        create_point_shadow_maps();
 
         // スカイボックス用パイプライン（pipeline_skybox_）を作る。
         pipeline_skybox_ = std::make_unique<GraphicsPipeline>(device_->handle(), render_pass_->handle(), swapchain_->extent(),
@@ -243,6 +253,8 @@ namespace sq::graphics {
         pipeline_opaque_.reset();
         pipeline_shadow_.reset();
         shadow_maps_.clear();
+        pipeline_point_shadow_.reset();
+        point_shadow_maps_.clear();
         pipeline_skybox_.reset();
         environment_.reset();
 
@@ -304,7 +316,7 @@ namespace sq::graphics {
         //     フレームによって呼ばれたり呼ばれなかったりするので、ここが一番素直。
 
         // 2. 画像の取得
-        uint32_t image_index = 0;
+        std::uint32_t image_index = 0;
         VkSemaphore image_available = sync_objects_->image_available(current_frame_);
         if (VkResult result = vkAcquireNextImageKHR(device_->handle(), swapchain_->handle(), UINT64_MAX, image_available, VK_NULL_HANDLE, &image_index);
             result == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -323,6 +335,7 @@ namespace sq::graphics {
         command_buffers_->record(current_frame_,
             [this, image_index, &frame](VkCommandBuffer command_buffer, std::size_t) {
                 record_shadow_pass(command_buffer, frame);   // ①-1 では空
+                record_point_shadow_pass(command_buffer, frame);
                 record_main_pass(command_buffer, image_index);
             });
 
@@ -431,6 +444,9 @@ namespace sq::graphics {
         if (context.shadow_light_index !=  kNoShadowLight) {
             compute_cascades(context);
         }
+        if (context.point_shadow_count > 0) {
+            compute_point_shadows(context);
+        }
         //   ★ ここ（collect_lights の後・カメラUBO の更新と collect_draw_items の前）が呼ぶ場所。
         //     UBO にカスケードの行列を入れ、collect_draw_items で段ごとの視錐台を作るため。
 
@@ -492,8 +508,9 @@ namespace sq::graphics {
 
     // ライトを収集して light_buffers_[current_frame_] へ転送する。
     void Renderer::collect_lights(const ecs::Registry& registry, FrameContext& context) {
-        // シャドウキャスタライトが選択済みかどうか
-        bool is_selected = false;
+        // シャドウキャスタ方向光が選択済みかどうか
+        bool selected_dir_shadow = false;
+        std::size_t point_shadow_slot = 0;
 
         // 光源の収集
         lights_.clear();
@@ -512,16 +529,32 @@ namespace sq::graphics {
             };
 
             if (light.type == scene::LightType::Directional && light.cast_shadows) {
-                if (is_selected) {
-                    spdlog::warn("Renderer::collect_lights : 2つ目以降のシャドウキャスタライトがあります。無視します。");
+                if (selected_dir_shadow) {
+                    spdlog::warn("Renderer::collect_lights : 2つ目以降のシャドウキャスタ方向光源があります。無視します。");
                 } else {
+                    selected_dir_shadow = true;
                     context.shadow_light_index = lights_.size();
                     context.shadow_light_direction = direction;
-                    is_selected = true;
                     light_data.shadow.x = 0.0f; // CSM のスロット
                     //   ★ 選ばれなかったライトは既定値（kNoShadowSlot）のまま。ここで明示的に書かなくてよい。
                     //   ★ context.shadow_light_index は残す（record_shadow_pass の「方向光が居るか」の判定と、
                     //     ② のカスケード計算で使う）。シェーダへ渡す経路が LightData に変わるだけ。
+                }
+            }
+
+            // Point かつ cast_shadows のライトを、出てきた順に kMaxPointShadows 個まで選ぶ。
+            if (lights_.size() < kMaxLights && light.type == scene::LightType::Point && light.cast_shadows) {
+                if (context.point_shadow_count == kMaxPointShadows) {
+                    spdlog::warn("Renderer::collect_lights : {}つ目以降のシャドウキャスタ点光源があります。無視します。", kMaxPointShadows);
+                } else {
+                    point_shadow_slot = context.point_shadow_count++;
+                    context.point_shadow_lights[point_shadow_slot] = lights_.size();     // （このライトの lights_ 内の添字）
+                    light_data.shadow = { static_cast<float>(point_shadow_slot), kPointShadowNear, light.range, 0 };
+                    //   kMaxPointShadows 個を超えたら警告して無視する（方向光の2つ目と同じ扱い。shadow.x は -1 のまま）。
+                    //   ★ 選ぶ条件に「lights_.size() < kMaxLights」も入れること。下の kMaxLights のクランプは
+                    //     **先頭から** kMaxLights 個を残すので、この条件を満たすライトは必ず生き残る。
+                    //     入れないと、クランプで消えたライトがスロットだけ持ち続け、誰も読まない面を毎フレーム描く。
+                    //   ★ 警告は毎フレーム出ると洪水になる。方向光の警告と同じ扱いでよいが、気になるなら初回だけにする。
                 }
             }
 
@@ -554,6 +587,15 @@ namespace sq::graphics {
         std::array<scene::Frustum, scene::kCascadeCount> cascade_frusta;
         for (std::size_t c = 0; c < cascade_frusta.size(); ++c) {
             cascade_frusta[c] = scene::Frustum::from_view_projection(context.cascade_view_projection[c]);
+        }
+
+        // phase17 ③: 面の視錐台
+        std::array<scene::Frustum, kMaxPointShadows * 6> face_frusta{};
+        for (std::size_t slot = 0; slot < context.point_shadow_count; ++slot) {
+            for (std::size_t face = 0; face < 6; ++face) {
+                auto& view_proj = context.point_face_view_projection[slot * 6 + face];
+                face_frusta[slot * 6 + face] = scene::Frustum::from_view_projection(view_proj);
+            }
         }
 
         for (auto& draw_list : draw_lists_in_order()) {
@@ -593,16 +635,16 @@ namespace sq::graphics {
                     material = registry.get<scene::Material>(e);
                 }
 
-                const float world_radius = entry.bounds.radius * std::max({ sx, sy, sz });
-                const bool in_camera = frustum.intersects(world_center, world_radius);
-                if (!in_camera && !has_shadow) {
-                    return;
-                }
-
                 // マテリアルのフォールバック
                 const scene::MaterialId material_id = materials_->contains(material.id)
                     ? material.id
                     : materials_->default_material();
+
+                const float world_radius = entry.bounds.radius * std::max({ sx, sy, sz });
+                const bool in_camera = frustum.intersects(world_center, world_radius);
+
+                // 早期リターン
+                if (!in_camera && !has_shadow && context.point_shadow_count == 0) return;
 
                 // 描画用データを作る（phase14 ①: model と material_index だけになった）
                 //
@@ -622,6 +664,27 @@ namespace sq::graphics {
                         }
                     }
                 }
+
+                // 点光源のキャスタを振り分ける（半透明は含めない）。
+                if (context.point_shadow_count > 0 && !material.transparent) {
+                    for (std::size_t slot = 0; slot < context.point_shadow_count; ++slot) {
+                        //   1.「物体の境界球とライトの range の球が交わるか」を先に判定し、交わらなければ次のライトへ
+                        auto& light_pos = lights_[context.point_shadow_lights[slot]].position_type;
+                        auto& range = lights_[context.point_shadow_lights[slot]].direction_range.w;
+                        if (glm::distance(world_center, glm::xyz(light_pos)) > range + world_radius) {
+                            continue;
+                        }
+
+                        //   2. 6面それぞれの視錐台で判定し追加
+                        for (std::size_t face = 0; face < 6; ++face) {
+                            if (std::size_t idx = slot * 6 + face
+                                ; face_frusta[idx].intersects(world_center, world_radius)) {
+                                point_shadow_lists_[idx].items.push_back(item);
+                            }
+                        }
+                    }
+                }
+
                 if (in_camera) {
                     (material.transparent ? transparent_.items : opaque_.items).push_back(item);
                 }
@@ -650,6 +713,14 @@ namespace sq::graphics {
         for (std::size_t c = 0; c < scene::kCascadeCount; ++c) {
             std::ranges::sort(cascade_lists_[c].items,
             [](const DrawItem& a, const DrawItem& b) {
+                    return a.mesh < b.mesh;
+                }
+            );
+        }
+
+        for (std::size_t p = 0; p < context.point_shadow_count * 6; ++p) {
+            std::ranges::sort(point_shadow_lists_[p].items,
+                [](const DrawItem& a, const DrawItem& b) {
                     return a.mesh < b.mesh;
                 }
             );
@@ -768,7 +839,7 @@ namespace sq::graphics {
         render_pass_begin_info.renderPass = render_pass_->handle();
         render_pass_begin_info.framebuffer = framebuffers_[image_index];
         render_pass_begin_info.renderArea = { {0, 0}, swapchain_->extent() };
-        render_pass_begin_info.clearValueCount = static_cast<uint32_t>(clear_values.size());
+        render_pass_begin_info.clearValueCount = static_cast<std::uint32_t>(clear_values.size());
         render_pass_begin_info.pClearValues = clear_values.data();
 
         // レンダーパスの開始
@@ -927,14 +998,14 @@ namespace sq::graphics {
 
         VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-            .bindingCount  = static_cast<uint32_t>(material_bindings.size()),        // ★ pBindings の数と一致させる
+            .bindingCount  = static_cast<std::uint32_t>(material_bindings.size()),        // ★ pBindings の数と一致させる
             .pBindingFlags = binding_flag.data(),
         };
 
         VkDescriptorSetLayoutCreateInfo material_layout_info{};
         material_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         material_layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-        material_layout_info.bindingCount = static_cast<uint32_t>(material_bindings.size());
+        material_layout_info.bindingCount = static_cast<std::uint32_t>(material_bindings.size());
         material_layout_info.pBindings = material_bindings.data();
         material_layout_info.pNext = &flags_info;
 
@@ -943,7 +1014,7 @@ namespace sq::graphics {
         }
 
         // set=2「ライティング環境」のレイアウトを作る（D-1）。
-        std::array<VkDescriptorSetLayoutBinding, 4> env_bindings{};
+        std::array<VkDescriptorSetLayoutBinding, 5> env_bindings{};
         for (std::size_t i = 0; i < env_bindings.size(); i++) {
             auto& binding = env_bindings[i];
 
@@ -951,13 +1022,13 @@ namespace sq::graphics {
             binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             binding.descriptorCount = 1;
             binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-            binding.binding         = static_cast<uint32_t>(i);
+            binding.binding         = static_cast<std::uint32_t>(i);
         }
 
         VkDescriptorSetLayoutCreateInfo env_layout_info{};
         env_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         env_layout_info.flags = 0;            // ★ set=1 と違い UPDATE_AFTER_BIND_POOL_BIT は付けない
-        env_layout_info.bindingCount = 4;
+        env_layout_info.bindingCount = static_cast<std::uint32_t>(env_bindings.size());
         env_layout_info.pBindings = env_bindings.data();
         env_layout_info.pNext = nullptr;      // ★ binding flags も要らない
 
@@ -965,7 +1036,7 @@ namespace sq::graphics {
         if (vkCreateDescriptorSetLayout(device_->handle(), &env_layout_info, nullptr, &environment_set_layout_) != VK_SUCCESS) {
             throw std::runtime_error("Renderer::create_descriptor_set_layout : 環境用ディスクリプタセットレイアウトの作成に失敗しました！");
         }
-        // ★ PARTIALLY_BOUND を付けない以上、**4 binding すべてを書いてからでないと
+        // ★ PARTIALLY_BOUND を付けない以上、**5 binding すべてを書いてからでないと
         //   バインドできない**。① の時点では binding=1..3（IBL）の実体がまだ無いので、
         //   既定テクスチャ（白）の view で埋めておくこと（①-6 末尾の注記）。
         //   「① の間だけ binding を1つに減らす」より、そちらの方が ② でレイアウトを
@@ -999,11 +1070,11 @@ namespace sq::graphics {
     void Renderer::create_descriptor_pool() {
         VkDescriptorPoolSize camera_pool_size;
         camera_pool_size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        camera_pool_size.descriptorCount = static_cast<uint32_t>(kFramesInFlight);
+        camera_pool_size.descriptorCount = static_cast<std::uint32_t>(kFramesInFlight);
 
         VkDescriptorPoolSize sampler_pool_size;
         sampler_pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        sampler_pool_size.descriptorCount = static_cast<std::uint32_t>(kMaxTextures + kFramesInFlight * 4); // 内訳: set=1 の bindless 配列 kMaxTextures 枠 + set=2（4 binding）× kFramesInFlight 個
+        sampler_pool_size.descriptorCount = static_cast<std::uint32_t>(kMaxTextures + kFramesInFlight * 5); // 内訳: set=1 の bindless 配列 kMaxTextures 枠 + set=2（5 binding）× kFramesInFlight 個
 
         //   STORAGE_BUFFER の枠を +1 する。
         //   set=0 の instance_buffers_ + light_buffers_（kFramesInFlight 個）に加えて、
@@ -1013,7 +1084,7 @@ namespace sq::graphics {
         //     binding が増えるだけ。セット数は増えない）。
         VkDescriptorPoolSize instance_pool_size{};
         instance_pool_size.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        instance_pool_size.descriptorCount = static_cast<uint32_t>(kFramesInFlight) * 2 + 1;
+        instance_pool_size.descriptorCount = static_cast<std::uint32_t>(kFramesInFlight) * 2 + 1;
 
         std::vector<VkDescriptorPoolSize> descriptor_pools;
         descriptor_pools.push_back(camera_pool_size);
@@ -1024,8 +1095,8 @@ namespace sq::graphics {
         descriptor_pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         // (phase13 ①-2): bindless 化に伴いプールを調整する。
         descriptor_pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-        descriptor_pool_info.maxSets = static_cast<uint32_t>(kFramesInFlight) * 2 + 1;  // 内訳: set=0 が kFramesInFlight 個 + set=1 が1個 + set=2 が kFramesInFlight 個。
-        descriptor_pool_info.poolSizeCount = static_cast<uint32_t>(descriptor_pools.size());
+        descriptor_pool_info.maxSets = static_cast<std::uint32_t>(kFramesInFlight) * 2 + 1;  // 内訳: set=0 が kFramesInFlight 個 + set=1 が1個 + set=2 が kFramesInFlight 個。
+        descriptor_pool_info.poolSizeCount = static_cast<std::uint32_t>(descriptor_pools.size());
         descriptor_pool_info.pPoolSizes = descriptor_pools.data();
 
         if (vkCreateDescriptorPool(device_->handle(), &descriptor_pool_info, nullptr, &descriptor_pool_) != VK_SUCCESS) {
@@ -1246,7 +1317,117 @@ namespace sq::graphics {
         }
     }
 
-    // シャドウマップを kFramesInFlight 枚作る（phase16 ①-2）。
+    // シャドウマップを kFramesInFlight 枚作る
+    void Renderer::create_point_shadow_maps() {
+        for (std::size_t i = 0; i < kFramesInFlight; ++i) {
+            point_shadow_maps_.push_back(std::make_unique<ShadowMap>(
+                device_->handle(), device_->allocator(),
+                *queue_family_indices_.graphics_family, device_->graphics_queue(),
+                shadow_render_pass_->handle(), depth_format_,
+                ShadowMapConfig{
+                    .size = kPointShadowSize,
+                    .layers = 6 * kMaxPointShadows,
+                    .sample_view_type = VK_IMAGE_VIEW_TYPE_CUBE_ARRAY
+                }
+            ));
+        }
+    }
+
+    // 点光源1灯ぶんの、6面の view-projection
+    std::array<glm::mat4, 6> Renderer::compute_point_face_view_projections(const glm::vec3 &light_position, float near_plane, float far_plane) {
+        constexpr std::array<std::pair<glm::vec3, glm::vec3>, 6> dir_ups = {
+            std::pair{glm::vec3(1, 0, 0), glm::vec3(0, -1, 0)},
+            {glm::vec3(-1, 0, 0), glm::vec3(0, -1, 0)},
+            {glm::vec3(0, 1, 0), glm::vec3(0, 0, 1)},
+            {glm::vec3(0, -1, 0), glm::vec3(0, 0, -1)},
+            {glm::vec3(0, 0, 1), glm::vec3(0, -1, 0)},
+            {glm::vec3(0, 0, -1), glm::vec3(0, -1, 0)},
+        };
+
+        const auto proj = glm::perspective(glm::radians(90.0f), 1.0f, near_plane, far_plane);
+        // ★ Y 反転しない
+
+        std::array<glm::mat4, 6> view_projections{};
+        for (std::size_t i = 0; i < view_projections.size(); ++i) {
+            const auto&[dir, up] = dir_ups[i];
+            auto view = lookAt(light_position, light_position + dir, up);
+            view_projections[i] = proj * view;
+        }
+
+        return view_projections;
+    }
+
+    void Renderer::compute_point_shadows(FrameContext& context) const {
+        for (std::size_t slot = 0; slot < context.point_shadow_count; ++slot) {
+            auto& light = lights_[context.point_shadow_lights[slot]];
+            auto faces = compute_point_face_view_projections(glm::xyz(light.position_type),
+                light.shadow.y, light.shadow.z);
+
+            for (std::size_t face = 0; face < faces.size(); ++face) {
+                context.point_face_view_projection[slot * 6 + face] = faces[face];
+            }
+        }
+    }
+
+
+    void Renderer::record_point_shadow_pass(VkCommandBuffer command_buffer, const FrameContext &context) {
+        if (context.point_shadow_count == 0) { return; }
+
+        //     パイプライン（pipeline_point_shadow_）と set=0 / set=1 はループの外で1回バインド（set=2 はバインドしない）
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_point_shadow_->handle());
+
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipeline_point_shadow_->layout(), 0, 1, &descriptor_sets_[current_frame_], 0, nullptr);
+        VkDescriptorSet bindless = textures_->bindless_set();
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipeline_point_shadow_->layout(), 1, 1, &bindless, 0, nullptr);
+
+        VkClearValue clear{};
+        clear.depthStencil = {
+            .depth = 1.0f,
+            .stencil = 0
+        };
+
+        for (std::size_t slot = 0; slot < context.point_shadow_count; ++slot) {
+            for (std::size_t face = 0; face < 6; ++face) {
+                std::size_t layer = slot * 6 + face;
+                VkRenderPassBeginInfo render_pass_begin_info{};
+                render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+                render_pass_begin_info.renderPass = shadow_render_pass_->handle();
+                render_pass_begin_info.framebuffer = point_shadow_maps_[current_frame_]->framebuffer(layer);
+                render_pass_begin_info.renderArea =  {{0, 0}, point_shadow_maps_[current_frame_]->extent()};
+                render_pass_begin_info.clearValueCount = 1; // ★ カラーが無いので1つだけ
+                render_pass_begin_info.pClearValues = &clear;
+
+                vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+
+                VkViewport viewport{};
+                viewport.x = 0.0f;
+                viewport.y = 0.0f;
+                viewport.width  = static_cast<float>(point_shadow_maps_[current_frame_]->extent().width);
+                viewport.height = static_cast<float>(point_shadow_maps_[current_frame_]->extent().height);
+                viewport.minDepth = 0.0f;
+                viewport.maxDepth = 1.0f;
+                vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+                VkRect2D scissor{{0, 0}, point_shadow_maps_[current_frame_]->extent()};
+                vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+                ShadowPushConstants pc = {
+                    .view_projection = context.point_face_view_projection[layer],
+                    .indices = { 0, context.point_shadow_lights[slot], 0, 0 }
+                };
+                vkCmdPushConstants(command_buffer, pipeline_point_shadow_->layout(), kPushConstantRange.stageFlags, 0, sizeof(pc), &pc);
+
+                record_draw_items(command_buffer, *pipeline_point_shadow_, point_shadow_lists_[layer], true);
+
+                vkCmdEndRenderPass(command_buffer);
+                //     ★ vkCmdSetDepthBias は呼ばない（pipeline_point_shadow_ は depth_bias_enable = false）。
+            }
+        }
+    }
+
+    // シャドウマップを kFramesInFlight 枚作る
     void Renderer::create_shadow_maps() {
         for (std::size_t i = 0; i < kFramesInFlight; ++i) {
             shadow_maps_.push_back(std::make_unique<ShadowMap>(
@@ -1267,7 +1448,7 @@ namespace sq::graphics {
         VkImageView white_view = textures_->view(textures_->white_texture());
 
         for (std::size_t i = 0; i < kFramesInFlight; ++i) {
-            std::array<VkDescriptorImageInfo, 4> infos{};
+            std::array<VkDescriptorImageInfo, 5> infos{};
             infos[0] = {
                 .sampler = shadow_sampler_->handle(),
                 .imageView = shadow_maps_[i]->sample_view(),
@@ -1290,16 +1471,23 @@ namespace sq::graphics {
                 .imageView = environment_->brdf_lut().view(),
                 .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
             };
+            infos[4] = {
+                .sampler = shadow_sampler_->handle(),
+                //   ★ サンプラは shadow_sampler_（比較あり）をそのまま使ってよい。キューブのサンプリングでは
+                //     アドレスモードは実質無視される（面の境界は隣の面へシームレスに繋がる）。
+                .imageView = point_shadow_maps_[i]->sample_view(),
+                .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+            };
             //   ★ [2] を prefiltered に差し替えると、スカイボックス（binding=2 の mip 0 を読む）は
-            //     512 → 128 の解像度になって粗くなる。気になったら set=2 に binding=4 を足して
+            //     512 → 128 の解像度になって粗くなる。気になったら set=2 に binding=5 を足して
             //     environment_cube() を入れ、skybox.frag をそちらに向ける
             //     （レイアウトの binding 数 / プールの COMBINED_IMAGE_SAMPLER 枠 / この関数 の3箇所）。
             //   ★ [3] の BRDF LUT も cube_sampler_（CLAMP_TO_EDGE）でよい。
             //     REPEAT だと NdotV ≈ 1 や roughness ≈ 1 の端で反対側の値が混ざる。
             //   ★ white_view はここで使わなくなるが、TextureRegistry::view() は ③ でも使えるので残してよい。
 
-            //     VkWriteDescriptorSet を binding ごとに4本（dstSet = environment_sets_[i]）
-            std::array<VkWriteDescriptorSet, 4> write_sets{};
+            //     VkWriteDescriptorSet を binding ごとに5本（dstSet = environment_sets_[i]）
+            std::array<VkWriteDescriptorSet, 5> write_sets{};
             for (std::size_t j = 0; j < infos.size(); j++) {
                 auto& set = write_sets[j];
                 set.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;

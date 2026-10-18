@@ -54,11 +54,9 @@ struct Light {
     float range = 10.0f;
 
     // このライトが影を落とすか（phase16 ①-3 / D-4）。
-    //
-    // ★ 実際に影を落とせるのは **Directional かつ cast_shadows == true のうち最初の1つ**だけ。
-    //   2つ目以降は無視される（収集時に警告を出す。黙って無視すると
-    //   「なぜこのライトだけ影が出ないのか」で時間を溶かす）。
-    // ★ Point で立てても無視される（キューブシャドウは phase17）。
+    //   Directional: cast_shadows のうち最初の1つだけ（CSM。変わらず）
+    //   Point:       cast_shadows のうち最初の kMaxPointShadows（4）個まで（キューブシャドウ。D-9）
+    //   5つ目以降は収集時に警告して無視される。
     bool cast_shadows = false;
 };
 

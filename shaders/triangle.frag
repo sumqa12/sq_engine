@@ -14,12 +14,18 @@
 //   ★ 宣言しただけでは「静的に使用」されないので、set=2 をバインドしていなくても害は無い。
 layout(set = 2, binding = 0) uniform sampler2DArrayShadow shadow_cascades;
 
+// 点光源のキューブ配列シャドウ(imageCubeArray必須)。
+layout(set = 2, binding = 4) uniform samplerCubeArrayShadow point_shadows;
+
 // 法線オフセットの大きさ（phase17 ②-8 / D-8）。**その段の1テクセルのワールド幅の何倍ずらすか**。
 //   phase16 の kNormalBiasMax / Min は「NDC の z 空間の値」で、正射影の z 範囲が1つだから成立していた。
 //   CSM は段ごとに z 範囲もテクセルの大きさも違うので、1つの定数では全段に合わない。
 //   比較の**前に**ワールド座標を法線方向へずらし、ずらす量をテクセル幅（camera.cascade_texel_sizes[c]）に比例させる。
 // ★ Phase17 ②-10 6.5で注視しないと見えなくなり、7.0では見えない。
 const float kNormalOffsetScale = 2.0;
+
+const float kPointNormalOffset = 0.02;
+const float kPointDepthBias = 0.05; // ワールド単位
 
 // IBL（phase16 ②-8）。C++ 側 write_environment_sets() が書く。
 //   ★ 宣言するのは binding=1..3 に**キューブ / LUT の view を書いてから**にすること。
@@ -153,6 +159,21 @@ int select_cascade(vec3 world_pos) {
     return cascade;
 }
 
+float sample_point_shadow(int slot, vec3 light_pos, float far_plane, vec3 world_pos, vec3 geo_normal) {
+    vec3 offset_pos = world_pos + geo_normal * kPointNormalOffset; // （ワールド単位の定数。例 0.02。まず定数で通す）
+    vec3 v   = offset_pos - light_pos; // ★ 向きは「ライト → 表面」。逆だと反対側の面を引く
+    float ref = (length(v) - kPointDepthBias) / far_plane;
+    if (ref > 1.0) {
+        // range の外。減衰でどうせ 0 だが、比較で影扱いにならないように
+        return 1.0;
+    }
+
+    return texture(point_shadows, vec4(v, float(slot)), ref);
+    //   ★ samplerCubeArrayShadow の texture() は (vec4 P, float compare) の形。比較値は**第3引数**。
+    //     sampler2DArrayShadow（vec4 の w に比較値）と形が違うので取り違えやすい。
+    //   ★ v は正規化しなくてよい（キューブのルックアップは方向しか見ない）。
+}
+
 float sample_cascade_shadow(vec3 world_pos, vec3 geo_normal, vec3 L) {
     //   1. ビュー深度で段を選ぶ
     int cascade = select_cascade(world_pos);
@@ -279,9 +300,12 @@ void main() {
 
         // 影を落とすライト（int(light.shadow.x) >= 0 && light.position_type.w == 0）のときだけ係数を掛ける。
         float shadow = 1.0;
-        if (int(light.shadow.x) >= 0 && type == 0) {
-            shadow = sample_cascade_shadow(frag_world_pos, normalize(frag_normal), L);
+        int slot = int(light.shadow.x);
+        if (slot >= 0) {
+           shadow = (type == 0) ? sample_cascade_shadow(frag_world_pos, normalize(frag_normal), L) // 方向光源
+                                : sample_point_shadow(slot, pos, light.shadow.z, frag_world_pos, normalize(frag_normal)); // 点光源
         }
+        //   ★ ⓪-2 で入れた type == 0 の柵は、ここで分岐に置き換わる。
         //   ★ N はシェーディング法線（法線マップ適用後）でよいが、アクネが消えないときは
         //     ジオメトリ法線 normalize(frag_normal) で試すこと（法線マップの凹凸でオフセットがぶれる）。
         result += (diff + specular) * radiance * NdotL * shadow;

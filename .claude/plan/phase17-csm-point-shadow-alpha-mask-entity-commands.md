@@ -852,6 +852,7 @@ float sample_cascade_shadow(vec3 world_pos, vec3 geo_normal, vec3 L) {
 //     （⓪-1 の include の使いどころ。コピーすると片方だけ直す事故が起きる）。
 ```
 
+- ★ `gl_FragDepth` を書くと、深度テストと書き込みは **late fragment tests** で行われる。シャドウレンダーパスの依存 [0]（EXTERNAL → 0。phase16 ⓪-1）の `dstStageMask` は `EARLY_FRAGMENT_TESTS` だけだったので、`| LATE_FRAGMENT_TESTS` を足すこと（phase17 実施時に追加）。無いと「前フレームの本パスが読み終わってから書く」保証が点光源の書き込みに効かない。sync 検証を有効にしたバリデーションなら指摘される。
 - ★ パイプライン `pipeline_point_shadow_`: `shadow_render_pass_` を使い、`PipelineConfig{ .has_color_attachment = false, .depth_bias_enable = false, .cull_mode = NONE }`。**`depth_bias_enable` を true にしても効かない**（D-9）。
 - ★ `light.glsl` は set=0 binding=2 で、stageFlags は FRAGMENT。`shadow_point.frag` から読むので変更は要らない。
 
@@ -882,13 +883,19 @@ float sample_cascade_shadow(vec3 world_pos, vec3 geo_normal, vec3 L) {
 ```glsl
 layout(set = 2, binding = 4) uniform samplerCubeArrayShadow point_shadows;
 
-float sample_point_shadow(int slot, vec3 light_pos, float far, vec3 world_pos, vec3 geo_normal) {
+float sample_point_shadow(int slot, vec3 light_pos, float far_plane, vec3 world_pos, vec3 geo_normal) {
     vec3 offset_pos = world_pos + geo_normal * kPointNormalOffset;   // ワールド単位（例 0.02）
     //   ★ ② と同じく、縞が角度で出たり消えたりするなら sinθ（sqrt(1 - NdotL²)）を掛ける（D-8）。
     //     ただし点光源のテクセル幅は「ライトからの距離 × 面1枚の画角 / 解像度」で場所ごとに変わるので、
     //     ② のように UBO から渡すのではなく、length(v) から求めるか、まず定数で通してから考える。
     vec3 v = offset_pos - light_pos;
-    float ref = length(v) / far - kPointDepthBias;                   // 例 0.05 / far 相当
+    float ref = (length(v) - kPointDepthBias) / far_plane;           // kPointDepthBias はワールド単位（例 0.05）
+    //   ★ **引いてから割る**こと。`length(v) / far_plane - kPointDepthBias` と書くと bias が正規化後の値になり、
+    //     ワールドでは kPointDepthBias × far_plane（range 30 で 0.05 → 1.5）になる。物体の根元・接地点の影が消える。
+    //     （phase17 実施時に、当初この疑似コードを「例 0.05 / far 相当」と書いていたため踏んだ）
+    if (ref > 1.0) { return 1.0; }
+    //   ★ range の外。減衰でどうせ寄与は 0 だが、比較で影扱いにならないようにしておく
+    //     （gl_FragDepth は [0, 1] にクランプされるので、ref > 1 は常に「奥」と判定される）。
     return texture(point_shadows, vec4(v, float(slot)), ref);
     //   ★ texture(samplerCubeArrayShadow, vec4 P, float compare) の形。比較値は**第3引数**。
     //     sampler2DArrayShadow（vec4 の w に比較値）と形が違うので取り違えやすい。
@@ -914,6 +921,16 @@ float sample_point_shadow(int slot, vec3 light_pos, float far, vec3 world_pos, v
 //
 // ★ 太陽の intensity を一時的に 0 にして、点光源の影だけを見る（phase16 ①-9 の「ライトを減らす」と同じ理由）。
 // ★ 点光源の真下の床に、格子の箱の影が**放射状に**伸びれば正しい。
+//
+// ★ **点光源の intensity は数百〜1000 にすること**（phase17 実施時に判明）。
+//   phase16 で環境光が定数 0.03 から IBL に変わり、屋外の空の HDR では拡散の環境光が 1 前後ある。
+//   phase15 の感覚の intensity 40 だと、距離 8 で床への寄与は 0.13 程度（IBL の 1/6）しかなく、
+//   影の中と外の差が 1 割ほどになってトーンマップ後はほぼ見分けがつかない。
+//   → 「影が出ない」ときは、配管より先に**床がライトの色にはっきり染まっているか**を見る。
+//     染まっていなければ影以前にライトが見えていない。
+//   ★ 1灯で通してから4灯に増やし、太陽も戻す。最後に intensity を「シーンとして見やすい値」に戻す。
+// ★ ライトを**物体の内側に置かない**こと。カリングが NONE（D-5）なので、物体の内壁が全方向を遮り、
+//   外には影しか出ない（全面が影になる）。5×5 の物体の間・少し高い位置に置く。
 ```
 
 ### ③-9. 検証
@@ -930,7 +947,13 @@ float sample_point_shadow(int slot, vec3 light_pos, float far, vec3 world_pos, v
 |---|---|
 | 影が上下逆・左右逆に出る | 面の行列で Y 反転している ／ up の表の取り違え（③-3） |
 | ライトの周りに十字形の抜けが出る | fov が 90° でない |
-| 影がまったく出ない | `gl_FragDepth` を書いていない（透視の深度のまま）／ `shadow.z`（far）が 0 |
+| 影がまったく出ない | **点光源が IBL に埋もれている**（intensity が小さい。③-8。まず床がライトの色に染まっているかを見る）／ `gl_FragDepth` を書いていない（透視の深度のまま）／ `shadow.z`（far）が 0 |
+| 影がまったく出ない（方向光が無いときだけ） | 点光源のキャスタ収集の条件が `has_shadow`（方向光の有無）になっている（`point_shadow_count > 0` であるべき。③-4）。intensity 0 のライトは収集自体されないので、太陽を 0 にすると `has_shadow` も false になる |
+| 影がまったく出ない（シャドウマップに CSM の形が写る） | `record_point_shadow_pass` で `pipeline_shadow_`（CSM）をバインドしている（CSM の記録を複製したときの取り残し） |
+| 物体の根元・接地点の影だけ消える | bias を正規化後に引いている（`length / far - bias`。③-7 は**引いてから割る**） |
+| 全面が影になる（ライトの周りに光が出ない） | ライトが物体の**内側**にある（③-8） |
+| 5灯目で落ちる／範囲外アクセス | 上限判定を「割り当てたスロット番号 == kMaxPointShadows」で書いている（番号は最大 3 なので一致しない）。`point_shadow_count == kMaxPointShadows` で判定する |
+| 影がちらつく・環境によって結果が変わる | シャドウレンダーパスの依存 [0] の dstStageMask に `LATE_FRAGMENT_TESTS` が無い。`gl_FragDepth` を書くと深度の書き込みは late fragment tests で行われる（phase16 ⓪-1 の依存は early だけだった） |
 | 全面が影になる | 比較値を `texture()` の第3引数ではなく vec4 の w に入れている ／ `v` の向きが逆 |
 | 縞が出る、bias を上げても消えない | `vkCmdSetDepthBias` で消そうとしている（`gl_FragDepth` では効かない。D-9） |
 | 動いた物体の影が残る | キャスタ0件の面のパスを飛ばしている（③-6） |

@@ -193,6 +193,16 @@ private:
         std::array<glm::mat4, scene::kCascadeCount> cascade_view_projection{};
         glm::vec4 cascade_splits{ 0.0f };       // 各段の遠い側のビュー深度（CameraUBO と同じ形）
         glm::vec4 cascade_texel_sizes{ 0.0f };  // 各段の1テクセルのワールド幅（D-8）
+
+        // ---- phase17 ③-1: 点光源の影（collect_lights / compute_point_shadows が埋める） ----
+        //   point_shadow_count: このフレームで影を落とす点光源の数（0..kMaxPointShadows）
+        //   point_shadow_lights[slot]: スロット slot の点光源の、lights_ 内の添字
+        //     （LightData::shadow.x == slot。シャドウパスのプッシュ定数 indices.y にもこれを渡す）
+        //   point_face_view_projection[slot * 6 + face]: 各面の view-projection（③-3。キューブ配列の層番号と同じ並び）
+        // ★ 面の行列はシャドウパスしか読まないので、UBO には入れずプッシュ定数で渡す（D-3）。
+        std::uint32_t point_shadow_count = 0;
+        std::array<std::uint32_t, kMaxPointShadows> point_shadow_lights{};
+        std::array<glm::mat4, kMaxPointShadows * 6> point_face_view_projection{};
     };
 
     // ---- phase17 ②: カスケードシャドウ（D-7） ----
@@ -223,6 +233,32 @@ private:
     //     （段ごとの視錐台でキャスタを振り分けるため）。collect_frame_data の中が素直。
     //   ★ 影を落とすライトが無いフレームでは呼ばなくてよい。
     static void compute_cascades(FrameContext& context);
+
+    // ---- phase17 ③: 点光源のキューブシャドウ（D-9） ----
+
+    // 点光源1灯ぶんの、6面の view-projection（③-3）。並びは Vulkan のキューブの層の順（+X, -X, +Y, -Y, +Z, -Z）。
+    //   light_position: ライトのワールド位置
+    //   near_plane / far_plane: kPointShadowNear / ライトの range
+    // ★ fov は 90° ちょうど・アスペクト 1。90° より狭いと面の境界に隙間ができ、ライトの周りに十字形の抜けが出る。
+    // ★ **Y 反転をしない**（カメラ・CSM と違う）。キューブの各面のテクセルの並びは仕様で決まっていて、
+    //   GL の慣習の up（+Y 面と -Y 面以外は (0, -1, 0)）+ 反転なしで描くと、ちょうどその並びになる（③-3 の表）。
+    //   反転を入れると影が上下に裏返る。
+    // ★ 引数名を near / far にしないこと。windows.h のマクロ（minwindef.h）に置き換えられる（② で踏んだ）。
+    [[nodiscard]] static std::array<glm::mat4, 6>
+        compute_point_face_view_projections(const glm::vec3& light_position, float near_plane, float far_plane);
+
+    // 影を落とす点光源すべての面の行列を context.point_face_view_projection に埋める（③-3）。
+    //   ライトの位置と range は lights_[context.point_shadow_lights[slot]] から読む
+    //   （LightData の position_type.xyz と shadow.z）。lights_ を読むので static ではない。
+    // ★ 呼ぶのは collect_lights の**後**、collect_draw_items の**前**（面ごとの視錐台でキャスタを振り分けるため）。
+    void compute_point_shadows(FrameContext& context) const;
+
+    // 点光源のシャドウパスの記録（③-6）。record_shadow_pass（CSM）の後に呼ぶ。
+    //   影を落とす点光源 × 6面ぶんのレンダーパスを記録する（最大 24 パス）。
+    // ★ 使われているスロットの面は、キャスタが0件でも Begin/End を通してクリアすること
+    //   （飛ばすと前のフレームの深度が残り、動いた物体の影が残像になる）。
+    //   使われていないスロットは本パスが読まないので飛ばしてよい（⓪-5 の初期遷移）。
+    void record_point_shadow_pass(VkCommandBuffer command_buffer, const FrameContext& context);
 
     // フレームのデータを作ってGPUへ転送する（記録はしない）。
     //   ★ 呼ぶ位置は「vkAcquireNextImageKHR が成功した後」。
@@ -274,6 +310,13 @@ private:
     //   shadow_maps_ を kFramesInFlight 個作る（D-2）。
     // ★ recreate_swapchain からは**呼ばない**（解像度がウィンドウと無関係）。
     void create_shadow_maps();
+
+    // 点光源のキューブ配列シャドウマップを kFramesInFlight 個作る（phase17 ③-2）。
+    //   ShadowMapConfig{ .size = kPointShadowSize, .layers = 6 * kMaxPointShadows,
+    //                    .sample_view_type = VK_IMAGE_VIEW_TYPE_CUBE_ARRAY }
+    // ★ create_shadow_maps と同じく recreate_swapchain からは**呼ばない**。
+    // ★ CUBE_ARRAY のビューは imageCubeArray 機能が要る（device.cpp で有効化してから呼ぶこと）。
+    void create_point_shadow_maps();
 
     // set=2（environment_sets_）の中身を書く（phase16 ①-6）。
     //   binding=0 : shadow_maps_[i] + shadow_sampler_（DEPTH_STENCIL_READ_ONLY_OPTIMAL）
@@ -327,6 +370,15 @@ private:
     //   「高い物体の影が、カメラを根元に近づけた途端に消える」。
     static constexpr float kCascadeCasterMargin = 50.0f;
 
+    // ---- phase17 ③: 点光源のキューブシャドウの定数（D-9） ----
+    //
+    // 1面の一辺。6面 × kMaxPointShadows（4）= 24 層。D32 なら 1 MiB × 24 = 24 MiB / フレーム。
+    static constexpr std::uint32_t kPointShadowSize = 512;
+    // 面の透視投影の near。far はライトの range（LightData::shadow.z）。
+    // ★ 小さすぎると深度の精度が near 側に偏る……が、③ は gl_FragDepth に**線形距離**を書くので（D-9）、
+    //   透視の深度の精度は関係ない。near が効くのは「ライトのごく近く（near より手前）の物体がクリップされる」ことだけ。
+    static constexpr float kPointShadowNear = 0.05f;
+
     // depth bias（phase16 ①-8）。vkCmdSetDepthBias で毎フレーム渡す（動的ステート）。
     // phase17 ②-10 では法線オフセットだけで足りたので 0。仕組みは残してある
     static constexpr float kDepthBiasConstant = 0;
@@ -338,6 +390,13 @@ private:
     std::unique_ptr<RenderPass> shadow_render_pass_;
     // 深度専用パイプライン（頂点シェーダのみ。D-6）。set_layouts は本パスと共通（D-3）。
     std::unique_ptr<GraphicsPipeline> pipeline_shadow_;
+    // 点光源の深度専用パイプライン（phase17 ③-5）。shadow_render_pass_ を共有する（同じ深度専用・同じ形式）。
+    //   PipelineConfig{ .has_color_attachment = false, .depth_bias_enable = false, .cull_mode = NONE }
+    //   vert = "shaders/shadow_point.vert.spv"、frag = "shaders/shadow_point.frag.spv"
+    // ★ depth_bias_enable を true にしても効かない。frag が gl_FragDepth を書くと、ラスタライザが付けた
+    //   depth bias は上書きされて消える（D-9）。点光源の bias は本パスの比較側だけで取る。
+    // ★ set_layouts とプッシュ定数レンジは他のパイプラインと同じものを渡す（D-3）。
+    std::unique_ptr<GraphicsPipeline> pipeline_point_shadow_;
 
     // ---- phase16 ②: IBL ----
     //
@@ -385,6 +444,8 @@ private:
     //   binding=1  irradiance キューブ      COMBINED_IMAGE_SAMPLER  FRAGMENT  （②）
     //   binding=2  prefiltered キューブ     COMBINED_IMAGE_SAMPLER  FRAGMENT  （②）
     //   binding=3  BRDF LUT                 COMBINED_IMAGE_SAMPLER  FRAGMENT  （②）
+    //   binding=4  点光源のキューブ配列シャドウ COMBINED_IMAGE_SAMPLER  FRAGMENT  （phase17 ③-2）
+    //   ★ binding=0 は phase17 ② で 2D_ARRAY（カスケード4層）になった。
     //
     // なぜ set=1（bindless テクスチャ配列）に入れないか。理由は3つあり、どれも単独で決定的:
     //   1. キューブマップは sampler2D[] に混ぜられない（samplerCube は別の型）
@@ -413,6 +474,11 @@ private:
     // ★ environment_sets_[i] の binding=0 が shadow_maps_[i] の view を指す。
     //   作り直すとその view が死ぬので、recreate_swapchain では触らないこと。
     std::vector<std::unique_ptr<ShadowMap>> shadow_maps_;
+
+    // 点光源のキューブ配列シャドウマップ（phase17 ③-2）。kFramesInFlight 個（D-2 と同じ理由）。
+    //   層の番号 = slot * 6 + face。environment_sets_[i] の binding=4 が point_shadow_maps_[i] の sample_view を指す。
+    // ★ recreate_swapchain では触らないこと（shadow_maps_ と同じ）。
+    std::vector<std::unique_ptr<ShadowMap>> point_shadow_maps_;
 
     // phase13 ②: per-instance データ（model / base_color / texture_index）の SSBO。
     // 「フレームごとに書き換わるもの」なのでカメラUBOと同じ set=0 に binding=1 として同居させる。
