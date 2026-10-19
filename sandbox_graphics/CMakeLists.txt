@@ -8,7 +8,8 @@ add_executable(sandbox_graphics
         scenes/content_gltf.cpp
         scenes/content_materials.cpp
         scenes/content_shadows.cpp
-        scenes/content_lighting.cpp)
+        scenes/content_lighting.cpp
+        scenes/content_lifecycle.cpp)
 target_link_libraries(sandbox_graphics PRIVATE sq_engine_lib)
 
 # シェーダーをSPIR-Vにコンパイルし、実行ファイルと同じディレクトリの shaders/ に出力する。

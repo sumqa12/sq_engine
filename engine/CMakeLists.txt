@@ -29,6 +29,7 @@ add_library(sq_engine_lib STATIC
     src/scene/transform_system.cpp
     src/scene/frustum.cpp
     src/scene/hierarchy.cpp
+    src/scene/lifetime_system.cpp
     src/graphics/depth_image.cpp
     src/graphics/shadow_map.cpp
     src/graphics/image_utils.cpp

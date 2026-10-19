@@ -4,6 +4,7 @@
 
 #include "sq/ecs/entity.hpp"
 #include "sq/ecs/registry.hpp"
+#include "sq/graphics/renderer.hpp"
 #include "sq/scene/controller.hpp"
 
 // どのシーンでも使う小道具（phase17 ④の前に main.cpp から移動）。
@@ -22,6 +23,12 @@ struct Oscillator {
 // Oscillator を持つエンティティを動かす。elapsed は更新 tick の経過秒（描画レートに依存させない）。
 // ★ loop() の更新レート側で毎 tick 呼ぶ。
 void update_oscillators(sq::ecs::Registry& registry, float elapsed);
+
+// エンティティ数と、メッシュ・テクスチャ・マテリアルの生存数を1行のログに出す（phase17 ④-6）。
+//   SceneState::log_counts が true のとき、loop() が1秒ごとに呼ぶ。
+// ★ 「元の数」は 0 ではない。既定アセット（市松・白・フラット法線のテクスチャと既定マテリアル）と
+//   共通アセット（cube / plane / sphere、hsr_icon_01）は常に残る（phase16 ③-5）。
+void log_entity_and_asset_counts(sq::ecs::Registry& registry, sq::graphics::Renderer& renderer);
 
 // 操作可能なカメラを1つ作る（Camera + Controller）。yaw / pitch は target への向きから決める。
 // ★ ActiveCamera / ControlTarget は付けない。使うカメラは呼び出し側で

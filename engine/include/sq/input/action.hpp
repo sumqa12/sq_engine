@@ -18,6 +18,7 @@ enum class Action {
     Quit,
     SwitchCamera,
     ToggleShadowDebug,   // カスケードシャドウの段の色分け表示を切り替える（phase17 ②-9。既定: F3）
+    SceneDebugAction,    // シーンごとの検証操作を実行する（phase17 ④-6。既定: F5。lifecycle シーンではモデルのアンロード）
     Count,
 };
 

@@ -21,6 +21,7 @@ InputMap InputMap::default_map() {
     map.set(Action::Quit,             InputDevice::Keyboard, GLFW_KEY_ESCAPE);
     map.set(Action::SwitchCamera,     InputDevice::Keyboard, GLFW_KEY_C);
     map.set(Action::ToggleShadowDebug, InputDevice::Keyboard, GLFW_KEY_F3);
+    // TODO(phase17 ④-6): Action::SceneDebugAction を GLFW_KEY_F5 に割り当てる。
     return map;
 }
 

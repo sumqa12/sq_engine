@@ -94,6 +94,22 @@ void build_shadows(SceneBuildContext& ctx) {
     set_active_controllable_camera(ctx.registry, camera);
 }
 
+// phase17 ④: エンティティの生成・破棄（Duck が湧いては消える／F5 で ABeautifulGame をアンロード）。
+//   ★ 1秒ごとにエンティティ数とアセット数がログに出る（SceneState::log_counts）。
+void build_lifecycle(SceneBuildContext& ctx) {
+    constexpr float kGroundSize = 100.0f;
+    add_ground(ctx, kGroundSize);
+    add_sun(ctx, glm::vec3(0.3f, -1.0f, 0.5f), 2.0f);
+    add_lifecycle_test(ctx);
+
+    // 湧く範囲（原点付近 ±8）と ABeautifulGame（x = 20 付近）の両方が入るように、手前の高い位置から見下ろす。
+    const sq::ecs::Entity camera = create_camera(
+        ctx.registry, ControlScheme::FreeFly,
+        8.0f, 15.0f, 30.0f,
+        8.0f, 0.0f, 0.0f);
+    set_active_controllable_camera(ctx.registry, camera);
+}
+
 // シーンの一覧。★ 足すときは、ここに1行と build_* を1つ足すだけでよい。
 constexpr std::array kScenes = {
     SceneDefinition{ "all",        "phase17 ③ までの検証を全部入りで（既定）",                  build_all },
@@ -102,6 +118,7 @@ constexpr std::array kScenes = {
     SceneDefinition{ "materials",  "phase15-16: マテリアルボール（Cook-Torrance / IBL）",        build_materials },
     SceneDefinition{ "alpha_mask", "phase17 ①: アルファマスクの板とその影",                     build_alpha_mask },
     SceneDefinition{ "shadows",    "phase17 ②③: カスケードシャドウ（F3）と点光源のキューブシャドウ", build_shadows },
+    SceneDefinition{ "lifecycle",  "phase17 ④: エンティティの湧きと消滅（F5 でモデルをアンロード）", build_lifecycle },
 };
 
 }  // namespace

@@ -33,6 +33,9 @@ using namespace std::chrono;
 // phase12 手順2: メッシュ登録に MeshId が必要になったため、Renderer の生成を main へ移し、
 // エンティティ生成より前にアセットを登録できるようにした（renderer は main が所有する）。
 // sun: phase16 ①-9。時間で回す方向光（影の向きの検証用）。null なら回さない。
+// TODO(phase17 ④-6): 引数を (registry, renderer, sq::ecs::SystemScheduler& scheduler, sandbox::SceneState& state) に変える。
+//   - scheduler: main() で作り、シーンが自分専用の System を登録した後のものを受け取る（下のローカルの scheduler を消す）
+//   - state:     sun（state.sun）・log_counts・on_debug_action を読む
 static void loop(sq::ecs::Registry &registry, sq::graphics::Renderer &renderer, sq::ecs::Entity sun) {
     // InputManager を生成し、Renderer 経由でコールバックを配線する (phase9)
     sq::input::InputManager input;
@@ -46,6 +49,7 @@ static void loop(sq::ecs::Registry &registry, sq::graphics::Renderer &renderer, 
     sq::ecs::SystemScheduler scheduler;
     scheduler.emplace_control_system<sq::input::CameraControlSystem>();
     //   （将来）scheduler.emplace_system<...>();  // 入力に依存しない更新処理
+    // TODO(phase17 ④-6): 上の3行を main() へ移す（シーンが scheduler に System を足せるようにするため）。
 
     steady_clock::time_point init = steady_clock::now();
     constexpr double time_f = 1000 / TARGET_FPS;
@@ -98,6 +102,9 @@ static void loop(sq::ecs::Registry &registry, sq::graphics::Renderer &renderer, 
             if (input_map.is_pressed(input, sq::input::Action::ToggleShadowDebug)) {
                 renderer.set_shadow_debug(!renderer.shadow_debug());
             }
+
+            // TODO(phase17 ④-6): Action::SceneDebugAction が押され、state.on_debug_action が空でなければ呼ぶ。
+            //   ★ ここは scheduler.update の外（反復中ではない）なので、on_debug_action が registry を直接変えてよい。
 
             renderer.set_cursor_captured(!input_map.is_down(input, sq::input::Action::CursorEnable));
 
@@ -173,6 +180,8 @@ static void loop(sq::ecs::Registry &registry, sq::graphics::Renderer &renderer, 
 
         if (one_second >= 1.0) {
             // spdlog::info("総エンティティ数: {}", registry.entity_count());
+            // TODO(phase17 ④-6): state.log_counts なら sandbox::log_entity_and_asset_counts(registry, renderer) を呼ぶ
+            //   （上のコメントアウトの行は、それに置き換わるので消してよい）。
             one_second--;
         }
 
@@ -222,6 +231,17 @@ int main(int argc, char** argv) {
 
     // ★ renderer より**後**に宣言すること（glTF の LoadedModel を Renderer より先に破棄するため。phase16 ③-4）。
     sandbox::SceneState state;
+
+    // TODO(phase17 ④-6): ここで SystemScheduler を作り、全シーン共通の System を登録する。
+    //   sq::ecs::SystemScheduler scheduler;
+    //   scheduler.emplace_control_system<sq::input::CameraControlSystem>();
+    //   scheduler.emplace_system<sq::scene::LifetimeSystem>();     （#include "sq/scene/lifetime_system.hpp"）
+    //   そして下の ctx に .scheduler = scheduler を足す（SceneBuildContext に参照メンバを足したので、
+    //   足すまでここはコンパイルエラーになる）。loop() にも scheduler と state を渡す。
+    //   ★ scheduler は state より**後**に宣言すること。シーンの System（ModelSpawnerSystem）は state.models の要素を
+    //     指しているので、state より先に破棄される位置に置く（宣言の逆順に破棄される）。
+    //   ★ シーン共通の System を先に登録し、シーンの System は scene->build の中で後から足される。
+    //     System は登録順に回るので、「LifetimeSystem → ModelSpawnerSystem」の順になる（どちらでも結果は同じ）。
     sandbox::SceneBuildContext ctx{
         .registry = registry,
         .renderer = renderer,

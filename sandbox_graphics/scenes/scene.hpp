@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <random>
 #include <span>
 #include <string_view>
@@ -8,6 +9,7 @@
 #include "sq/assets/gltf_loader.hpp"
 #include "sq/ecs/entity.hpp"
 #include "sq/ecs/registry.hpp"
+#include "sq/ecs/system_scheduler.hpp"
 #include "sq/graphics/renderer.hpp"
 #include "sq/scene/asset_handle.hpp"
 
@@ -47,7 +49,20 @@ struct SceneState {
     // glTF の所有権（phase16 ③-6）。破棄されるとメッシュ・マテリアル・テクスチャが解放される。
     // ★ SceneState は main() で **Renderer より後に宣言**すること（宣言の逆順に破棄されるので、
     //   Renderer のレジストリより先に LoadedModel が死ぬ）。逆だと死んだレジストリへ release して落ちる。
+    // ★ アンロードは erase ではなく `models[i] = {};`（空の LoadedModel をムーブ代入）で行うこと（④-6）。
+    //   erase すると後ろの要素がずれ、他の場所が持っている要素への参照・添字が壊れる。
+    //   ムーブ代入なら、古い要素の AssetRef が release されて、要素の位置は変わらない。
     std::vector<sq::assets::LoadedModel> models;
+
+    // 1秒ごとにエンティティ数とアセット数（メッシュ・テクスチャ・マテリアルの生存数）をログに出すか（phase17 ④-6）。
+    //   エンティティを湧かせ続けても数が頭打ちになること、アンロードで資産が減ることの確認に使う。
+    bool log_counts = false;
+
+    // Action::SceneDebugAction（既定 F5）が押されたときに loop() が呼ぶ処理（phase17 ④-6）。null なら何もしない。
+    //   lifecycle シーンでは「ABeautifulGame のエンティティを消してから LoadedModel をアンロードする」に使う。
+    // ★ loop() の更新 tick の中、SystemScheduler::update の**外**で呼ばれる（反復中ではない）ので、
+    //   registry を直接変えてよい。
+    std::function<void(sq::ecs::Registry&)> on_debug_action;
 };
 
 // シーンを組み立てる関数に渡すもの一式。
@@ -57,6 +72,11 @@ struct SceneBuildContext {
     const CommonAssets& assets;
     std::mt19937& rng;    // 格子の回転・カメラの位置・点光源の色など（シーンをまたいで1本）
     SceneState& state;    // 組み立ての結果（sun / models）を書き込む先
+
+    // シーン固有の System を登録する先（phase17 ④-6。lifecycle シーンの ModelSpawnerSystem など）。
+    // ★ CameraControlSystem と LifetimeSystem は main() が全シーン共通で登録する。シーンは自分専用のものだけ足す。
+    // ★ loop() の中で作っていた SystemScheduler を、main() で作って loop() へ渡す形に変える（main.cpp の TODO）。
+    sq::ecs::SystemScheduler& scheduler;
 };
 
 using SceneBuildFunction = void (*)(SceneBuildContext& ctx);

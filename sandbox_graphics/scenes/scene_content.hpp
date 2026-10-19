@@ -51,6 +51,17 @@ void add_alpha_mask_boards(SceneBuildContext& ctx);
 //   ★ 天井は点光源の上方向（+Y 面）の影の確認用。
 void add_shadow_playground(SceneBuildContext& ctx);
 
+// ---- phase17 ④: エンティティの生成・破棄 ----
+
+// phase17 ④-6: エンティティの湧きと消滅、LoadedModel のアンロードの検証。
+//   1. Duck を読み込み、ModelSpawnerSystem（content_lifecycle.cpp）を ctx.scheduler に登録する。
+//      kSpawnInterval 秒ごとに Duck を1体湧かせ、Lifetime で数秒後に子孫ごと消す（LifetimeSystem）。
+//   2. ABeautifulGame を読み込んで1つ置き、F5（Action::SceneDebugAction）でエンティティごとアンロードできるようにする。
+//   3. ctx.state.log_counts = true（1秒ごとに数をログに出す）。
+//   ★ 確認: entities は「湧く数 × 寿命」で頭打ちになり、増え続けないこと／meshes・textures・materials は湧きと消滅では
+//     **一切変わらない**こと（Duck の LoadedModel を持ち続けているため）／F5 の後は資産の数が減ること。
+void add_lifecycle_test(SceneBuildContext& ctx);
+
 // ---- 照明 ----
 
 // 影を落とす太陽を1つ作り、ctx.state.sun に入れる（loop() が Y 軸まわりに回す）。
