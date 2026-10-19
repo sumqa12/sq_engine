@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sq/ecs/entity_commands.hpp"
 #include "sq/ecs/registry.hpp"
 
 // InputManager / InputMap は参照を素通しするだけなので、ここでは前方宣言で足りる。
@@ -24,7 +25,9 @@ public:
     ControlSystem(const ControlSystem&) = delete;
     ControlSystem& operator=(const ControlSystem&) = delete;
 
+    // phase17 ④-3: commands を足した（System と同じ。入力で「弾を撃つ」ような生成をここから積めるように）。
     virtual void update(const Registry& registry,
+                        EntityCommands& commands,
                         const input::InputManager& input,
                         const input::InputMap& map,
                         float dt) = 0;

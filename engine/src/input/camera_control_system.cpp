@@ -9,8 +9,8 @@ namespace sq::input {
         constexpr glm::vec3 kWorldUp{0.0f, 1.0f, 0.0f};
     }  // namespace
 
-    void CameraControlSystem::update(const ecs::Registry& registry, const InputManager& input,
-                                     const InputMap& map, float dt) {
+    void CameraControlSystem::update(const ecs::Registry& registry, ecs::EntityCommands& /*commands*/,
+                                     const InputManager& input, const InputMap& map, float dt) {
         // ControlTarget + Controller + Camera を持つエンティティを走査し、
         // Controller::scheme で FreeFly / Orbit に振り分ける（phase10プラン A-4 / C）。
         registry.view<scene::ControlTarget, scene::Controller, scene::Camera>().each(

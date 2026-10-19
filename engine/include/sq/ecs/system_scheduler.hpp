@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "sq/ecs/control_system.hpp"
+#include "sq/ecs/entity_commands.hpp"
 #include "sq/ecs/system.hpp"
 
 namespace sq::ecs {
@@ -44,7 +45,11 @@ public:
     }
 
     // 1更新tick分を実行する。input / map は全ControlSystemで共有される。
-    void update(const Registry& registry,
+    //
+    // phase17 ④-3: registry を非 const にした（末尾の commands_.flush が構造を変えるため）。
+    //   各 System へは const Registry& として渡す（System の中から直接は変えられない。D-10）。
+    //   ★ 構造変更が起きるのは、この関数の**末尾の1点だけ**（同期点）。
+    void update(Registry& registry,
                 const input::InputManager& input,
                 const input::InputMap& map,
                 float dt);
@@ -52,6 +57,9 @@ public:
 private:
     std::vector<std::unique_ptr<ControlSystem>> control_systems_;
     std::vector<std::unique_ptr<System>> systems_;
+
+    // 全 System が共有するコマンドバッファ（phase17 ④-3）。update の末尾で flush して空にする。
+    EntityCommands commands_;
 };
 
 }  // namespace sq::ecs

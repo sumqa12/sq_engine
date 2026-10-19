@@ -2,6 +2,7 @@ add_library(sq_engine_lib STATIC
     src/ecs/archetype.cpp
     src/ecs/registry.cpp
     src/ecs/system_scheduler.cpp
+    src/ecs/entity_commands.cpp
     src/graphics/window.cpp
     src/graphics/vulkan_instance.cpp
     src/graphics/debug_messenger.cpp
@@ -27,6 +28,7 @@ add_library(sq_engine_lib STATIC
     src/scene/transform.cpp
     src/scene/transform_system.cpp
     src/scene/frustum.cpp
+    src/scene/hierarchy.cpp
     src/graphics/depth_image.cpp
     src/graphics/shadow_map.cpp
     src/graphics/image_utils.cpp

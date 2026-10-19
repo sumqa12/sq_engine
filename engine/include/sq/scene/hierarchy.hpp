@@ -4,6 +4,13 @@
 
 #include "sq/ecs/entity.hpp"
 
+// destroy_hierarchy の引数は参照を素通しするだけなので、前方宣言で足りる
+// （hierarchy.hpp は Renderer など多くのファイルが include するので、重いヘッダを引き込まない）。
+namespace sq::ecs {
+class Registry;
+class EntityCommands;
+}  // namespace sq::ecs
+
 namespace sq::scene {
 
 // 親を指すコンポーネント。持たないエンティティはルート（phase14 ④ / D-4）。
@@ -34,4 +41,14 @@ struct WorldTransform {
     bool resolved = false;   // このフレームで解決済みか（毎フレーム先頭でクリアする）
 };
 
+// root とその全子孫の破棄を commands に積む（phase17 ④-4 / D-10）。
+//
+// ★ 読むだけなので registry は const。実際に消えるのは commands.flush のとき（SystemScheduler::update の末尾）。
+// ★ ecs::EntityCommands に「再帰で消す」を持たせず scene 側に置くのは、Parent が scene の概念だから
+//   （ecs は階層を知らない層のまま保つ。ecs → scene の依存を作らない）。
+// ★ root が既に死んでいる場合は何もしない。
+// ★ 子は Parent で親を指す片方向リンクしか持たない（phase14 ④）ので、子孫を知るには全 Parent を
+//   1回走査するしかない。呼ばれたときだけ走るので、毎 tick のコストにはならない。
+//   同じ tick に何十回も呼ぶなら、子の表を1回だけ作って使い回す形に変える（将来の最適化）。
+void destroy_hierarchy(const ecs::Registry& registry, ecs::EntityCommands& commands, ecs::Entity root);
 }  // namespace sq::scene

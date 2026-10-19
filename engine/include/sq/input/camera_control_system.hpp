@@ -17,7 +17,8 @@ class CameraControlSystem : public ecs::ControlSystem {
 public:
     CameraControlSystem() = default;
 
-    void update(const ecs::Registry& registry, const InputManager& input,
+    // commands は使わない（カメラの値を書き換えるだけで、構造は変えない。phase17 ④-3）。
+    void update(const ecs::Registry& registry, ecs::EntityCommands& commands, const InputManager& input,
                 const InputMap& map, float dt) override;
 
 private:
