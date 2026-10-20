@@ -57,33 +57,72 @@ ModelSpawnerSystem::ModelSpawnerSystem(const sq::assets::LoadedModel& model, std
     : model_(&model), rng_(&rng) {}
 
 void ModelSpawnerSystem::update(const sq::ecs::Registry& registry, sq::ecs::EntityCommands& commands, float dt) {
-    // TODO(phase17 ④-6): 宣言のコメントの 1 / 2 を実装する。
-    (void)registry;
-    (void)commands;
-    (void)dt;
+    timer_ += dt;
+    if (timer_ >= kSpawnInterval) {
+        timer_ -= kSpawnInterval;
+        std::uniform_real_distribution spawn_dist(-kSpawnRange, kSpawnRange);
+        glm::vec3 position(spawn_dist(*rng_), 0, spawn_dist(*rng_));
+        commands.defer([this, position](sq::ecs::Registry& r) {
+            sq::ecs::Entity root = r.create();
+            r.add<Transform>(root, Transform{position, glm::quat(1, 0, 0, 0), glm::vec3(kModelScale)});
+            r.add<WorldTransform>(root, WorldTransform{});
+            r.add<Lifetime>(root, Lifetime{ kLifetime });
+            [[maybe_unused]] const auto model_entities = spawn_model(r, *model_, root);
+        });
+    }
 }
 
 }  // namespace
 
 void add_lifecycle_test(SceneBuildContext& ctx) {
-    // TODO(phase17 ④-6): 次の手順で組み立てる。
-    //   1. Duck と ABeautifulGame を ctx.state.models に読み込む（load_gltf。content_gltf.cpp と同じ呼び方）
-    //      ★ 2つとも読み込み終えてから、要素への参照・添字を取ること（emplace_back の再確保で参照が壊れる）。
-    //        添字（duck_index / game_index）を覚えておき、参照は最後に ctx.state.models[i] で取るのが安全。
-    //   2. ABeautifulGame を1つ置く（空の親 game_root の下に spawn_model。位置は湧く範囲の外、例: (20, 0, 0)、スケール 10）
-    //   3. ctx.scheduler.emplace_system<ModelSpawnerSystem>(ctx.state.models[duck_index], ctx.rng)
-    //   4. ctx.state.on_debug_action = [&state = ctx.state, game_index, game_root](sq::ecs::Registry& r) { ... }
-    //        a. EntityCommands cmds; destroy_hierarchy(r, cmds, game_root); cmds.flush(r);   ← エンティティを先に消す
-    //        b. state.models[game_index] = {};                                                ← 次に資産を手放す
-    //      ★ 順序は「エンティティ → LoadedModel」（phase16 ③-6）。逆にすると、エンティティが死んだハンドルを
-    //        握ったまま1フレーム描かれ、既定メッシュ／既定マテリアル（市松模様）へフォールバックした姿が一瞬見える。
-    //      ★ 2回目の F5 では game_root が既に死んでいる。destroy_hierarchy は何もせず、models[game_index] も空なので
-    //        空を空で上書きするだけ（何も起きない）でよい。
-    //      ★ GPU がまだそのフレームのバッファを使っている心配は要らない。メッシュ・テクスチャの解放は
-    //        DeletionQueue が kFramesInFlight フレーム遅らせる（phase14 ②-4）。
-    //      ★ state を参照で捕捉してよい（SceneState は main() の最後まで生きている）。
-    //   5. ctx.state.log_counts = true
-    (void)ctx;
+    //   Duck と ABeautifulGame を ctx.state.models に読み込む（load_gltf。content_gltf.cpp と同じ呼び方）
+    auto& registry = ctx.registry;
+    auto& renderer = ctx.renderer;
+
+    struct ModelFile {
+        std::string_view path;
+        float scale;
+    };
+    constexpr ModelFile kModels[] = {
+        { "models/Duck.glb",           2.0f },
+        { "models/ABeautifulGame.glb", 10.0f },
+    };
+    constexpr std::size_t kDuckIndex = 0;
+    constexpr std::size_t kGameIndex = 1;
+
+    for (auto [path, scale] : kModels) {
+        ctx.state.models.emplace_back(
+            sq::assets::load_gltf(std::string(path), renderer.meshes(), renderer.textures(), renderer.materials()));
+    }
+    //   ★ 2つとも読み込み終えてから、要素への参照・添字を取ること（emplace_back の再確保で参照が壊れる）。
+    //     添字（duck_index / game_index）を覚えておき、参照は最後に ctx.state.models[i] で取るのが安全。
+
+    //   ABeautifulGame を1つ置く（空の親 game_root の下に spawn_model。位置は湧く範囲の外、例: (20, 0, 0)、スケール 10）
+    const sq::ecs::Entity game_root = registry.create();
+    registry.add<Transform>(game_root, Transform(
+        glm::vec3(20, 0, 0), glm::quat(1, 0, 0, 0), glm::vec3(10)));
+    registry.add<WorldTransform>(game_root, WorldTransform{});
+
+    [[maybe_unused]] const auto model_entities = sq::assets::spawn_model(registry, ctx.state.models[kGameIndex], game_root);
+
+    //   スポーンシステムの追加
+    ctx.scheduler.emplace_system<ModelSpawnerSystem>(ctx.state.models[kDuckIndex], ctx.rng);
+
+    ctx.state.on_debug_action = [&state = ctx.state, game_root](sq::ecs::Registry& r) {
+        sq::ecs::EntityCommands cmds;
+        destroy_hierarchy(r, cmds, game_root);
+        cmds.flush(r);
+        state.models[kGameIndex] = {};
+        //   ★ 順序は「エンティティ → LoadedModel」（phase16 ③-6）。逆にすると、エンティティが死んだハンドルを
+        //     握ったまま1フレーム描かれ、既定メッシュ／既定マテリアル（市松模様）へフォールバックした姿が一瞬見える。
+        //   ★ 2回目の F5 では game_root が既に死んでいる。destroy_hierarchy は何もせず、models[game_index] も空なので
+        //     空を空で上書きするだけ（何も起きない）でよい。
+        //   ★ GPU がまだそのフレームのバッファを使っている心配は要らない。メッシュ・テクスチャの解放は
+        //     DeletionQueue が kFramesInFlight フレーム遅らせる（phase14 ②-4）。
+        //   ★ state を参照で捕捉してよい（SceneState は main() の最後まで生きている）。
+    };
+
+    ctx.state.log_counts = true;
 }
 
 }  // namespace sandbox

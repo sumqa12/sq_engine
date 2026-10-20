@@ -75,7 +75,6 @@ struct SceneBuildContext {
 
     // シーン固有の System を登録する先（phase17 ④-6。lifecycle シーンの ModelSpawnerSystem など）。
     // ★ CameraControlSystem と LifetimeSystem は main() が全シーン共通で登録する。シーンは自分専用のものだけ足す。
-    // ★ loop() の中で作っていた SystemScheduler を、main() で作って loop() へ渡す形に変える（main.cpp の TODO）。
     sq::ecs::SystemScheduler& scheduler;
 };
 

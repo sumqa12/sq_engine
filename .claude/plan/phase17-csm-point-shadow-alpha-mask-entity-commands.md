@@ -1,4 +1,4 @@
-# C++ ゲームエンジン（学習目的）— Phase 17: カスケードシャドウ + 点光源のキューブシャドウ + アルファマスクの影 + エンティティの生成・破棄
+# C++ ゲームエンジン（学習目的）— Phase 17: カスケードシャドウ + 点光源のキューブシャドウ + アルファマスクの影 + エンティティの生成・破棄【完了 2026-10-20】
 
 ## Context
 
@@ -1153,6 +1153,73 @@ ECS 側の変更なので、Catch2 のテストで固める（phase1 以来）�
 - `kMaxInstances` を超える状況（格子を 17³ にするなど）で、**遠い影から**消えていくこと（D-1 の並び順の確認）。本体や近い影が欠けないこと。
 - フレーム時間が phase16 から極端に伸びていないこと。シャドウパスは 1 → 最大 28 パスに増える。重ければまず `kPointShadowSize` と `kCascadeSize` を下げて切り分ける。
 - エンティティを湧かせ続けても、エンティティ数・GPU メモリが頭打ちになること（④-6）。
+
+---
+
+## 実施結果（完了 2026-10-20、ブランチ `plan17`）
+
+⓪〜④ の全項目を実装し、各手順の検証（②-11 / ③-9 / ④-6 を含む）と単体テスト（④-7）がすべて通った。
+
+### コミット
+
+| 手順 | コミット |
+|---|---|
+| ⓪-1 シェーダの共通定義の include 化 | `05e3b1e` |
+| ⓪-2 `LightData::shadow` | `9f748d3` |
+| ⓪-3 全パイプライン共通のプッシュ定数レンジ | `808e20f` |
+| ⓪-4 描画リストの一般化 | `cc41554` |
+| ⓪-5 `ShadowMap` の層対応と初期遷移 | `497df52` |
+| ① アルファマスク | `a8012ea` |
+| ②-1〜②-8 CSM | `472496a` |
+| ②-9 段の色分け表示 | `48e4a9d` |
+| ②-10 bias の調整 | `83755f1` |
+| ③ 点光源のキューブシャドウ | `e619af7` |
+| （プラン外）検証用の空間をシーンに分離 | `5743ff7`、`73f3a42` |
+| ④-1〜④-4、④-7 `EntityCommands` / `destroy_hierarchy` / テスト | `6659366` |
+| ④-5、④-6 `Lifetime` と lifecycle シーン | `6b2ae4e`（骨格）＋ 本コミット |
+
+### 決まった値
+
+| 値 | 場所 | 結果 | 補足 |
+|---|---|---|---|
+| `kNormalOffsetScale` | triangle.frag | **2.0** | 角度の係数を sinθ にした後の値（D-8）。`1 - NdotL` のままだと 7.0 が要った |
+| `kDepthBiasConstant` / `kDepthBiasSlope` | renderer.hpp | **0 / 0** | 法線オフセットだけで縞も浮きも出なかった。`vkCmdSetDepthBias` の仕組みは残してある |
+| `kCascadeSize` / `kShadowMaxDistance` / λ / `kCascadeCasterMargin` | renderer.hpp | 2048 / 100 / 0.75 / 50 | プランの出発点のまま |
+| `kPointShadowSize` / `kPointShadowNear` | renderer.hpp | 512 / 0.05 | プランの出発点のまま |
+| `kPointNormalOffset` / `kPointDepthBias` | triangle.frag | 0.02 / 0.05（ワールド単位） | bias は「引いてから割る」（③-7） |
+| `kMaxInstances` | renderer.hpp | 16384 | 26³ の格子で超過させ、遠い影から欠けることを確認（⓪-4） |
+| 点光源の intensity（検証シーン） | content_lighting.cpp | 1200（range 20） | IBL に埋もれないため（③-8） |
+
+### プランから変えたこと
+
+1. **D-8 の角度の係数を `1 - NdotL` から sinθ に直した**（②-10 で判明。D-8 / ②-8 / ②-10 に経緯を記録済み）。
+2. **⓪-5 の初期遷移の aspectMask**：ステンシル付きの深度フォーマットでは `DEPTH | STENCIL`（ビューは `DEPTH` だけのまま）。もう一台の開発機（`D24_UNORM_S8_UINT` が選ばれ得る）向け。
+3. **②-9 で `select_cascade` を足した**：段の選択を、影のサンプリングと色分け表示の両方が呼ぶ1か所にまとめた（表示と実際の段が食い違わないように）。
+4. **③ でシャドウレンダーパスの依存 [0] に `LATE_FRAGMENT_TESTS` を足した**（`gl_FragDepth` は late fragment tests で書かれる。③-5 に記録済み）。
+5. **D-10 の `destroy_recursive` は作らず、`scene::destroy_hierarchy` にした**（ecs は階層を知らない層のまま）。子孫の列挙は hierarchy.cpp の無名名前空間の `for_each_descendant`。
+6. **`EntityCommands::flush` の重複除去は `(id, generation)` でソートして同一のものだけ除く**。id だけで比べると、古いハンドルと id を再利用した生きているエンティティの片方が消され、生きている方が破棄されないことがある（テストを追加して確認）。
+7. **（プラン外）検証用の空間をシーンに分けた**：`sandbox_graphics/scenes/`。起動時の引数で選ぶ（`all` / `instancing` / `gltf` / `materials` / `alpha_mask` / `shadows` / `lifecycle`。`list` で一覧）。中身・照明・カメラをシーン側で組み合わせる（全部入りで太陽が2つにならないように）。run.bat も3つ目の引数でシーン名を渡せるようにした。
+8. **④-6 のアンロードは `models[i] = {}`**（`erase` だと後ろの要素がずれ、`ModelSpawnerSystem` が持つ参照が壊れる）。シーン固有の検証操作は `Action::SceneDebugAction`（F5）と `SceneState::on_debug_action`。`SystemScheduler` は main() で作り、`state` より後に宣言する。
+
+### 踏んだ問題（再発防止）
+
+| 問題 | 原因 | 教訓 |
+|---|---|---|
+| 影が出ない／でたらめ（2回） | `camera.view_proj[i]` と書いた（正しくは `cascade_view_proj[i]`） | `mat4` の添字は列ベクトルを返すので、**取り違えてもコンパイルが通る**。行列の配列を足したら、同じ名前の前置きを持つ単体の行列との取り違えを疑う |
+| `float far = ...` が構文エラー | `VK_USE_PLATFORM_WIN32_KHR` がプロジェクト全体に定義され、`windows.h`（`minwindef.h`）の `near` / `far` マクロが入り込む | 変数名に `near` / `far` を使わない（`near_plane` / `shadow_far` など） |
+| リリースで `shadow.frag.spv` のサイズが 0 | run.bat の作業ディレクトリが Debug 固定で、Release の exe が Debug の shaders/ を読んでいた | シェーダ等は CWD 基準の相対パス。起動方法で CWD がずれると**別のビルドの古いファイルを黙って読む** |
+| CSM の4段が全部層0に描かれる | `framebuffer(0)` をループの外で設定していた | 層ごとのループでは、フレームバッファも層ごとに差し替える |
+| 遠い段の縞が見えない | 縞の間隔 = その段の1テクセルの幅（赤の段で約 4 mm） | 調整中は `kCascadeSize` を 256 に下げる（②-10） |
+| 点光源の影が出ない | ① IBL に埋もれていた ② キャスタ収集の条件が方向光の有無 ③ 点光源のパスで CSM のパイプラインをバインド ④ bias を正規化後に引いていた | ③-9 の表に記録済み。まず「床がライトの色に染まっているか」を見る |
+| 5灯目で範囲外書き込み | 上限判定を「割り当てたスロット番号」で書いていた | 上限は個数（`point_shadow_count`）で判定する |
+| `ActiveCamera` が無いときに既定ビューになる | `resolve_camera` の2段目で見つけたカメラを代入していなかった | 3段フォールバックは「決めてから1つの Camera で全部埋める」形に |
+| 公開ヘッダのテンプレートが他から使えない | `bfs` を hierarchy.hpp で宣言し、定義を .cpp に置いた | 1か所でしか使わないテンプレートは、その .cpp の無名名前空間に定義する |
+
+### 持ち越した課題
+
+- `VK_USE_PLATFORM_WIN32_KHR` をプロジェクト全体ではなく、`swapchain.cpp` / `device.cpp` だけに限定する（`near` / `far` マクロの根本対策）。
+- `main()` の先頭で作業ディレクトリを exe の場所に合わせる（起動方法による CWD のずれ対策）。
+- 実行中のシーン切り替え（④ のエンティティ破棄とアセット解放の上に作る）。
 
 ---
 

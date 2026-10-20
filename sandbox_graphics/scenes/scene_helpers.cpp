@@ -23,13 +23,10 @@ void update_oscillators(sq::ecs::Registry& registry, const float elapsed) {
 }
 
 void log_entity_and_asset_counts(sq::ecs::Registry& registry, sq::graphics::Renderer& renderer) {
-    // TODO(phase17 ④-6): 1行でログに出す。
-    //   spdlog::info("entities={} meshes={} textures={} materials={}",
-    //                registry.entity_count(), renderer.meshes().alive_count(),
-    //                renderer.textures().alive_count(), renderer.materials().alive_count());
+    spdlog::info("entities={} meshes={} textures={} materials={}",
+                 registry.entity_count(), renderer.meshes().alive_count(),
+                 renderer.textures().alive_count(), renderer.materials().alive_count());
     //   ★ registry.entity_count() は非 const のメンバ関数（registry.hpp）。registry を非 const で受けているのはこのため。
-    (void)registry;
-    (void)renderer;
 }
 
 sq::ecs::Entity create_camera(sq::ecs::Registry& registry,
